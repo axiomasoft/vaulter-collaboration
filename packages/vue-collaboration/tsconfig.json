@@ -19,7 +19,9 @@
     "noEmit": true,
     "baseUrl": ".",
     "paths": {
-      "@vaulter/vue": ["../vue/src/index.ts"]
+      "@vaulter/vue": ["../../../vaulter/packages/vue/src/index.ts"],
+      "vue": ["../../node_modules/vue"],
+      "@vue/reactivity": ["../../node_modules/@vue/reactivity"]
     }
   },
   "include": ["src/**/*.ts", "tests/**/*.ts"],

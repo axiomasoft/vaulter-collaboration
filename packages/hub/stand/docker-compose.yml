@@ -77,12 +77,14 @@ services:
   # `migrate` (not `migrate:fresh`): the scenarios restart this container and the data must stay.
   backend:
     build:
-      context: ../../../..
+      context: ../../..
       dockerfile: e2e/docker/Dockerfile.laravel
     working_dir: /app
     command: ["sh", "-c", "vendor/bin/testbench migrate --force && vendor/bin/testbench serve --host 0.0.0.0 --port 8000"]
     volumes:
-      - ../../../..:/app
+      - ../../..:/app
+      - ../../../../vaulter:/vaulter:ro
+      - ../../../../packman:/packman:ro
       # The DB connection reaches the testbench-serve child only through testbench.yaml.
       - ./testbench.yaml:/app/testbench.yaml:ro
     ports:

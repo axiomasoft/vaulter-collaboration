@@ -3,7 +3,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { Editor, EditorContent } from '@tiptap/vue-3'
 import StarterKit from '@tiptap/starter-kit'
 import Collaboration from '@tiptap/extension-collaboration'
-import { useNodeCollaboration } from '@vaulter/vue'
+import { useCollaboration } from '@vaulter/vue-collaboration'
 
 const props = defineProps<{
   nodeId: string | number
@@ -13,7 +13,7 @@ const props = defineProps<{
 // Реальный composable @vaulter/vue: тянет room-JWT с /nodes/{id}/collab/token и
 // поднимает HocuspocusProvider над общим Y.Doc. К этому Y.Doc цепляем TipTap через
 // расширение Collaboration — правки текут в Yjs и синкаются между браузерами.
-const collab = useNodeCollaboration(props.nodeId)
+const collab = useCollaboration(props.nodeId)
 
 const editor = ref<Editor | null>(null)
 const status = ref('connecting')

@@ -74,10 +74,17 @@ jobs:
         uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2.40.0
         with:
           php-version: "8.4"
+          extensions: pdo_pgsql, pgsql, pdo_sqlite, sqlite3
           coverage: none
 
       - name: Validate composer.json
         run: composer validate --no-check-publish --no-check-version --strict --no-interaction
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --no-progress
+
+      - name: Install npm dependencies
+        run: npm ci
 
       - name: Install PostgreSQL client
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client
@@ -92,6 +99,17 @@ jobs:
             ${expected}*) ;;
             *) echo "expected PostgreSQL ${expected}, got ${ver}" >&2; exit 1 ;;
           esac
+
+      - name: Run database migrations on PostgreSQL
+        env:
+          APP_KEY: "base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+          DB_CONNECTION: pgsql
+          DB_HOST: 127.0.0.1
+          DB_PORT: "5432"
+          DB_DATABASE: vaulter
+          DB_USERNAME: vaulter
+          DB_PASSWORD: vaulter
+        run: vendor/bin/testbench migrate --force
 
       - name: Zero unindexed foreign keys
         run: |
@@ -462,8 +480,20 @@ jobs:
           python3 "$RUNNER_TEMP/stop-cranes.py" --root "$GITHUB_WORKSPACE"
           python3 "$RUNNER_TEMP/stop-cranes.py" --self-test
 
+      - name: PHPStan
+        run: composer phpstan
+
+      - name: Pest
+        run: composer test
+
+      - name: Hub check & tests
+        run: npm run check:hub && npm run test:hub
+
+      - name: Vue collaboration tests & build
+        run: npm run test:vue && npm run build:vue
+
   image-template:
-    name: Node image template
+    name: Node image template & Hub image
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -474,4 +504,7 @@ jobs:
 
       - name: Build Node 26.13.1 template
         run: docker build --pull --build-arg SERVICE_PORT=1234 -t vaulter-node-template:ci .
+
+      - name: Build collaboration hub image
+        run: docker build --pull -t vaulter-collaboration-hub:ci packages/hub
 

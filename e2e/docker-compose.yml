@@ -26,6 +26,8 @@ services:
     working_dir: /app
     volumes:
       - ..:/app
+      - ../../vaulter:/vaulter:ro
+      - ../../packman:/packman:ro
       - ./docker/testbench.pgsql.yaml:/app/testbench.yaml:ro
     command: ["vendor/bin/testbench", "migrate", "--force"]
     depends_on:
@@ -40,6 +42,8 @@ services:
     working_dir: /app
     volumes:
       - ..:/app
+      - ../../vaulter:/vaulter:ro
+      - ../../packman:/packman:ro
       # The DB connection reaches the testbench-serve child only via testbench.yaml.
       - ./docker/testbench.pgsql.yaml:/app/testbench.yaml:ro
     ports:
@@ -88,6 +92,7 @@ services:
       VAULTER_BACKEND_URL: "http://laravel:8000"
     volumes:
       - ..:/app
+      - ../../vaulter:/vaulter:ro
     command: sh -c "npm install --no-audit --no-fund && npm run dev -- --host 0.0.0.0"
     ports:
       - "5273:5273"

@@ -18,9 +18,9 @@ const I17_STAND_SCENARIOS = [2, 3, 10];
 const I17_LANE_FILES = [
     'php' => '#^(tests|packages/documents/tests)/.+Test\.php$#',
     'serial' => '#^tests/Concurrency/.+RaceTest\.php$#',
-    'node' => '#^hub/test/[^/]+\.test\.js$#',
+    'node' => '#^packages/hub/test/[^/]+\.test\.js$#',
     'vitest' => '#^packages/vue-collaboration/tests/.+\.test\.ts$#',
-    'stand' => '#^hub/test/stand/[^/]+\.stand\.js$#',
+    'stand' => '#^packages/hub/test/stand/[^/]+\.stand\.js$#',
 ];
 
 /** @return array<string, array{lanes: list<string>, files: list<string>}> */
@@ -53,7 +53,7 @@ it('gives every scenario known lanes and files, each file existing', function ()
         foreach ($entry['files'] as $file) {
             $path = str_starts_with($file, 'packages/') ? $monorepo.'/'.$file : $root.'/'.$file;
 
-            if (str_starts_with($file, 'packages/') && !$inMonorepo) {
+            if (str_starts_with($file, 'packages/documents/') && !is_dir($monorepo.'/packages/documents')) {
                 continue;
             }
 
@@ -72,7 +72,7 @@ it('holds, for every lane of a scenario, a file of that lane\'s kind', function 
     }
 });
 
-it('puts the stand scenarios 2, 3 and 10 in hub/test/stand, and no other scenario on the stand lane', function (): void {
+it('puts the stand scenarios 2, 3 and 10 in packages/hub/test/stand, and no other scenario on the stand lane', function (): void {
     $map = i17Map();
     $onStand = [];
 
@@ -86,9 +86,9 @@ it('puts the stand scenarios 2, 3 and 10 in hub/test/stand, and no other scenari
     expect($onStand)->toBe(I17_STAND_SCENARIOS);
 
     foreach (I17_STAND_SCENARIOS as $number) {
-        $standFiles = array_filter($map[(string) $number]['files'], static fn (string $file): bool => str_starts_with($file, 'hub/test/stand/'));
+        $standFiles = array_filter($map[(string) $number]['files'], static fn (string $file): bool => str_starts_with($file, 'packages/hub/test/stand/'));
 
-        expect($standFiles)->not->toBe([], "scenario $number needs a file in hub/test/stand");
+        expect($standFiles)->not->toBe([], "scenario $number needs a file in packages/hub/test/stand");
     }
 });
 
@@ -101,8 +101,8 @@ it('leaves no stand file outside the map', function (): void {
     }
 
     $files = array_map(
-        static fn (string $path): string => 'hub/test/stand/'.basename($path),
-        glob(dirname(__DIR__, 2).'/hub/test/stand/*.stand.js') ?: [],
+        static fn (string $path): string => 'packages/hub/test/stand/'.basename($path),
+        glob(dirname(__DIR__, 4).'/packages/hub/test/stand/*.stand.js') ?: [],
     );
 
     expect($files)->not->toBe([]);

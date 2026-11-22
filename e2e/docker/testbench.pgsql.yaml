@@ -3,6 +3,10 @@
 # connection MUST travel through testbench.yaml `env` (not bare container env).
 providers:
   - Vaulter\VaulterServiceProvider
+  - Vaulter\Media\VaulterMediaServiceProvider
+  - Vaulter\Drive\VaulterDriveServiceProvider
+  - Vaulter\Documents\VaulterDocumentsServiceProvider
+  - Vaulter\Collaboration\VaulterCollaborationServiceProvider
   - Vaulter\Tests\E2E\E2eServiceProvider
 
 env:

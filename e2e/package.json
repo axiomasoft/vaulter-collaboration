@@ -12,13 +12,15 @@
     "test:headed": "playwright test --headed"
   },
   "dependencies": {
-    "@hocuspocus/provider": "^4.3",
-    "@tiptap/extension-collaboration": "^3.0.0",
-    "@tiptap/pm": "^3.0.0",
-    "@tiptap/starter-kit": "^3.0.0",
-    "@tiptap/vue-3": "^3.0.0",
-    "vue": "^3.5",
-    "yjs": "^13.6"
+    "@hocuspocus/provider": "^4.9.0",
+    "@tiptap/core": "^3.34.0",
+    "@tiptap/extension-collaboration": "^3.34.0",
+    "@tiptap/pm": "^3.34.0",
+    "@tiptap/starter-kit": "^3.34.0",
+    "@tiptap/vue-3": "^3.34.0",
+    "lib0": "^0.2.119",
+    "vue": "^3.5.42",
+    "yjs": "^13.6.33"
   },
   "devDependencies": {
     "@playwright/test": "^1.49",

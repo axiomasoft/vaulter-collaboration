@@ -11,7 +11,8 @@ export default defineConfig({
   plugins: [vue()],
   resolve: {
     alias: {
-      '@vaulter/vue': fileURLToPath(new URL('../packages/vue/src/index.ts', import.meta.url)),
+      '@vaulter/vue': fileURLToPath(new URL('../../vaulter/packages/vue/src/index.ts', import.meta.url)),
+      '@vaulter/vue-collaboration': fileURLToPath(new URL('../packages/vue-collaboration/src/index.ts', import.meta.url)),
     },
     // Один экземпляр yjs/vue на всё дерево (provider + редактор), иначе CRDT не сойдётся.
     dedupe: ['yjs', 'vue', '@tiptap/pm'],
