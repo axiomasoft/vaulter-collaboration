@@ -8,16 +8,19 @@ use Illuminate\Foundation\Application;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
 use LogicException;
-use Vaulter\Collaboration\Configuration\CollaborationOptions;
 use Vaulter\Collaboration\Contracts\HostUserResolver;
+use Vaulter\Collaboration\Persistence\CompactionLeases;
+use Vaulter\Collaboration\Persistence\LogTables;
 use Vaulter\Collaboration\Testing\Fixtures\FakeHostUserResolver;
 use Vaulter\Collaboration\Tests\Support\DocumentTestHelpers;
 use Vaulter\Documents\Actions\Documents\CreateDocumentAction;
 use Vaulter\Documents\Data\Documents\CreateDocumentInput;
 use Vaulter\Documents\Models\Documents\Document;
+use Vaulter\Documents\State\PendingMarker;
 use Vaulter\Drive\Access\Roles\RoleRegistry;
 use Vaulter\Drive\Testing\Access\AccessTestHelpers;
 use Vaulter\Drive\Testing\Drive\DriveTestHelpers;
+use Vaulter\Drive\Facades\Vaulter;
 
 /** Explicitly registered by the local Testbench stands. */
 final class E2eServiceProvider extends ServiceProvider
@@ -61,8 +64,10 @@ final class E2eServiceProvider extends ServiceProvider
                 content: DocumentTestHelpers::content('Hello from setup'),
                 parent: DriveTestHelpers::model($drive->root()),
             ));
-            AccessTestHelpers::grant($node, RoleRegistry::WRITER, subjectId: 1);
+            $writer = AccessTestHelpers::grant($node, RoleRegistry::WRITER, subjectId: 1);
             AccessTestHelpers::grant($node, RoleRegistry::READER, subjectId: 2);
+            AccessTestHelpers::grant($node, RoleRegistry::WRITER, subjectId: 3);
+            DriveTestHelpers::actor($drive, 4);
             $document = DocumentTestHelpers::document($node);
 
             return response()->json([
@@ -71,8 +76,50 @@ final class E2eServiceProvider extends ServiceProvider
                 'first_revision_id' => (string) $document->current_revision_id,
                 'writer_user' => 1,
                 'viewer_user' => 2,
-                'room' => app(CollaborationOptions::class)->room($node->drive_id, $node->getKey(), $document->collab_epoch),
+                'second_writer_user' => 3,
+                'owner_user' => 4,
+                'writer_grant_id' => (string) $writer->getKey(),
             ]);
+        });
+
+        Route::post('/e2e/document/{node}/revoke/{grant}', static function (string $node, string $grant) {
+            $model = DriveTestHelpers::model($node);
+            Vaulter::drive($model->storage()->firstOrFail())
+                ->actingAs(AccessTestHelpers::user(4))
+                ->access()->revoke($node, $grant);
+
+            return response()->noContent();
+        });
+
+        Route::get('/e2e/document/{node}/journal', static function (string $node) {
+            $document = Document::query()->where('node_id', $node)->firstOrFail();
+            $id = (string) $document->getKey();
+            $generation = $document->collab_epoch;
+            $log = app(LogTables::class);
+
+            return response()->json([
+                'generation' => $generation,
+                'head_seq' => $log->rows('collaboration_heads', $id, $generation)->value('head_seq'),
+                'checkpoint_seq' => $log->rows('collaboration_heads', $id, $generation)->value('checkpoint_seq'),
+                'pending_through_seq' => $document->syncState?->pending_through_seq,
+                'receipts' => $log->rows('collaboration_receipts', $id, $generation)->orderBy('seq')->get(['update_id', 'seq', 'sha256']),
+            ]);
+        });
+
+        Route::post('/e2e/document/{node}/drain', static function (string $node) {
+            $document = Document::query()->with('syncState')->where('node_id', $node)->firstOrFail();
+            $binding = $document->collaborationBinding();
+            $through = $document->syncState?->pending_through_seq;
+            abort_if($binding === null || $through === null, 409);
+            $requested = app(CompactionLeases::class)->requestDrain(new PendingMarker(
+                documentId: (string) $document->getKey(),
+                nodeId: $node,
+                binding: $binding,
+                throughSeq: $through,
+            ));
+            abort_unless($requested, 409);
+
+            return response()->noContent();
         });
 
         Route::get('/e2e/snapshot/{node}', static function (string $node) {

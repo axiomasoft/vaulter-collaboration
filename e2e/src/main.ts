@@ -4,7 +4,7 @@ import CollabEditor from './CollabEditor.vue'
 
 // Сцену поднимает Laravel (/e2e/setup); сюда node/user/force приходят в query.
 //   ?node=<id>  — документ-узел (одна комната на оба браузера)
-//   ?user=1|2   — актор (1=writer/Edit, 2=viewer/View) через заголовок X-E2E-User
+//   ?user=1|2|3 — актор (1 и 3 = writer/Edit, 2 = viewer/View) через X-E2E-User
 //   ?force=1    — принудительно editable (для проверки server-side readOnly: viewer
 //                 пытается писать, но хаб дропает его апдейты)
 const params = new URLSearchParams(location.search)

@@ -26,7 +26,7 @@ export type { StatusInput } from './status'
 
 // Composable
 export { CollaborationCancelledError, useCollaboration } from './useCollaboration'
-export type { EnvelopeSettings, UseCollaborationOptions, UseCollaborationReturn } from './useCollaboration'
+export type { CollaborationDraft, EnvelopeSettings, UseCollaborationOptions, UseCollaborationReturn } from './useCollaboration'
 
 // Session + transport
 export { fetchCollaborationSession } from './session'

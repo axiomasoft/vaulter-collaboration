@@ -34,7 +34,7 @@ it('refuses the publication of a lease the restore outlived and changes nothing'
     Compaction::append($this->node, 'u1');
     // A hub leased generation 0 and stalled; its lease ran out before the restore's drain leased it again.
     $stale = Compaction::leaseOf($this->node, 'hub-slow');
-    $this->travel(61)->seconds();
+    Compaction::expireLease($this->node);
     FakeHub::install();
     $this->documents->restore($this->id, $this->first);
     $restored = Hub::aggregate($this->node);

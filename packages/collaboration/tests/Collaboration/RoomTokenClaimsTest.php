@@ -74,7 +74,16 @@ it('mints iss, aud, nbf = iat, protocol yjs/2 and a kid header with the existing
         ->and(($this->verify)($minted['token'])->protocol)->toBe('yjs');
 });
 
-it('refuses to mint without a usable key set, an issuer or the yjs binding protocol', function (): void {
+it('binds a non-Yjs room credential to its adapter without admitting it on the Yjs hub', function (): void {
+    $tokens = app(RoomTokens::class);
+    $minted = $tokens->mint(new ActorRef(type: (new TestUser)->getMorphClass(), id: '1'), (string) $this->node->getKey(), (string) $this->node->drive_id, null, 0, 1, true, 'univer-sheets/1', 'sheets-update-v1', now()->getTimestamp() + 300);
+
+    expect(($this->verify)($minted['token']))->toBeNull()
+        ->and($tokens->verify($minted['token'], 'univer-sheets/2'))->toBeNull()
+        ->and($tokens->verify($minted['token'], 'univer-sheets/1')?->protocol)->toBe('univer-sheets');
+});
+
+it('refuses to mint without a usable key set, an issuer or a versioned protocol', function (): void {
     $mint = fn (string $protocol = 'yjs') => app(RoomTokens::class)->mint(new ActorRef(type: (new TestUser)->getMorphClass(), id: '1'), (string) $this->node->getKey(), (string) $this->node->drive_id, null, 0, 1, true, $protocol, 'yjs-update-v1', now()->getTimestamp() + 300);
 
     expect(fn () => $mint('other'))->toThrow(InvalidArgumentException::class);

@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Vaulter\Collaboration\Persistence;
 
-use Packman\Attributes\Internal;
+use Packman\Attributes\Api;
 use Vaulter\Documents\State\CollaborationStateBinding;
 
 /**
@@ -12,7 +12,7 @@ use Vaulter\Documents\State\CollaborationStateBinding;
  * the updates (C, H] applied, and its JSON projection. `$expectedCheckpointVersion` is the checkpoint version the lease
  * reported; `$coveredFrom` and `$coveredThrough` are C and H.
  */
-#[Internal]
+#[Api]
 final readonly class CheckpointRequest
 {
     /** @param array<string, mixed> $content */

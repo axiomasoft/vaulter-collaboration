@@ -15,7 +15,7 @@ final class E2eActingAs
     public function handle(Request $request, Closure $next): Response
     {
         $id = $request->header('X-E2E-User');
-        if ($id === '1' || $id === '2') {
+        if (in_array($id, ['1', '2', '3', '4'], true)) {
             $user = AccessTestHelpers::user((int) $id);
             Auth::setUser($user);
             $request->setUserResolver(static fn () => $user);

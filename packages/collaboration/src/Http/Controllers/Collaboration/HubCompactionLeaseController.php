@@ -79,7 +79,7 @@ final readonly class HubCompactionLeaseController
             'lease_token' => $lease->token,
             'lease_expires_at' => self::wire($lease->expiresAt),
             'checkpoint_seq' => $log->checkpointSeq,
-            'head_seq' => $log->headSeq,
+            'head_seq' => $lease->leaseThroughSeq,
             'checkpoint_version' => $lease->checkpointVersion,
             'type' => $log->type,
             'schema_version' => $log->binding->schemaVersion,

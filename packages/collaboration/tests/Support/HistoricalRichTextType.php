@@ -20,6 +20,8 @@ final class HistoricalRichTextType implements DocumentType, SupportsCollaboratio
 
     public string $format = 'yjs-update-v1';
 
+    public string $protocol = 'yjs';
+
     public function key(): string
     {
         return 'vaulter/rich-text';
@@ -72,7 +74,7 @@ final class HistoricalRichTextType implements DocumentType, SupportsCollaboratio
 
     public function collaborationProtocol(): string
     {
-        return 'yjs';
+        return $this->protocol;
     }
 
     public function collaborationStateFormat(): string

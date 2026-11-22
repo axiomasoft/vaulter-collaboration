@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace Vaulter\Collaboration\Persistence;
 
-use Illuminate\Support\Carbon;
 use Packman\Attributes\Internal;
+use Packman\Attributes\Spi;
+use Packman\Attributes\SpiKind;
 use Vaulter\Collaboration\Exceptions\CollaborationCheckpointConflictException;
 use Vaulter\Collaboration\Exceptions\CollaborationEpochMismatchException;
+use Vaulter\Collaboration\RoomOwnership;
 use Vaulter\Contracts\Observability\MetricsRecorder;
 use Vaulter\Database\VaulterDatabase;
 use Vaulter\Documents\Exceptions\DocumentContentDegradedException;
@@ -23,22 +25,23 @@ use Vaulter\Support\LoadTier;
  * The publication of a checkpoint the hub merged under a compaction lease, as one compare-and-set under the
  * document lock (CollaborativeState::lock()) and the head row FOR UPDATE: the generation is the document's current
  * one and open, the lease token is the one that holds it, the checkpoint the merge started from is still the last one
- * (CS == C, CV == the document's state version) and the covered range is in the log (C ≤ H ≤ HS). The documents
+ * (CS == C, CV == the document's state version) and the covered range is within the lease (C ≤ H ≤ lease_through_seq). The documents
  * contract then publishes the state and clears the marker only when H covers it.
  *
  * In the same transaction the payloads of the generation through H are deleted, the head moves to (H, the new state
  * version) and the lease is spent. Receipts stay until the prune of the retired generation. A publication that
  * loses changes and deletes nothing.
  */
-#[Internal]
+#[Spi(SpiKind::Call)]
 final readonly class Checkpoint
 {
+    #[Internal]
     public function __construct(
         private VaulterDatabase $database,
         private LogTables $log,
         private CollaborativeState $state,
         private MetricsRecorder $metrics,
-        private YjsStateCompatibility $compatibility,
+        private RoomOwnership $rooms,
     ) {}
 
     /**
@@ -65,23 +68,24 @@ final readonly class Checkpoint
     {
         return $this->database->transaction(function () use ($request): CheckpointResult {
             $locked = $this->state->lock($request->nodeId);
-            if ($request->generation !== $locked->generation) {
-                throw new CollaborationEpochMismatchException(expected: $request->generation, actual: $locked->generation);
-            }
+            $this->rooms->assertGeneration($locked, $request->generation);
             if ($locked->binding === null || !$request->binding->sameAs($locked->binding) || $request->documentType !== $locked->type) {
                 throw new CollaborationCheckpointConflictException(CollaborationCheckpointConflictException::VERSION);
             }
-            $this->compatibility->assert($locked->type, $locked->binding, $locked->collabState !== null);
-            $now = Carbon::now();
+            $protocol = $this->rooms->protocol($locked);
             $head = $this->log->lockHead($locked->documentId, $locked->generation);
             if ($head?->retiredAt !== null) {
                 throw new CollaborationEpochMismatchException(expected: $request->generation, actual: $locked->generation);
             }
-            if ($head === null || !$head->heldBy($request->leaseToken, $now)
+            $now = $this->log->leaseClock();
+            if ($head === null || $head->leaseThroughSeq === null || !$head->heldBy($request->leaseToken, $now)
                 || !LeaseBinding::matches($request->leaseToken, $locked->documentId, $request->documentType, $request->binding, $head->checkpointVersion)) {
                 throw new CollaborationCheckpointConflictException(CollaborationCheckpointConflictException::LEASE);
             }
-            if ($request->coveredFrom !== $head->checkpointSeq || $request->coveredThrough < $request->coveredFrom || $request->coveredThrough > $head->headSeq) {
+            if ($head->protocol !== $protocol) {
+                throw new CollaborationCheckpointConflictException(CollaborationCheckpointConflictException::VERSION);
+            }
+            if ($request->coveredFrom !== $head->checkpointSeq || $request->coveredThrough < $request->coveredFrom || $request->coveredThrough > $head->leaseThroughSeq) {
                 throw new CollaborationCheckpointConflictException(CollaborationCheckpointConflictException::COVERAGE);
             }
             if ($request->expectedCheckpointVersion !== $head->checkpointVersion || $head->checkpointVersion !== $locked->stateVersion) {
@@ -110,6 +114,7 @@ final readonly class Checkpoint
                 'lease_token' => null,
                 'lease_owner' => null,
                 'lease_expires_at' => null,
+                'lease_through_seq' => null,
                 // A drain is answered once the marker is gone; edits committed past H keep it asked for.
                 ...($markerCleared ? ['drain_requested_at' => null] : []),
                 'updated_at' => $now,

@@ -4,10 +4,10 @@ declare(strict_types=1);
 
 namespace Vaulter\Collaboration\Persistence;
 
-use Packman\Attributes\Internal;
+use Packman\Attributes\Api;
 
 /** The committed receipt row of one update id of a generation. */
-#[Internal]
+#[Api]
 final readonly class Receipt
 {
     public function __construct(

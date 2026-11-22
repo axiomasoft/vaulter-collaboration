@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Vaulter\Collaboration\Tests\Support;
 
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use LogicException;
@@ -127,6 +128,18 @@ final class Compaction
         $heads = $tables->heads($tables->rows('collaboration_heads', (string) Hub::aggregate($node)->getKey(), $generation ?? Hub::aggregate($node)->collab_epoch));
 
         return $heads[0] ?? null;
+    }
+
+    /** Set the expiry as if the lease clock reached the deadline. PostgreSQL ignores the PHP test clock. */
+    public static function expireLease(Node $node): Carbon
+    {
+        $document = Hub::aggregate($node);
+        $log = app(LogTables::class);
+        $expiry = $log->leaseClock()->startOfSecond();
+        $log->rows('collaboration_heads', (string) $document->getKey(), $document->collab_epoch)
+            ->update(['lease_expires_at' => $expiry]);
+
+        return $expiry;
     }
 
     /** @return array{int|null, int|null} the pending marker of the document */

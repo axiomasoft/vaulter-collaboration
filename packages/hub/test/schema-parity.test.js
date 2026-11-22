@@ -85,3 +85,20 @@ test('the hub projection of a document with a link, an image and a table only ca
     assert.deepEqual(keys.filter((key) => !(fixture['vaulter/rich-text'].attributes[type] ?? []).includes(key)), [], type)
   }
 })
+
+test('the hub preserves rich-text block IDs when seeding and projecting Yjs state', () => {
+  const content = {
+    type: 'doc',
+    content: [
+      { type: 'heading', attrs: { level: 2, blockId: 'blk_heading' }, content: [{ type: 'text', text: 'Title' }] },
+      { type: 'paragraph', attrs: { blockId: 'blk_paragraph' }, content: [{ type: 'text', text: 'Body' }] },
+    ],
+  }
+  const document = TiptapTransformer.toYdoc(content, FIELD, extensionsFor('vaulter/rich-text'))
+
+  try {
+    assert.deepEqual(TiptapTransformer.fromYdoc(document, FIELD), content)
+  } finally {
+    document.destroy()
+  }
+})

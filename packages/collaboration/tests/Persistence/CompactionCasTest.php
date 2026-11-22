@@ -114,7 +114,7 @@ it('lets only one of two hubs publish (C, H) when the first lease expired under 
     Compaction::append($this->node, 'u1', seed: true);
     Compaction::append($this->node, 'u2');
     $slow = Compaction::leaseOf($this->node, 'hub-a');
-    $this->travel(61)->seconds();
+    Compaction::expireLease($this->node);
     $fast = Compaction::leaseOf($this->node, 'hub-b');
 
     Compaction::publish($fast);
@@ -154,7 +154,7 @@ it('refuses a publication under an expired lease', function (): void {
     Compaction::append($this->node, 'u1', seed: true);
     $lease = Compaction::leaseOf($this->node);
     $before = casState($this->node);
-    $this->travel(61)->seconds();
+    Compaction::expireLease($this->node);
 
     expect(fn (): CheckpointResult => Compaction::publish($lease))->toThrow(CollaborationCheckpointConflictException::class)
         ->and(Compaction::seqs($this->node))->toBe([1])

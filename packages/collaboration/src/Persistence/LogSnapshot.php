@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Vaulter\Collaboration\Persistence;
 
-use Packman\Attributes\Internal;
+use Packman\Attributes\Api;
 use Vaulter\Documents\State\CollaborationStateBinding;
 
 /**
@@ -13,7 +13,7 @@ use Vaulter\Documents\State\CollaborationStateBinding;
  * committed updates (C, H] in order, their payload base64 as stored. The type, schema version and stored JSON come from
  * the same locked row as the state version, so a seed before the first checkpoint matches the version it is reported with.
  */
-#[Internal]
+#[Api]
 final readonly class LogSnapshot
 {
     /**

@@ -28,8 +28,8 @@ final readonly class LogTables
 
     /** The head columns a {@see Head} is read from. */
     private const array HEAD_COLUMNS = [
-        'document_id', 'generation', 'head_seq', 'checkpoint_seq', 'checkpoint_version',
-        'lease_token', 'lease_owner', 'lease_expires_at', 'drain_requested_at', 'retired_at',
+        'document_id', 'generation', 'protocol', 'head_seq', 'checkpoint_seq', 'checkpoint_version',
+        'lease_token', 'lease_owner', 'lease_expires_at', 'lease_through_seq', 'drain_requested_at', 'retired_at',
     ];
 
     public function __construct(
@@ -59,6 +59,18 @@ final readonly class LogTables
         $row = $this->rows('collaboration_heads', $documentId, $generation)->lockForUpdate()->first(self::HEAD_COLUMNS);
 
         return $row === null ? null : self::head($row);
+    }
+
+    /** Sample the writer's clock after acquiring the head lock when inspecting a lease. */
+    public function leaseClock(): Carbon
+    {
+        $connection = $this->database->connection();
+        if ($connection->getDriverName() !== 'pgsql') {
+            return Carbon::now('UTC');
+        }
+        $now = $connection->scalar("select clock_timestamp() at time zone 'UTC'", useReadPdo: false);
+
+        return self::time($now, 'UTC') ?? throw new LogicException('[Vaulter] The lease clock returned no timestamp.');
     }
 
     /**
@@ -105,12 +117,14 @@ final readonly class LogTables
         return new Head(
             documentId: Identity::stringify($row->document_id),
             generation: self::int($row->generation),
+            protocol: is_string($row->protocol) ? $row->protocol : throw new LogicException('[Vaulter] A collaboration head has no protocol.'),
             headSeq: self::int($row->head_seq),
             checkpointSeq: self::int($row->checkpoint_seq),
             checkpointVersion: self::int($row->checkpoint_version),
             leaseToken: is_string($row->lease_token) ? $row->lease_token : null,
             leaseOwner: is_string($row->lease_owner) ? $row->lease_owner : null,
-            leaseExpiresAt: self::time($row->lease_expires_at),
+            leaseExpiresAt: self::time($row->lease_expires_at, 'UTC'),
+            leaseThroughSeq: $row->lease_through_seq === null ? null : self::int($row->lease_through_seq),
             drainRequestedAt: self::time($row->drain_requested_at),
             retiredAt: self::time($row->retired_at),
         );
@@ -123,8 +137,8 @@ final readonly class LogTables
     }
 
     /** A timestamp column as the driver returns it. */
-    public static function time(mixed $value): ?Carbon
+    public static function time(mixed $value, ?string $timezone = null): ?Carbon
     {
-        return is_string($value) && $value !== '' ? Carbon::parse($value) : null;
+        return is_string($value) && $value !== '' ? Carbon::parse($value, $timezone) : null;
     }
 }

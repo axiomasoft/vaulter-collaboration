@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { Editor, EditorContent } from '@tiptap/vue-3'
 import StarterKit from '@tiptap/starter-kit'
 import Collaboration from '@tiptap/extension-collaboration'
@@ -17,40 +17,54 @@ const adapter = createCollaborationAdapter({ client })
 const collab = shallowRef<CollaborationHandle | null>(null)
 
 const editor = shallowRef<Editor | null>(null)
-const status = ref('connecting')
+let editorDoc: YDoc | undefined
 const error = ref('')
+const status = computed(() => {
+  if (error.value) return 'error'
+  if (!collab.value?.connected?.value) return 'connecting'
+
+  return collab.value.readOnly.value ? 'connected:readonly' : 'connected:writable'
+})
 
 onMounted(async () => {
   try {
     collab.value = await adapter.open(props.nodeId, { client })
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
-    status.value = 'error'
     return
   }
 })
 
 watch(
-  () => collab.value?.connected?.value,
-  (connected) => {
-    const current = collab.value
-    if (!connected || editor.value || !current) return
+  () => [collab.value?.doc, collab.value?.connected?.value, collab.value?.readOnly.value] as const,
+  ([doc, connected, readOnly]) => {
+    if (doc !== editorDoc) {
+      editor.value?.destroy()
+      editor.value = null
+      editorDoc = doc as YDoc | undefined
+    }
+    if (!connected || !editorDoc) {
+      editor.value?.setEditable(false)
+      return
+    }
 
     // Wait for the hub's seed before attaching TipTap's collaboration extension.
     // Боевое поведение: editable = !readOnly. forceEditable обходит это, чтобы тест мог
     // заставить viewer'а ПОПЫТАТЬСЯ писать и убедиться, что сервер дропает его апдейты.
-    const editable = props.forceEditable ? true : !current.readOnly.value
+    const editable = props.forceEditable || !readOnly
+    if (editor.value) {
+      editor.value.setEditable(editable)
+      return
+    }
 
     editor.value = new Editor({
       extensions: [
         // history off — историю держит Yjs (UndoManager), иначе конфликт с CRDT.
         StarterKit.configure({ undoRedo: false }),
-        Collaboration.configure({ document: current.doc as YDoc }),
+        Collaboration.configure({ document: editorDoc }),
       ],
       editable,
     })
-
-    status.value = current.readOnly.value ? 'connected:readonly' : 'connected:writable'
   },
 )
 
@@ -65,6 +79,7 @@ onBeforeUnmount(() => {
     <h2>Vaulter collab e2e — node {{ props.nodeId }}</h2>
     <p>status: <b data-testid="status">{{ status }}</b></p>
     <p>access: <b data-testid="readonly">{{ collab?.readOnly?.value ? 'read-only' : 'writable' }}</b></p>
+    <p>save: <b data-testid="save-status">{{ collab?.status.value ?? 'pending' }}</b></p>
     <p>peers: <b data-testid="peers">{{ collab?.collaborators?.value.length ?? 0 }}</b></p>
     <p v-if="error" data-testid="error" class="error">{{ error }}</p>
     <EditorContent

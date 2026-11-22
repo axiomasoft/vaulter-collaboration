@@ -25,13 +25,12 @@ docker compose down
 The browser uses `http://localhost:5273`. The Laravel and WebSocket ports are `8000` and `1234`.
 Set `VAULTER_BACKEND_URL` for the smoke or Playwright runner when Laravel uses a different URL.
 The Compose stack runs migrations in a one-shot service before starting Laravel.
+Playwright kills and starts the Compose Hub while testing restart and lost acknowledgements. If the stack uses a custom project name, pass the same `COMPOSE_PROJECT_NAME` to the runner.
 
 ## Test fixtures
 
 - `docker/testbench.pgsql.yaml` configures the Testbench host and its stand-only webhook secret.
-- `php/E2eServiceProvider.php` enables collaboration and provides `/e2e/setup`,
-  `/e2e/snapshot/{node}`, and `/e2e/document/{node}`. Each setup creates a fresh document
-  with writer and viewer grants.
-- `php/E2eActingAs.php` selects the writer or viewer from `X-E2E-User` on the local host.
+- `php/E2eServiceProvider.php` creates a document with two writers, a viewer, and an owner. The test routes expose receipts and checkpoint positions, request a drain, and revoke a writer's grant through the owner.
+- `php/E2eActingAs.php` selects the fixture principal from `X-E2E-User` on the local host.
 - `src/CollabEditor.vue` binds TipTap to the Y.Doc supplied by `@vaulter/vue-collaboration`.
 - `scripts/headless-smoke.mjs` and `tests/collab.spec.ts` exercise the live stack.

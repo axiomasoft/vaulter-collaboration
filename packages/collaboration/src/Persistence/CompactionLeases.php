@@ -9,7 +9,10 @@ use Generator;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Carbon;
 use Packman\Attributes\Internal;
+use Packman\Attributes\Spi;
+use Packman\Attributes\SpiKind;
 use Vaulter\Collaboration\Configuration\CollaborationOptions;
+use Vaulter\Collaboration\RoomOwnership;
 use Vaulter\Database\VaulterDatabase;
 use Vaulter\Documents\Exceptions\NotADocumentException;
 use Vaulter\Documents\State\CollaborativeState;
@@ -27,7 +30,7 @@ use Vaulter\Support\Identity;
  * (the documents' pending marker) or a drain request. The lease is granted, and the checkpoint and tail read, in one
  * transaction under the document lock (CollaborativeState::lock()) and the head row FOR UPDATE.
  */
-#[Internal]
+#[Spi(SpiKind::Call)]
 final readonly class CompactionLeases
 {
     /** The most generations one lease call hands out. */
@@ -39,6 +42,7 @@ final readonly class CompactionLeases
     /** The pending markers read per transaction while a report counts. */
     private const int PAGE = 100;
 
+    #[Internal]
     public function __construct(
         private VaulterDatabase $database,
         private LogTables $log,
@@ -57,11 +61,11 @@ final readonly class CompactionLeases
      *
      * @return list<CompactionLease>
      */
-    public function grant(string $hubId, int $max): array
+    public function grant(string $hubId, int $max, string $protocol = CollaborationOptions::JWT_PROTOCOL): array
     {
         $leases = [];
         $room = $this->config->maxStateBytes();
-        foreach ($this->candidates() as $candidate) {
+        foreach ($this->candidates($protocol) as $candidate) {
             $lease = $this->lease($candidate, $hubId, $leases === [] ? null : $room);
             if ($lease === false) {
                 break;
@@ -89,6 +93,7 @@ final readonly class CompactionLeases
      *
      * @return array{total: int, generations: list<array{document: string, generation: int}>}
      */
+    #[Internal]
     public function pending(int $limit = self::REPORTED): array
     {
         $now = Carbon::now();
@@ -148,14 +153,15 @@ final readonly class CompactionLeases
      *
      * @return Generator<int, Head>
      */
-    private function candidates(): Generator
+    private function candidates(string $protocol): Generator
     {
         $now = Carbon::now();
-        foreach ($this->scan(static fn (Builder $query): Builder => $query->whereNotNull('drain_requested_at'), $now) as $head) {
+        $leaseNow = $this->log->leaseClock();
+        foreach ($this->scan(static fn (Builder $query): Builder => $query->whereNotNull('drain_requested_at'), $leaseNow, $protocol) as $head) {
             yield $head;
         }
         $pending = static fn (Builder $query): Builder => $query->whereNull('drain_requested_at')->whereColumn('head_seq', '>', 'checkpoint_seq');
-        foreach ($this->scan($pending, $now) as $head) {
+        foreach ($this->scan($pending, $leaseNow, $protocol) as $head) {
             if ($this->due($head, $now)) {
                 yield $head;
             }
@@ -168,10 +174,11 @@ final readonly class CompactionLeases
      * @param  Closure(Builder): Builder $filter
      * @return Generator<int, Head>
      */
-    private function scan(Closure $filter, Carbon $now): Generator
+    private function scan(Closure $filter, Carbon $now, string $protocol): Generator
     {
         return $this->log->scan(static fn (Builder $query): Builder => $filter($query)
             ->whereNull('retired_at')
+            ->where('protocol', $protocol)
             ->where(static fn (Builder $query): Builder => $query->whereNull('lease_expires_at')->orWhere('lease_expires_at', '<=', $now)));
     }
 
@@ -207,12 +214,13 @@ final readonly class CompactionLeases
                 return null;
             }
             // A generation a restore closed while the module was off is never compacted: the prune retires it.
-            if ($locked->binding?->protocol !== 'yjs' || $locked->generation !== $candidate->generation) {
+            if ($locked->binding === null || !str_starts_with($candidate->protocol, $locked->binding->protocol.'/')
+                || $locked->generation !== $candidate->generation) {
                 return null;
             }
-            $now = Carbon::now();
             $head = $this->log->lockHead($locked->documentId, $locked->generation);
-            if ($head === null || $head->retiredAt !== null || $head->leased($now)) {
+            if ($head === null || $head->retiredAt !== null || $head->protocol !== $candidate->protocol
+                || $head->leased($this->log->leaseClock())) {
                 return null;
             }
             $pending = $locked->pending !== null && $locked->pending->generation === $locked->generation;
@@ -227,19 +235,23 @@ final readonly class CompactionLeases
             $snapshot = $this->updates->read($locked);
             $token = LeaseBinding::issue($locked->documentId, $snapshot->type, $snapshot->binding, $head->checkpointVersion);
             // The column keeps whole seconds: the lease ends at the second it reports.
+            $now = $this->log->leaseClock();
             $expiresAt = $now->copy()->addSeconds($this->config->compactionLeaseTtl())->startOfSecond();
             $this->log->rows('collaboration_heads', $locked->documentId, $locked->generation)->update([
                 'lease_token' => $token,
                 'lease_owner' => $hubId,
                 'lease_expires_at' => $expiresAt,
+                'lease_through_seq' => $head->headSeq,
                 'updated_at' => $now,
             ]);
 
             return new CompactionLease(
                 nodeId: $locked->nodeId,
+                protocol: $head->protocol,
                 token: $token,
                 expiresAt: $expiresAt,
                 checkpointVersion: $head->checkpointVersion,
+                leaseThroughSeq: $head->headSeq,
                 log: $snapshot,
             );
         });

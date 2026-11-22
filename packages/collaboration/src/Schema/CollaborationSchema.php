@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Vaulter\Collaboration\Schema;
 
+use Illuminate\Database\Query\Builder;
 use Illuminate\Database\Schema\Blueprint;
 use InvalidArgumentException;
 use Packman\Attributes\Internal;
@@ -63,6 +64,91 @@ final class CollaborationSchema implements ModuleSchema
     public function drop(string $entity): void
     {
         $this->helpers->schemaConnection()->dropIfExists($this->helpers->table($entity));
+    }
+
+    public function boundCompactionLeases(): void
+    {
+        $db = $this->helpers->dbConnection();
+        $driver = $db->getDriverName();
+        $name = $this->helpers->table('collaboration_heads');
+        $table = $db->getQueryGrammar()->wrapTable($name);
+        $protocol = $db->getQueryGrammar()->wrap($name.'_protocol_check');
+        $lease = $db->getQueryGrammar()->wrap($name.'_compaction_lease');
+        $checkpoint = $db->getQueryGrammar()->wrap($name.'_checkpoint_seq_check');
+        $covered = $driver === 'sqlite' ? "typeof(lease_through_seq) = 'integer' AND " : '';
+        $leaseCheck = "CHECK (
+            (lease_token IS NULL AND lease_owner IS NULL AND lease_expires_at IS NULL AND lease_through_seq IS NULL)
+            OR (lease_token IS NOT NULL AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL
+                AND lease_through_seq IS NOT NULL AND {$covered}lease_through_seq BETWEEN checkpoint_seq AND head_seq)
+        )";
+
+        if ($driver === 'pgsql') {
+            $db->statement("SET LOCAL lock_timeout = '2s'");
+            $db->statement("SET LOCAL statement_timeout = '15s'");
+            $db->statement("LOCK TABLE {$table} IN SHARE ROW EXCLUSIVE MODE");
+            // PostgreSQL named the original counter's inline CHECK after its column.
+            $db->statement("ALTER TABLE {$table} DROP CONSTRAINT {$checkpoint}");
+        }
+        // A lease issued by the old schema has no provable upper bound. Its log and marker stay available to re-lease.
+        $db->table($name)->where(static fn (Builder $query): Builder => $query->whereNotNull('lease_token')
+            ->orWhereNotNull('lease_owner')->orWhereNotNull('lease_expires_at'))->update([
+                'lease_token' => null,
+                'lease_owner' => null,
+                'lease_expires_at' => null,
+            ]);
+
+        if ($driver === 'sqlite') {
+            $db->statement("ALTER TABLE {$table} ADD COLUMN protocol VARCHAR(64) NOT NULL DEFAULT 'yjs/2'
+                CONSTRAINT {$protocol} CHECK (length(trim(protocol, char(9,10,11,12,13,32))) BETWEEN 1 AND 64)");
+            $db->statement("ALTER TABLE {$table} ADD COLUMN lease_through_seq BIGINT
+                CONSTRAINT {$lease} {$leaseCheck} CONSTRAINT {$checkpoint} CHECK (checkpoint_seq BETWEEN 0 AND head_seq)");
+
+            return;
+        }
+
+        $protocolCheck = $driver === 'pgsql' ? "protocol ~ '[^[:space:]]'" : "protocol REGEXP '[^[:space:]]'";
+        $validation = $driver === 'pgsql' ? ' NOT VALID' : '';
+        $db->statement("ALTER TABLE {$table}
+            ADD COLUMN protocol VARCHAR(64) NOT NULL DEFAULT 'yjs/2',
+            ADD COLUMN lease_through_seq BIGINT NULL,
+            ADD CONSTRAINT {$protocol} CHECK ({$protocolCheck}){$validation},
+            ADD CONSTRAINT {$lease} {$leaseCheck}{$validation},
+            ADD CONSTRAINT {$checkpoint} CHECK (checkpoint_seq BETWEEN 0 AND head_seq){$validation}");
+        if ($driver === 'pgsql') {
+            $db->statement("ALTER TABLE {$table} VALIDATE CONSTRAINT {$protocol}, VALIDATE CONSTRAINT {$lease}, VALIDATE CONSTRAINT {$checkpoint}");
+        }
+    }
+
+    public function dropCompactionLeaseBound(): void
+    {
+        $db = $this->helpers->dbConnection();
+        $driver = $db->getDriverName();
+        $name = $this->helpers->table('collaboration_heads');
+        $table = $db->getQueryGrammar()->wrapTable($name);
+
+        if ($driver === 'pgsql') {
+            $db->statement("SET LOCAL lock_timeout = '2s'");
+            $db->statement("SET LOCAL statement_timeout = '15s'");
+        }
+        if ($driver !== 'sqlite') {
+            $drop = $driver === 'mysql' ? 'DROP CHECK' : 'DROP CONSTRAINT';
+            $constraints = array_map(
+                fn (string $suffix): string => $drop.' '.$db->getQueryGrammar()->wrap($name.'_'.$suffix),
+                ['protocol_check', 'compaction_lease', 'checkpoint_seq_check'],
+            );
+            $db->statement("ALTER TABLE {$table} ".implode(', ', $constraints));
+        }
+        $db->table($name)->whereNotNull('lease_token')->update([
+            'lease_token' => null,
+            'lease_owner' => null,
+            'lease_expires_at' => null,
+            'lease_through_seq' => null,
+        ]);
+        if ($driver === 'pgsql') {
+            $checkpoint = $db->getQueryGrammar()->wrap($name.'_checkpoint_seq_check');
+            $db->statement("ALTER TABLE {$table} ADD CONSTRAINT {$checkpoint} CHECK (checkpoint_seq >= 0)");
+        }
+        $this->helpers->schemaConnection()->table($name, static fn (Blueprint $table) => $table->dropColumn(['lease_through_seq', 'protocol']));
     }
 
     /**

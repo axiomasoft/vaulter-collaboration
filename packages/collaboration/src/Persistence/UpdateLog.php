@@ -9,13 +9,17 @@ use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Carbon;
 use LogicException;
 use Packman\Attributes\Internal;
+use Packman\Attributes\Spi;
+use Packman\Attributes\SpiKind;
 use Vaulter\Collaboration\Drain\DrainState;
 use Vaulter\Collaboration\Exceptions\CollaborationDrainingException;
 use Vaulter\Collaboration\Exceptions\CollaborationEpochMismatchException;
 use Vaulter\Collaboration\Exceptions\CollaborationSeedConflictException;
 use Vaulter\Collaboration\Exceptions\CollaborationUpdateMismatchException;
+use Vaulter\Collaboration\RoomOwnership;
 use Vaulter\Configuration\DatabaseOptions;
 use Vaulter\Database\VaulterDatabase;
+use Vaulter\Documents\Exceptions\CollaborationUnavailableException;
 use Vaulter\Documents\State\CollaborativeState;
 use Vaulter\Documents\State\LockedDocumentState;
 use Vaulter\Drive\Enums\Access\Ability;
@@ -34,19 +38,21 @@ use Vaulter\Support\Identity;
  *
  * The log is written only here, and v_documents never: the marker goes through the documents state contract.
  */
-#[Internal]
+#[Spi(SpiKind::Call)]
 final readonly class UpdateLog
 {
+    #[Internal]
     public function __construct(
         private VaulterDatabase $database,
         private DatabaseOptions $tables,
         private CollaborativeState $state,
         private DrainState $draining,
-        private YjsStateCompatibility $compatibility,
+        private RoomOwnership $rooms,
     ) {}
 
     /**
      * @param (Closure(LockedDocumentState): void)|null $authorize
+     *   User-facing adapters authorize against the locked document here on every attempt, including receipt replay.
      *
      * @throws CollaborationDrainingException       a managed disable drains the log; nothing was written
      * @throws NodeNotFoundException                the node is gone or in the trash, or its drive is being deleted
@@ -66,13 +72,13 @@ final readonly class UpdateLog
 
         return $this->database->transaction(function () use ($nodeId, $update, $sha256, $authorize): AppendResult {
             $locked = $this->state->lock($nodeId);
-            $authorize?->__invoke();
-            $this->compatibility->assert($locked->type, $locked->binding, $locked->collabState !== null);
+            $authorize?->__invoke($locked);
+            $protocol = $this->rooms->protocol($locked);
             if ($locked->trashed) {
                 throw NodeNotFoundException::forId($nodeId);
             }
-            $this->fence($locked, $update->generation);
-            $head = $this->lockHead($locked);
+            $this->rooms->assertGeneration($locked, $update->generation);
+            $head = $this->lockHead($locked, $protocol);
 
             $receipt = $this->findReceipt($locked->documentId, $update->generation, $update->updateId, lock: true);
             if ($receipt instanceof Receipt) {
@@ -132,7 +138,7 @@ final readonly class UpdateLog
             if ($locked->trashed) {
                 throw NodeNotFoundException::forId($nodeId);
             }
-            $this->fence($locked, $generation);
+            $this->rooms->assertGeneration($locked, $generation);
 
             return $this->read($locked);
         });
@@ -144,10 +150,10 @@ final readonly class UpdateLog
      *
      * @throws CollaborationEpochMismatchException the generation was retired
      */
+    #[Internal]
     public function read(LockedDocumentState $locked): LogSnapshot
     {
-        $this->compatibility->assert($locked->type, $locked->binding, $locked->collabState !== null);
-        $head = $this->lockHead($locked, create: false);
+        $head = $this->lockHead($locked, $this->rooms->protocol($locked), create: false);
         // The transaction began with a plain read (the node, in lock()): on MySQL (REPEATABLE READ) a plain read here
         // would answer from that older snapshot and miss an append committed since, while the head FOR UPDATE sees
         // it. A locking read sees the committed rows, as every read after the lock does on PostgreSQL
@@ -249,23 +255,16 @@ final readonly class UpdateLog
         }
     }
 
-    /** Under the document lock: only the document's current generation takes writes, and a retired one never again. */
-    private function fence(LockedDocumentState $locked, int $generation): void
-    {
-        if ($generation !== $locked->generation) {
-            throw new CollaborationEpochMismatchException(expected: $generation, actual: $locked->generation);
-        }
-    }
-
     /**
      * The head row of the locked document's generation FOR UPDATE. The first append of a generation creates it under
      * the document lock (which keeps a second creator out); a read without one sees an empty log.
      *
      * @return array{head_seq: int, checkpoint_seq: int}
      */
-    private function lockHead(LockedDocumentState $locked, bool $create = true): array
+    private function lockHead(LockedDocumentState $locked, string $protocol, bool $create = true): array
     {
-        $row = $this->heads($locked->documentId, $locked->generation)->lockForUpdate()->first(['head_seq', 'checkpoint_seq', 'retired_at']);
+        $columns = ['head_seq', 'checkpoint_seq', 'retired_at', 'protocol'];
+        $row = $this->heads($locked->documentId, $locked->generation)->lockForUpdate()->first($columns);
         if ($row === null && !$create) {
             return ['head_seq' => 0, 'checkpoint_seq' => 0];
         }
@@ -274,13 +273,14 @@ final readonly class UpdateLog
             $this->table('collaboration_heads')->insert([
                 'document_id' => Identity::key($locked->documentId),
                 'generation' => $locked->generation,
+                'protocol' => $protocol,
                 'head_seq' => 0,
                 'checkpoint_seq' => 0,
                 'checkpoint_version' => $locked->stateVersion,
                 'created_at' => $now,
                 'updated_at' => $now,
             ]);
-            $row = $this->heads($locked->documentId, $locked->generation)->lockForUpdate()->first(['head_seq', 'checkpoint_seq', 'retired_at']);
+            $row = $this->heads($locked->documentId, $locked->generation)->lockForUpdate()->first($columns);
             if ($row === null) {
                 throw new LogicException('[Vaulter] The collaboration head was not created.');
             }
@@ -288,6 +288,9 @@ final readonly class UpdateLog
         // A closed generation refuses every write, before and after its rows are pruned.
         if ($row->retired_at !== null) {
             throw new CollaborationEpochMismatchException(expected: $locked->generation, actual: $locked->generation);
+        }
+        if ($row->protocol !== $protocol) {
+            throw new CollaborationUnavailableException('unsupported_binding', $locked->type);
         }
 
         return ['head_seq' => self::int($row->head_seq), 'checkpoint_seq' => self::int($row->checkpoint_seq)];

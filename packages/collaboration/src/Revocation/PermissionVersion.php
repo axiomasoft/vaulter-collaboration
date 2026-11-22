@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Vaulter\Collaboration\Revocation;
 
-use Packman\Attributes\Internal;
+use Packman\Attributes\Api;
 
 /**
  * The pair of permission versions a room token was issued under, or the current pair of its drive: the version
@@ -12,7 +12,7 @@ use Packman\Attributes\Internal;
  * one predates a change of rights; the rights are checked on every call anyway, the pair only tells the hub its
  * session is stale.
  */
-#[Internal]
+#[Api]
 final readonly class PermissionVersion
 {
     public function __construct(

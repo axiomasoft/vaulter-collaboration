@@ -2,6 +2,7 @@ import crypto from 'node:crypto'
 import * as Y from 'yjs'
 import { HocuspocusProvider } from '@hocuspocus/provider'
 import { TiptapTransformer } from '@hocuspocus/transformer'
+import { extensionsFor } from '../../src/schema.js'
 
 // The client side of the real-process scenarios (test/e2e, test/stand): a Laravel host behind
 // `testbench serve`, a hub on a WebSocket port, nothing stubbed. It speaks protocol 2 as the browser
@@ -99,6 +100,34 @@ function sha256Hex(bytes) {
   return crypto.createHash('sha256').update(bytes).digest('hex')
 }
 
+function pushParagraph(doc, words) {
+  const paragraph = new Y.XmlElement('paragraph')
+  paragraph.insert(0, [new Y.XmlText(words)])
+  doc.getXmlFragment('default').push([paragraph])
+}
+
+/** Build real binary journal entries without a running WebSocket hub. */
+export function journalWriter(content, type) {
+  const seed = TiptapTransformer.toYdoc(content, 'default', extensionsFor(type))
+  // Keep the editable document and the XML node constructors on the same Yjs instance.
+  const doc = new Y.Doc()
+  let update = Y.encodeStateAsUpdate(seed)
+  seed.destroy()
+  Y.applyUpdate(doc, update)
+  doc.on('update', (bytes) => { update = bytes })
+
+  return {
+    entry(words) {
+      if (words !== undefined) {
+        pushParagraph(doc, words)
+      }
+
+      return { updateId: crypto.randomUUID(), sha256: sha256Hex(update), payload: Buffer.from(update).toString('base64') }
+    },
+    destroy: () => doc.destroy(),
+  }
+}
+
 /**
  * Connect a client to one hub on a room session. `client.edit(words)` types a paragraph and sends its
  * envelope; `client.acks` (id → seq) holds what the hub committed, `client.nacks` what it refused.
@@ -118,13 +147,10 @@ export async function connect(hub, descriptor, registry = []) {
     statuses: [],
     sent: [],
     edit(words) {
-      const paragraph = new Y.XmlElement('paragraph')
-      paragraph.insert(0, [new Y.XmlText(words)])
-
       let update = null
       const capture = (changed) => { update = changed }
       doc.on('update', capture)
-      doc.getXmlFragment('default').push([paragraph])
+      pushParagraph(doc, words)
       doc.off('update', capture)
 
       const id = crypto.randomUUID()

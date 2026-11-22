@@ -9,6 +9,8 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 use Packman\Attributes\Internal;
+use Packman\Attributes\Spi;
+use Packman\Attributes\SpiKind;
 use Vaulter\Collaboration\Configuration\CollaborationOptions;
 use Vaulter\Collaboration\Exceptions\CollaborationConfigException;
 use Vaulter\Collaboration\Revocation\PermissionVersions;
@@ -20,17 +22,25 @@ use Vaulter\ValueObjects\Access\ActorRef;
  * (the hub), `sub` (the host user),
  * `document_id` (the document's node), `drive_id`, `tenant`, `generation` (the document's collab epoch),
  * `schema_version`, `scope` (`read`|`write`), `permissions_version` (`{drive, global}`, the versions it was
- * issued under), `room` (`<prefix>.<drive_id>.<document_id>.<generation>`), `iat` and `nbf` (the application clock), `protocol` (`yjs/2`), `exp` =
+ * issued under), `room` (`<prefix>.<drive_id>.<document_id>.<generation>`), `iat` and `nbf` (the application clock), `protocol` (the driver version), `exp` =
  * iat + hub.token_ttl and a fresh `jti`. The room repeats drive, document and generation, so a token is bound to
  * exactly one generation of one document; {@see CollaborationCallResolver} refuses a token whose claims disagree.
  */
-#[Internal]
+#[Spi(SpiKind::Call)]
 final readonly class RoomTokens
 {
+    #[Internal]
     public function __construct(
         private CollaborationOptions $config,
         private PermissionVersions $versions,
+        private CollaborationCallResolver $resolver,
     ) {}
+
+    /** Verify a room credential for the adapter's own versioned protocol. Live authorization is checked by the caller. */
+    public function verify(?string $token, string $protocol): ?CollaborationCall
+    {
+        return $this->resolver->verifyToken($token, $protocol);
+    }
 
     /**
      * @throws CollaborationConfigException without a usable key set or issuer
@@ -51,8 +61,9 @@ final readonly class RoomTokens
         $version = $this->versions->current($driveId)->toClaim();
         $issuedAt = Carbon::now()->getTimestamp();
         $exp = min($issuedAt + $this->config->hubTokenTtl(), $notAfter);
+        $protocol = $protocol === 'yjs' ? CollaborationOptions::JWT_PROTOCOL : $protocol;
         if ($principal->type === null || $principal->type === ActorRef::SYSTEM_TYPE || $principal->id === null
-            || $protocol !== 'yjs' || $stateFormat === '' || $schemaVersion < 1 || $generation < 0 || $exp <= $issuedAt) {
+            || !RoomOwnership::isProtocolVersion($protocol) || $stateFormat === '' || $schemaVersion < 1 || $generation < 0 || $exp <= $issuedAt) {
             throw new InvalidArgumentException('[Vaulter] A room credential needs a live grant and complete user and state identities.');
         }
         $jti = (string) Str::uuid();
@@ -63,7 +74,7 @@ final readonly class RoomTokens
                 'aud' => CollaborationOptions::JWT_AUDIENCE,
                 'sub' => Identity::stringify($principal->id),
                 'sub_type' => $principal->type,
-                'protocol' => CollaborationOptions::JWT_PROTOCOL,
+                'protocol' => $protocol,
                 'state_format' => $stateFormat,
                 'document_id' => $documentId,
                 'drive_id' => $driveId,

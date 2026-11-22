@@ -25,6 +25,11 @@ export type EnvelopeSettings = Pick<
   'maxQueuedUpdates' | 'maxQueuedBytes' | 'newId' | 'hash' | 'schedule'
 >
 
+export interface CollaborationDraft {
+  readonly generation: number
+  readonly envelopes: readonly string[]
+}
+
 export interface UseCollaborationOptions extends CollaborationOptions {
   /** The API client that asks for the session. */
   client: VaulterClient
@@ -45,6 +50,8 @@ export interface UseCollaborationReturn {
    * never copy the old document's content over.
    */
   doc: ShallowRef<YDoc>
+  /** The latest retired generation with unacknowledged edits, kept until disposal. */
+  draft: Readonly<ShallowRef<CollaborationDraft | null>>
   /** The resolved backend session descriptor (null until connected). */
   session: ShallowRef<CollaborationSession | null>
   /** The live transport handle (null until connected). */
@@ -97,6 +104,7 @@ export function useCollaboration(nodeId: NodeId, options: UseCollaborationOption
   const client = options.client
 
   const doc = shallowRef(new YDoc())
+  const draft = shallowRef<CollaborationDraft | null>(null)
   const session = shallowRef<CollaborationSession | null>(null)
   const handle = shallowRef<CollaborationTransportHandle | null>(null)
   const connecting = ref(false)
@@ -114,8 +122,7 @@ export function useCollaboration(nodeId: NodeId, options: UseCollaborationOption
   // Every connect(), reopen and disconnect() starts a new generation. A session answer that
   // belongs to an older one is dropped, or it would open a second provider next to the live one.
   let generation = 0
-  // The hub ended the room's generation (a restore): whoever opens the next session — the reopen
-  // or a connect() that overtook it — must do it on a new Y.Doc, and the host re-reads the content.
+  // The old document has been replaced. Notify the host when a new session opens.
   let freshDocPending = false
   // The queue belongs to one document of one generation; it outlives the transports of that room.
   let queue: EnvelopeQueue | null = null
@@ -196,6 +203,9 @@ export function useCollaboration(nodeId: NodeId, options: UseCollaborationOption
   }
 
   function resetDoc(): void {
+    if (queue !== null && queue.pendingCount > 0) {
+      draft.value = Object.freeze({ generation: queue.generation, envelopes: queue.snapshot() })
+    }
     dropQueue()
     doc.value.destroy()
     doc.value = new YDoc()
@@ -232,6 +242,8 @@ export function useCollaboration(nodeId: NodeId, options: UseCollaborationOption
     teardown()
     if (end === 'epoch_changed') {
       freshDocPending = true
+      resetDoc()
+      refreshStatus()
     }
 
     if (end === 'store_refused') {
@@ -248,11 +260,12 @@ export function useCollaboration(nodeId: NodeId, options: UseCollaborationOption
       }
       const epochReset = freshDocPending
       freshDocPending = false
-      if (epochReset || (resolved.options.room !== previousRoom || resolved.generation !== previousGeneration)) {
+      const generationChanged = resolved.generation !== previousGeneration
+      if (!epochReset && (resolved.options.room !== previousRoom || generationChanged)) {
         resetDoc()
       }
       open(resolved)
-      if (epochReset) {
+      if (epochReset || generationChanged) {
         await options.onEpochChanged?.()
       }
     } catch {
@@ -274,11 +287,12 @@ export function useCollaboration(nodeId: NodeId, options: UseCollaborationOption
     const epochReset = freshDocPending
     freshDocPending = false
     refused.value = false
-    if (epochReset || (previousRoom !== undefined && (resolved.options.room !== previousRoom || resolved.generation !== previousGeneration))) {
+    const generationChanged = previousGeneration !== undefined && resolved.generation !== previousGeneration
+    if (!epochReset && (generationChanged || (previousRoom !== undefined && resolved.options.room !== previousRoom))) {
       resetDoc()
     }
     const live = open(resolved)
-    if (epochReset) {
+    if (epochReset || generationChanged) {
       await options.onEpochChanged?.()
     }
 
@@ -293,11 +307,13 @@ export function useCollaboration(nodeId: NodeId, options: UseCollaborationOption
   function dispose(): void {
     disconnect()
     dropQueue()
+    draft.value = null
     refreshStatus()
   }
 
   return {
     doc,
+    draft,
     session,
     handle,
     connecting,

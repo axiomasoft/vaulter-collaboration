@@ -428,7 +428,7 @@ describe('useCollaboration — update envelopes', () => {
     expect(vm.status.value).toBe('pending')
   })
 
-  it('drops the queue with the document when the generation ends: old updates are never sent to the new one', async () => {
+  it('freezes unacknowledged old-generation envelopes in a draft and never sends them to the new room', async () => {
     const first = fakeProvider()
     const second = fakeProvider()
     const provider = vi.fn().mockReturnValueOnce(first.handle).mockReturnValueOnce(second.handle)
@@ -438,12 +438,18 @@ describe('useCollaboration — update envelopes', () => {
     const vm = collaboration(token, { providers: { createHocuspocusProvider: provider } })
     await vm.connect()
     first.setConnected(true)
+    vm.doc.value.getText('t').insert(0, 'already saved')
+    const [saved] = first.envelopes()
+    first.say({ t: 'ack', id: saved.id, seq: 2, g: 0 })
     vm.doc.value.getText('t').insert(0, 'before the restore')
 
     first.end('epoch_changed')
     await flush()
     second.setConnected(true)
 
+    expect(vm.draft.value?.generation).toBe(0)
+    expect(vm.draft.value?.envelopes.map((entry) => JSON.parse(entry))).toEqual(first.envelopes().slice(1))
+    expect(Object.isFrozen(vm.draft.value?.envelopes)).toBe(true)
     expect(second.sent).toEqual([])
     expect(vm.status.value).toBe('synchronized')
     vm.doc.value.getText('t').insert(0, 'after')

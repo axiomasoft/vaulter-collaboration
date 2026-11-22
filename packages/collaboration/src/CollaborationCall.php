@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Vaulter\Collaboration;
 
+use Packman\Attributes\Api;
 use Packman\Attributes\Internal;
 use Vaulter\Collaboration\Data\RoomRef;
 use Vaulter\Collaboration\Http\Middleware\ResolveCollaborationCall;
@@ -24,13 +25,14 @@ use Vaulter\ValueObjects\Access\ActorRef;
  *   - permissionsVersion — the drive and global permission versions it was issued under.
  *   - jti, expiresAt     — the token's id and exp.
  */
-#[Internal]
+#[Api]
 final readonly class CollaborationCall
 {
     public const string SCOPE_READ = 'read';
 
     public const string SCOPE_WRITE = 'write';
 
+    #[Internal]
     public function __construct(
         public string $room,
         public RoomRef $ref,

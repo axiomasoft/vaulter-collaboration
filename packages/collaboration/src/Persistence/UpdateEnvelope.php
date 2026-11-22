@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Vaulter\Collaboration\Persistence;
 
 use InvalidArgumentException;
-use Packman\Attributes\Internal;
+use Packman\Attributes\Api;
 
 /**
  * One Yjs update as protocol 2 carries it: the generation it was made in, the stable id its origin gave it (repeated
@@ -16,7 +16,7 @@ use Packman\Attributes\Internal;
  * JSON had: it is appended only as the first record of a generation without checkpoint, while the state version still
  * holds, so two hubs never both seed and a seed never overwrites newer JSON.
  */
-#[Internal]
+#[Api]
 final readonly class UpdateEnvelope
 {
     public function __construct(

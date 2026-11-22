@@ -1,3 +1,4 @@
+import { Extension } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
 import Link from '@tiptap/extension-link'
 import Image from '@tiptap/extension-image'
@@ -16,10 +17,22 @@ import { Table, TableCell, TableHeader, TableRow } from '@tiptap/extension-table
 /** The Y.XmlFragment the editor's Collaboration extension binds to. */
 export const FIELD = 'default'
 
+const BlockIdentity = Extension.create({
+  name: 'blockIdentity',
+
+  addGlobalAttributes() {
+    return [{
+      types: ['paragraph', 'heading'],
+      attributes: { blockId: { default: null } },
+    }]
+  },
+})
+
 const TYPES = {
   // StarterKit (with Underline), Link, Image, Table.
   'vaulter/rich-text': () => [
     StarterKit.configure({ link: false }),
+    BlockIdentity,
     Link,
     Image,
     Table,

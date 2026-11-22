@@ -85,7 +85,7 @@ it('leases a drained document below every trigger, ahead of the due ones', funct
     Compaction::append($this->node, 'u1');
 
     expect(leasedNodes(max: 1))->toBe([(string) $due->getKey()]);
-    $this->travel(61)->seconds();
+    Compaction::expireLease($due);
 
     expect(requestDrain($this->node))->toBeTrue()
         ->and(Compaction::head($this->node)?->drainRequestedAt)->not->toBeNull()
@@ -153,13 +153,13 @@ it('does not hand a held lease to another hub before it expires, then grants a n
         ->and(leasedNodes('hub-a'))->toBe([])
         ->and(Compaction::head($this->node)?->leaseOwner)->toBe('hub-a');
 
-    $this->travel(60)->seconds();
+    $expiredAt = Compaction::expireLease($this->node);
     $second = Compaction::leaseOf($this->node, 'hub-b');
 
     expect($second->token)->not->toBe($first->token)
         ->and(strlen($second->token))->toBe(64)
         ->and(Compaction::head($this->node)?->leaseOwner)->toBe('hub-b')
-        ->and($second->expiresAt->greaterThan($first->expiresAt))->toBeTrue();
+        ->and($second->expiresAt->greaterThan($expiredAt))->toBeTrue();
 });
 
 it('reads the checkpoint, the tail and the checkpoint version with the lease', function (): void {
@@ -172,6 +172,9 @@ it('reads the checkpoint, the tail and the checkpoint version with the lease', f
     expect($lease->log->generation)->toBe(0)
         ->and($lease->log->checkpoint)->toBeNull()
         ->and([$lease->log->checkpointSeq, $lease->log->headSeq])->toBe([0, 2])
+        ->and($lease->protocol)->toBe('yjs/2')
+        ->and($lease->leaseThroughSeq)->toBe(2)
+        ->and(Compaction::head($this->node)?->protocol)->toBe('yjs/2')
         ->and($lease->checkpointVersion)->toBe($document->state_version)
         ->and($lease->log->tail[0])->toBe(['seq' => 1, 'update_id' => $one->updateId, 'payload' => base64_encode("\x00u1")])
         ->and(Compaction::head($this->node)?->leaseExpiresAt?->equalTo($lease->expiresAt))->toBeTrue();
@@ -204,6 +207,7 @@ it('leaves appends to the room: an append during a lease commits, and the lease 
 
     expect($late->seq)->toBe(2)
         ->and($lease->log->headSeq)->toBe(1)
+        ->and(Compaction::head($this->node)?->leaseThroughSeq)->toBe(1)
         ->and(Compaction::marker($this->node))->toBe([0, 2]);
 });
 

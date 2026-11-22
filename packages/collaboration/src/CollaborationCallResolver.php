@@ -152,9 +152,9 @@ final readonly class CollaborationCallResolver
      * must repeat the token's own claims, so no claim can be read two ways. Null on any failure; neither the token nor
      * a key is ever logged.
      */
-    public function verifyToken(?string $bearerToken): ?CollaborationCall
+    public function verifyToken(?string $bearerToken, string $protocol = CollaborationOptions::JWT_PROTOCOL): ?CollaborationCall
     {
-        if (!is_string($bearerToken) || $bearerToken === '') {
+        if (!is_string($bearerToken) || $bearerToken === '' || !RoomOwnership::isProtocolVersion($protocol)) {
             return null;
         }
 
@@ -184,7 +184,7 @@ final readonly class CollaborationCallResolver
         $expiry = $claims['exp'] ?? null;
 
         if (($claims['iss'] ?? null) !== $issuer || ($claims['aud'] ?? null) !== CollaborationOptions::JWT_AUDIENCE
-            || ($claims['protocol'] ?? null) !== CollaborationOptions::JWT_PROTOCOL
+            || ($claims['protocol'] ?? null) !== $protocol
             || !is_int($iat) || !is_int($nbf) || !is_int($expiry) || $iat > $nbf || $nbf >= $expiry) {
             return null;
         }
@@ -222,7 +222,7 @@ final readonly class CollaborationCallResolver
             room: $room,
             ref: $ref,
             principal: new ActorRef(type: $subjectType, id: $subject),
-            protocol: 'yjs',
+            protocol: explode('/', $protocol, 2)[0],
             stateFormat: $stateFormat,
             mode: $scope === CollaborationCall::SCOPE_WRITE ? 'rw' : 'ro',
             schemaVersion: $schemaVersion,

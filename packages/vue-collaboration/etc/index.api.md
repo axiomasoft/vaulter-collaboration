@@ -24,6 +24,14 @@ export class CollaborationCancelledError extends Error {
     constructor();
 }
 
+// @public (undocumented)
+export interface CollaborationDraft {
+    // (undocumented)
+    readonly envelopes: readonly string[];
+    // (undocumented)
+    readonly generation: number;
+}
+
 // @public
 export type CollaborationEnd = 'epoch_changed' | 'token_expired' | 'forbidden' | 'store_refused';
 
@@ -140,6 +148,7 @@ export interface EnvelopeQueue {
     readonly pendingIds: readonly string[];
     receive: (message: string) => boolean;
     setReady: (ready: boolean) => void;
+    snapshot: () => readonly string[];
     readonly writesStopped: boolean;
 }
 
@@ -250,6 +259,7 @@ export interface UseCollaborationReturn {
     disconnect: () => void;
     dispose: () => void;
     doc: ShallowRef<Doc>;
+    draft: Readonly<ShallowRef<CollaborationDraft | null>>;
     error: Ref<unknown>;
     handle: ShallowRef<CollaborationTransportHandle | null>;
     readOnly: ComputedRef<boolean>;

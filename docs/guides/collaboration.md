@@ -19,22 +19,24 @@ All Yjs snapshots and incremental updates **must** be stored as raw binary `byte
 ## 2. Room Capability JWT
 
 Clients never connect to the Hub with raw session cookies or long-lived API tokens. Instead, the browser requests a short-lived **Room Capability JWT** from Laravel:
-- **Claims:** `sub` (actor), `tenant_id`, `document_id`, `room`, `epoch`, `role` (`editor` | `viewer`), `exp` (short TTL, typically 2–5 minutes), and `jti`.
+- **Claims:** `sub` and `sub_type` identify the actor. `tenant`, `drive_id`, `document_id`, `generation`, and `room` identify the room. `protocol` names the driver version, and `scope` is `read` or `write`.
 - **Key Rotation:** Supported via `kid` header and dual-key verification windows (see `packages/collaboration/docs/key-rotation.md`).
-- **Scope:** A token is strictly bound to a single `(tenant_id, document_id, epoch)`. Reusing a token across rooms or after an epoch bump is rejected.
+- **Scope:** A token is bound to a single room generation. Laravel rejects its use across rooms or after a generation change.
 
 ## 3. Epoch Fencing (`4409` / `4412`) & `owner_fence`
 
 Whenever a document undergoes an out-of-band state replacement (such as restoring a historical revision or importing a file), Laravel increments the room `epoch` and issues a new `owner_fence`.
-- **WebSocket Close Code `4409` (`epoch_mismatch`):** The Hub immediately closes all active connections for the stale epoch with code `4409`. `@vaulter/vue-collaboration` catches `4409`, discards the stale local `Y.Doc`, fetches a fresh Room Capability JWT for the new epoch, and cleanly re-hydrates.
+- **WebSocket close `4409` (`epoch_changed`):** When Laravel rejects operations from a stale generation, the Hub closes its room. The Vue composable freezes the unacknowledged envelopes in its `draft`, destroys the old `Y.Doc`, and opens the next session on a fresh document.
 - **WebSocket Close Code `4412` (`strict_precondition_failed`):** Signals a strict-profile precondition failure (e.g. fencing token mismatch or rejected write in strict mode).
 
 ## 4. Compaction Lease
 
 To prevent unbounded growth of `v_collaboration_updates`, the Hub periodically compacts incremental updates into a single binary snapshot:
-1. The compaction worker acquires a time-bounded **compaction lease** from Laravel (`clock_timestamp()` is used on PostgreSQL so lease expiry is immune to frozen transaction `now()`).
-2. The worker merges updates up to a watermark sequence number and uploads the compacted binary state with its lease token.
+1. Laravel grants the worker a time-bounded lease over the head sequence observed under the document and head locks. The database stores that bound in `lease_through_seq`.
+2. On PostgreSQL, checkpoint publication samples `clock_timestamp()` after acquiring the locks. The worker can publish through the leased sequence, and any later appends and their pending marker stay available for the next checkpoint.
 3. If a worker crashes mid-compaction, the lease expires naturally and another worker (or the offline recovery CLI `vaulter-collaboration-hub compact --pending`) takes over without data loss.
+
+PHP adapters share `RoomOwnership`, `RoomTokens`, `UpdateLog`, `CompactionLeases`, and `Checkpoint`. The registered driver determines the head protocol, and workers request leases for that version. Credential verification uses the adapter's expected protocol. An adapter rechecks live user authorization under the document lock before it appends or replays a receipt.
 
 ## 5. Permission Revocation
 

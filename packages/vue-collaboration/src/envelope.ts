@@ -80,6 +80,8 @@ export interface EnvelopeQueue {
   setReady: (ready: boolean) => void
   /** Feed a stateless message of the hub; true when it belonged to the envelope protocol. */
   receive: (message: string) => boolean
+  /** Copy pending envelopes for recovery outside this generation. */
+  snapshot: () => readonly string[]
   destroy: () => void
 }
 
@@ -305,6 +307,7 @@ export function createEnvelopeQueue(options: EnvelopeQueueOptions): EnvelopeQueu
 
       return true
     },
+    snapshot: () => Object.freeze(queue.map(envelope)),
     destroy() {
       destroyed = true
       stopRetry()

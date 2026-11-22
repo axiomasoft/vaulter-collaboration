@@ -1,6 +1,22 @@
 # Surface manifest of the package `collaboration` (D27): the types marked #[Api] and #[Spi] with their public and protected members that are not #[Internal].
 # Generated: scripts/php84 php scripts/inventory/inventory.php surface --write. Do not edit by hand.
 
+Vaulter\Collaboration\CollaborationCall api since 1.0 final readonly class
+  public const string SCOPE_READ = 'read'
+  public const string SCOPE_WRITE = 'write'
+  public int $expiresAt
+  public string $jti
+  public string $mode
+  public Vaulter\Collaboration\Revocation\PermissionVersion $permissionsVersion
+  public Vaulter\ValueObjects\Access\ActorRef $principal
+  public string $protocol
+  public Vaulter\Collaboration\Data\RoomRef $ref
+  public string $room
+  public int $schemaVersion
+  public string $stateFormat
+  public ?string $tenant
+  public function mayStore(): bool
+
 Vaulter\Collaboration\CollaborationModule api since 1.0 final class implements Packman\Extensions\Contracts\Composition\WithSlots, Packman\Extensions\Contracts\Configuration\WithConfiguration, Packman\Extensions\Contracts\Persistence\WithSchema, Packman\Extensions\Contracts\Runtime\WithDiagnostics, Packman\Plugins\Contracts\Registry\ExtensionPlugin, Vaulter\Modules\GuardsRemoval, Vaulter\Modules\WithModuleRuntime uses Packman\Extensions\Concerns\Composition\ContributesToSlots, Packman\Extensions\Concerns\Configuration\Configurable, Packman\Extensions\Concerns\Persistence\OwnsSchema, Packman\Extensions\Concerns\Runtime\ProvidesDiagnostics
   public function configRoot(): string
   public function defaultConfigPath(): string
@@ -158,14 +174,106 @@ Vaulter\Collaboration\Persistence\AppendResult api since 1.0 final readonly clas
   public string $updateId
   public function ack(): array
 
+Vaulter\Collaboration\Persistence\Checkpoint spi:call since 1.0 final readonly class
+  public function publish(Vaulter\Collaboration\Persistence\CheckpointRequest $request): Vaulter\Collaboration\Persistence\CheckpointResult
+
+Vaulter\Collaboration\Persistence\CheckpointRequest api since 1.0 final readonly class
+  public Vaulter\Documents\State\CollaborationStateBinding $binding
+  public array $content
+  public int $coveredFrom
+  public int $coveredThrough
+  public string $documentType
+  public int $expectedCheckpointVersion
+  public int $generation
+  public string $leaseToken
+  public string $nodeId
+  public string $state
+  public function __construct(string $nodeId, int $generation, string $leaseToken, int $coveredFrom, int $coveredThrough, int $expectedCheckpointVersion, string $state, array $content, Vaulter\Documents\State\CollaborationStateBinding $binding, string $documentType)
+
+Vaulter\Collaboration\Persistence\CheckpointResult api since 1.0 final readonly class
+  public int $checkpointVersion
+  public bool $markerCleared
+  public function __construct(int $checkpointVersion, bool $markerCleared)
+  public function toArray(): array
+
+Vaulter\Collaboration\Persistence\CompactionLease api since 1.0 final readonly class
+  public int $checkpointVersion
+  public Illuminate\Support\Carbon $expiresAt
+  public int $leaseThroughSeq
+  public Vaulter\Collaboration\Persistence\LogSnapshot $log
+  public string $nodeId
+  public string $protocol
+  public string $token
+  public function __construct(string $nodeId, string $protocol, string $token, Illuminate\Support\Carbon $expiresAt, int $checkpointVersion, int $leaseThroughSeq, Vaulter\Collaboration\Persistence\LogSnapshot $log)
+  public function bytes(): int
+
+Vaulter\Collaboration\Persistence\CompactionLeases spi:call since 1.0 final readonly class
+  public const int MAX = 100
+  public const int REPORTED = 20
+  public function grant(string $hubId, int $max, string $protocol = \Vaulter\Collaboration\Configuration\CollaborationOptions::JWT_PROTOCOL): array
+  public function requestDrain(Vaulter\Documents\State\PendingMarker $marker): bool
+
+Vaulter\Collaboration\Persistence\LogSnapshot api since 1.0 final readonly class
+  public Vaulter\Documents\State\CollaborationStateBinding $binding
+  public ?string $checkpoint
+  public int $checkpointSeq
+  public ?array $content
+  public string $documentId
+  public int $generation
+  public int $headSeq
+  public int $schemaVersion
+  public int $stateVersion
+  public array $tail
+  public string $type
+  public function __construct(string $documentId, int $generation, int $stateVersion, string $type, int $schemaVersion, ?array $content, ?string $checkpoint, int $checkpointSeq, int $headSeq, array $tail, Vaulter\Documents\State\CollaborationStateBinding $binding)
+
+Vaulter\Collaboration\Persistence\Receipt api since 1.0 final readonly class
+  public string $documentId
+  public int $generation
+  public int $seq
+  public string $sha256
+  public string $updateId
+  public function __construct(string $documentId, int $generation, string $updateId, int $seq, string $sha256)
+
+Vaulter\Collaboration\Persistence\UpdateEnvelope api since 1.0 final readonly class
+  public string $claimedSha256
+  public int $generation
+  public string $origin
+  public string $payload
+  public ?int $seedStateVersion
+  public string $updateId
+  public function __construct(int $generation, string $updateId, string $payload, string $claimedSha256, string $origin = 'client', ?int $seedStateVersion = null)
+  public function sha256(): string
+
+Vaulter\Collaboration\Persistence\UpdateLog spi:call since 1.0 final readonly class
+  public function append(int|string $nodeId, Vaulter\Collaboration\Persistence\UpdateEnvelope $update, ?Closure $authorize = null): Vaulter\Collaboration\Persistence\AppendResult
+  public function receipt(string $documentId, int $generation, string $updateId): ?Vaulter\Collaboration\Persistence\Receipt
+  public function snapshot(int|string $nodeId, int $generation): Vaulter\Collaboration\Persistence\LogSnapshot
+
 Vaulter\Collaboration\Providers\CollaborationPackageRegistrar spi:call since 1.0 final class implements Packman\Foundation\Contracts\PackageRegistrar
   public function boot(Illuminate\Contracts\Foundation\Application $app): void
   public function register(Illuminate\Contracts\Foundation\Application $app): void
 
+Vaulter\Collaboration\Revocation\PermissionVersion api since 1.0 final readonly class
+  public int $drive
+  public int $global
+  public function __construct(int $drive, int $global)
+  public static function fromClaim(mixed $claim): ?self
+  public function olderThan(self $current): bool
+  public function toClaim(): array
+
+Vaulter\Collaboration\RoomOwnership spi:call since 1.0 final readonly class
+  public function assertGeneration(Vaulter\Documents\State\LockedDocumentState $document, int $generation): void
+  public function protocol(Vaulter\Documents\State\LockedDocumentState $document): string
+
+Vaulter\Collaboration\RoomTokens spi:call since 1.0 final readonly class
+  public function mint(Vaulter\ValueObjects\Access\ActorRef $principal, string $documentId, string $driveId, ?string $tenant, int $generation, int $schemaVersion, bool $writable, string $protocol, string $stateFormat, int $notAfter): array
+  public function verify(?string $token, string $protocol): ?Vaulter\Collaboration\CollaborationCall
+
 Vaulter\Collaboration\Schema\CollaborationSchemaSets spi:call since 1.0 final class implements Packman\Schema\Contracts\Migration\SchemaSetProvider
   public function sets(): array
 
-Vaulter\Collaboration\VaulterCollaborationServiceProvider api since 1.0 final class extends Illuminate\Support\ServiceProvider uses Packman\Foundation\Concerns\RegistersPackageRegistrars
+Vaulter\Collaboration\VaulterCollaborationServiceProvider api since 1.0 final class extends Illuminate\Support\ServiceProvider uses Packman\Foundation\Concerns\RegistersPackageRegistrars, Vaulter\Modules\OffersModules
   protected const array REGISTRARS = [\Vaulter\Collaboration\Providers\CollaborationPackageRegistrar::class]
   public function boot(): void
   public function register(): void

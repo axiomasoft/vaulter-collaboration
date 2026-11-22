@@ -2,7 +2,7 @@ import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { closeAll, connect, eventually, pause, restore, scene as newScene, session, stateOn, stored, text } from '../support/live.js'
 
-// End to end against a real hub and a real Laravel host (scripts/collab-e2e.sh starts both), on
+// End to end against the hub and Laravel host in e2e/docker-compose.yml, on
 // collaboration protocol 2. An edit is saved when the hub acknowledges its envelope, which it does
 // only after the backend committed the append to the update log; the working state of the document
 // (REST) follows from the hub's compaction. Proves what no stub can: the hub seeds once on the
@@ -14,7 +14,7 @@ const BACKEND = process.env.VAULTER_E2E_BACKEND
 const HUB = process.env.VAULTER_E2E_HUB
 
 if (!BACKEND || !HUB) {
-  throw new Error('Run through scripts/collab-e2e.sh (VAULTER_E2E_BACKEND and VAULTER_E2E_HUB are required).')
+  throw new Error('Start e2e/docker-compose.yml and set VAULTER_E2E_BACKEND and VAULTER_E2E_HUB.')
 }
 
 const clients = []
@@ -26,6 +26,7 @@ test('V12: a restore during a live session fences the old room; the reopened roo
   const writerSession = await session(BACKEND, scene.node_id, scene.writer_user)
   assert.equal(writerSession.mode, 'write')
   assert.equal(writerSession.generation, 1)
+  assert.ok(writerSession.options.room.endsWith(`.${scene.drive_id}.${scene.node_id}.${writerSession.generation}`))
 
   const writer = await connect(HUB, writerSession, clients)
   // The hub seeded the room from the JSON once, on the server.
@@ -56,6 +57,7 @@ test('V12: a restore during a live session fences the old room; the reopened roo
 
   // A new session opens the next generation on a NEW Y.Doc.
   const reopenedSession = await session(BACKEND, scene.node_id, scene.writer_user)
+  assert.equal(reopenedSession.mode, 'write')
   assert.equal(reopenedSession.generation, 2)
   assert.notEqual(reopenedSession.options.room, writerSession.options.room)
   const reopened = await connect(HUB, reopenedSession, clients)

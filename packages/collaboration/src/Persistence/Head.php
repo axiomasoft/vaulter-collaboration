@@ -18,12 +18,14 @@ final readonly class Head
     public function __construct(
         public string $documentId,
         public int $generation,
+        public string $protocol,
         public int $headSeq,
         public int $checkpointSeq,
         public int $checkpointVersion,
         public ?string $leaseToken,
         public ?string $leaseOwner,
         public ?Carbon $leaseExpiresAt,
+        public ?int $leaseThroughSeq,
         public ?Carbon $drainRequestedAt,
         public ?Carbon $retiredAt,
     ) {}
@@ -31,7 +33,8 @@ final readonly class Head
     /** Whether a compaction lease holds the generation at `$now`. */
     public function leased(Carbon $now): bool
     {
-        return $this->leaseToken !== null && $this->leaseExpiresAt !== null && $this->leaseExpiresAt->greaterThan($now);
+        return $this->leaseToken !== null && $this->leaseThroughSeq !== null
+            && $this->leaseExpiresAt !== null && $this->leaseExpiresAt->greaterThan($now);
     }
 
     /** Whether `$token` is the lease that holds the generation at `$now`. */
