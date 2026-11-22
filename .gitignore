@@ -23,3 +23,5 @@ __pycache__/
 /coverage/
 /coverage.xml
 /clover.xml
+
+packages/*/dist/
