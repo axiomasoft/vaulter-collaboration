@@ -126,8 +126,14 @@ function defaultHocuspocusProvider(args: {
   token: string
   document: YDoc
 }): CollaborationProviderHandle {
+  // The hub treats a socket without exactly one `protocol=2` as a protocol-1 client and
+  // makes it read-only. `set` replaces a missing, stale, or repeated value and keeps the
+  // path and the other query parameters (including their encoding).
+  const url = new URL(args.url)
+  url.searchParams.set('protocol', '2')
+
   const provider = new HocuspocusProvider({
-    url: args.url,
+    url: url.toString(),
     name: args.name,
     token: args.token,
     document: args.document,

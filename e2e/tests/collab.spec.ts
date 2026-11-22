@@ -57,6 +57,55 @@ test('правки writer долетают до read-only viewer и снапшо
   await viewerCtx.close()
 })
 
+test('два редактора сохраняют свои правки, читатель не пишет, третий клиент видит обе', async ({
+  browser,
+  request,
+  baseURL,
+}) => {
+  const { node_id: node } = await setupScene(request)
+
+  const writerACtx = await browser.newContext()
+  const writerBCtx = await browser.newContext()
+  const readerCtx = await browser.newContext()
+  const writerA = await writerACtx.newPage()
+  const writerB = await writerBCtx.newPage()
+  const reader = await readerCtx.newPage()
+
+  await writerA.goto(`${baseURL}/?node=${node}&user=1`)
+  await writerB.goto(`${baseURL}/?node=${node}&user=1`)
+  await expect(writerA.getByTestId('status')).toHaveText('connected:writable')
+  await expect(writerB.getByTestId('status')).toHaveText('connected:writable')
+
+  await typeInto(writerA, 'EDIT-A')
+  await expect(editorOf(writerB)).toContainText('EDIT-A')
+  await typeInto(writerB, 'EDIT-B')
+  await expect(editorOf(writerA)).toContainText('EDIT-A')
+  await expect(editorOf(writerA)).toContainText('EDIT-B')
+  await expect(editorOf(writerB)).toContainText('EDIT-B')
+
+  await reader.goto(`${baseURL}/?node=${node}&user=2&force=1`)
+  await expect(reader.getByTestId('status')).toHaveText('connected:readonly')
+  await expect(editorOf(reader)).toContainText('EDIT-A')
+  await expect(editorOf(reader)).toContainText('EDIT-B')
+  await typeInto(reader, 'SNEAKY-READER')
+  await writerA.waitForTimeout(2500)
+  await expect(editorOf(writerA)).not.toContainText('SNEAKY-READER')
+  await expect(editorOf(writerB)).not.toContainText('SNEAKY-READER')
+
+  const thirdCtx = await browser.newContext()
+  const third = await thirdCtx.newPage()
+  await third.goto(`${baseURL}/?node=${node}&user=1`)
+  await expect(third.getByTestId('status')).toHaveText('connected:writable')
+  await expect(editorOf(third)).toContainText('EDIT-A')
+  await expect(editorOf(third)).toContainText('EDIT-B')
+  await expect(editorOf(third)).not.toContainText('SNEAKY-READER')
+
+  await writerACtx.close()
+  await writerBCtx.close()
+  await readerCtx.close()
+  await thirdCtx.close()
+})
+
 test('read-only viewer не может писать в общую комнату (enforced на сервере)', async ({
   browser,
   request,

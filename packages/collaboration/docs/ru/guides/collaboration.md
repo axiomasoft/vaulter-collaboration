@@ -193,8 +193,8 @@ Vue-клиент ──POST /api/vaulter/v1/documents/{node}/collaboration/sessi
 
 ::: warning Подключайтесь с `protocol=2`
 Хаб считает соединение, в URL которого нет `?protocol=2`, клиентом протокола 1 и делает его **read-only**. Встроенный
-транспорт `@vaulter/vue-collaboration` открывает провайдер с `url` сессии как есть, поэтому, пока он сам не добавляет
-параметр, передайте его через переопределение `createHocuspocusProvider` в `createCollaborationAdapter({ providers })`.
+транспорт `@vaulter/vue-collaboration` ставит ровно один `protocol=2` на endpoint сессии и сохраняет путь и остальные
+query-параметры. Хост, который подменяет `createHocuspocusProvider`, задаёт параметр сам.
 :::
 
 ### Дескриптор сессии

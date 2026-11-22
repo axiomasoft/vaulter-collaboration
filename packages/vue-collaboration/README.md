@@ -62,8 +62,9 @@ The hub's terminal closes are handled for you: **4409** `epoch_changed` replaces
 **4001** / **4403** fetch a new session (read-only after a lost `Edit`); **4422** is not retried. Never seed the editor on
 the client (`setContent`): the hub seeds a document once on the server.
 
-> The hub makes a connection that does not carry `?protocol=2` in its URL read-only. Until the default provider adds the
-> parameter itself, pass it through `createCollaborationAdapter({ providers: { createHocuspocusProvider } })`.
+> The hub makes a connection that does not carry `?protocol=2` in its URL read-only. The default provider sets exactly
+> one `protocol=2` on the session endpoint and keeps the path and the other query parameters. A
+> `createHocuspocusProvider` override has to set the parameter itself.
 
 ## Development in the monorepo
 

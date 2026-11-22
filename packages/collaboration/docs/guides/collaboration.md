@@ -193,8 +193,8 @@ Vue client ──POST /api/vaulter/v1/documents/{node}/collaboration/session {sc
 
 ::: warning Connect with `protocol=2`
 The hub treats a connection whose URL does not carry `?protocol=2` as a protocol-1 client and makes it **read-only**.
-For the bundled `@vaulter/vue-collaboration` transport, include the parameter in `VAULTER_COLLAB_URL` so the session
-endpoint already carries it.
+The bundled `@vaulter/vue-collaboration` transport sets exactly one `protocol=2` on the session endpoint and keeps the
+path and the other query parameters. A host that replaces `createHocuspocusProvider` has to set the parameter itself.
 :::
 
 ### The session descriptor

@@ -1,5 +1,9 @@
+import { once } from 'node:events'
+import type { IncomingMessage } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { describe, expect, it } from 'vitest'
 import { HocuspocusProvider } from '@hocuspocus/provider'
+import { WebSocketServer } from 'ws'
 import { Doc as YDoc } from 'yjs'
 import { openCollaborationTransport } from '../src/transport'
 import { hocuspocusSession } from './support/fakes'
@@ -20,6 +24,67 @@ const emitOn = (provider: unknown, event: string, payload: unknown): void => {
 }
 
 const unroutable = () => hocuspocusSession({ endpoint: 'ws://127.0.0.1:1' })
+
+/** The upgrade URL the stock provider opens for `pathAndQuery` (path + original query). */
+async function upgradeUrl(pathAndQuery: string): Promise<URL> {
+  const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+  const doc = new YDoc()
+  let transport: ReturnType<typeof openCollaborationTransport> | undefined
+  try {
+    await once(server, 'listening')
+    const { port } = server.address() as AddressInfo
+    const endpoint = `ws://127.0.0.1:${port}${pathAndQuery}`
+    transport = openCollaborationTransport(hocuspocusSession({ endpoint }), { doc })
+    const [, request] = await once(server, 'connection', { signal: AbortSignal.timeout(4000) })
+    return new URL((request as IncomingMessage).url!, endpoint)
+  } finally {
+    transport?.destroy()
+    doc.destroy()
+    for (const socket of server.clients) socket.terminate()
+    await new Promise<void>((resolve, reject) => {
+      server.close(error => error ? reject(error) : resolve())
+    })
+  }
+}
+
+describe('defaultHocuspocusProvider announces exactly one protocol=2', () => {
+  it('sets protocol=2 on an endpoint with an empty query and keeps the path', async () => {
+    const url = await upgradeUrl('/editor')
+
+    expect(url.pathname).toBe('/editor')
+    expect(url.searchParams.getAll('protocol')).toEqual(['2'])
+  })
+
+  it('keeps tenant and adds one protocol=2', async () => {
+    const url = await upgradeUrl('/editor?tenant=sample')
+
+    expect(url.pathname).toBe('/editor')
+    expect(url.searchParams.getAll('tenant')).toEqual(['sample'])
+    expect(url.searchParams.getAll('protocol')).toEqual(['2'])
+  })
+
+  it('replaces a wrong or repeated protocol with a single 2', async () => {
+    const wrong = await upgradeUrl('/editor?protocol=1&tenant=sample')
+    expect(wrong.pathname).toBe('/editor')
+    expect(wrong.searchParams.getAll('tenant')).toEqual(['sample'])
+    expect(wrong.searchParams.getAll('protocol')).toEqual(['2'])
+
+    const repeated = await upgradeUrl('/editor?protocol=1&protocol=2&tenant=sample')
+    expect(repeated.pathname).toBe('/editor')
+    expect(repeated.searchParams.getAll('tenant')).toEqual(['sample'])
+    expect(repeated.searchParams.getAll('protocol')).toEqual(['2'])
+  })
+
+  it('keeps an escaped query value beside the single protocol=2', async () => {
+    const url = await upgradeUrl(`/editor?label=${encodeURIComponent('a/b c')}&tenant=sample`)
+
+    expect(url.pathname).toBe('/editor')
+    expect(url.searchParams.get('label')).toBe('a/b c')
+    expect(url.search).toContain('label=a%2Fb')
+    expect(url.searchParams.getAll('tenant')).toEqual(['sample'])
+    expect(url.searchParams.getAll('protocol')).toEqual(['2'])
+  })
+})
 
 describe('defaultHocuspocusProvider against the real @hocuspocus/provider v4', () => {
   it('builds a live session through the default (non-mocked) path', () => {
