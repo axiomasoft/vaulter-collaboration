@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { watch } from 'vue'
 import { Doc as YDoc, applyUpdate, encodeStateAsUpdate } from 'yjs'
 import type { CollaborationSession } from '@vaulter/vue'
 import { CollaborationCancelledError, useCollaboration, type UseCollaborationOptions } from '../src/useCollaboration'
@@ -121,6 +122,74 @@ describe('useCollaboration', () => {
     expect(provider.mock.calls[1][0]).toMatchObject({ name: 'vaulter.documents.7.42.1', token: 'jwt-2' })
     expect(provider.mock.calls[1][0].document).toBe(vm.doc.value)
     expect(vm.session.value?.generation).toBe(1)
+  })
+
+  it('keeps the replacement Y.Doc read-only until its update queue is bound', async () => {
+    const first = fakeProvider()
+    const second = fakeProvider()
+    let releaseReopen!: (session: CollaborationSession) => void
+    const token = vi.fn()
+      .mockResolvedValueOnce(hocuspocusSession())
+      .mockReturnValueOnce(new Promise<CollaborationSession>((resolve) => { releaseReopen = resolve }))
+    const provider = vi.fn().mockReturnValueOnce(first.handle).mockReturnValueOnce(second.handle)
+    const vm = collaboration(token, { providers: { createHocuspocusProvider: provider } })
+    await vm.connect()
+    const oldDoc = vm.doc.value
+    const readOnlyAtReplacement = vi.fn(() => vm.readOnly.value)
+    const stopDocWatch = watch(vm.doc, readOnlyAtReplacement, { flush: 'sync' })
+    const stopReadOnlyWatch = watch(vm.readOnly, (readOnly) => {
+      if (!readOnly) {
+        vm.doc.value.getText('t').insert(0, 'first edit after restore')
+      }
+    }, { flush: 'sync' })
+
+    first.end('epoch_changed')
+    await flush()
+
+    const replacement = vm.doc.value
+    expect(replacement).not.toBe(oldDoc)
+    expect(readOnlyAtReplacement).toHaveReturnedWith(true)
+    expect(vm.readOnly.value).toBe(true)
+    expect(vm.handle.value).toBeNull()
+
+    releaseReopen(hocuspocusSession({ generation: 1, options: { room: 'vaulter.documents.7.42.1', drive_id: '7' } }))
+    await flush()
+    second.setConnected(true)
+
+    expect(vm.doc.value).toBe(replacement)
+    expect(vm.readOnly.value).toBe(false)
+    expect(second.envelopes()).toEqual([expect.objectContaining({ t: 'u', g: 1 })])
+
+    stopDocWatch()
+    stopReadOnlyWatch()
+    vm.dispose()
+  })
+
+  it('keeps the replacement Y.Doc read-only after a failed epoch reopen until connect succeeds', async () => {
+    const first = fakeProvider()
+    const second = fakeProvider()
+    const failure = new Error('replacement session unavailable')
+    const token = vi.fn()
+      .mockResolvedValueOnce(hocuspocusSession())
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValueOnce(hocuspocusSession({ generation: 1, options: { room: 'vaulter.documents.7.42.1', drive_id: '7' } }))
+    const provider = vi.fn().mockReturnValueOnce(first.handle).mockReturnValueOnce(second.handle)
+    const vm = collaboration(token, { providers: { createHocuspocusProvider: provider } })
+    await vm.connect()
+
+    first.end('epoch_changed')
+    await flush()
+
+    const replacement = vm.doc.value
+    expect(vm.error.value).toBe(failure)
+    expect(vm.handle.value).toBeNull()
+    expect(vm.readOnly.value).toBe(true)
+
+    await vm.connect()
+
+    expect(vm.doc.value).toBe(replacement)
+    expect(vm.readOnly.value).toBe(false)
+    vm.dispose()
   })
 
   it('on token expiry renews the session and keeps the Y.Doc of the same room', async () => {

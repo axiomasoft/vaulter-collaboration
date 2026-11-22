@@ -63,6 +63,7 @@ export interface UseCollaborationReturn {
   /**
    * Whether writes are disallowed: a read-only session, an outdated editor schema, or a session
    * that cannot keep the edits safe (the update queue failed, the backend refused the state).
+   * After an epoch change, writes stay disabled until the replacement session and queue are set up.
    */
   readOnly: ComputedRef<boolean>
   /** True when the session's schema is newer than `supportedSchemaVersion`. */
@@ -112,18 +113,18 @@ export function useCollaboration(nodeId: NodeId, options: UseCollaborationOption
   const sessionReadOnly = ref(false)
   const queueFailed = ref(false)
   const refused = ref(false)
+  // The replacement document awaits an update queue and a host notification.
+  const freshDocPending = ref(false)
   const schemaOutdated = ref(false)
   const status = ref<CollaborationStatus>('pending')
   const collaborators = ref<Collaborator[]>([])
   const error = ref<unknown>(null)
-  const readOnly = computed(() => sessionReadOnly.value || queueFailed.value || refused.value)
+  const readOnly = computed(() => freshDocPending.value || sessionReadOnly.value || queueFailed.value || refused.value)
 
   let stopWatchers: Array<() => void> = []
   // Every connect(), reopen and disconnect() starts a new generation. A session answer that
   // belongs to an older one is dropped, or it would open a second provider next to the live one.
   let generation = 0
-  // The old document has been replaced. Notify the host when a new session opens.
-  let freshDocPending = false
   // The queue belongs to one document of one generation; it outlives the transports of that room.
   let queue: EnvelopeQueue | null = null
   let queueDoc: YDoc | null = null
@@ -231,6 +232,7 @@ export function useCollaboration(nodeId: NodeId, options: UseCollaborationOption
     )
     updates.setReady(connected.value)
     refreshStatus()
+    freshDocPending.value = false
 
     return live
   }
@@ -241,7 +243,7 @@ export function useCollaboration(nodeId: NodeId, options: UseCollaborationOption
     const mine = ++generation
     teardown()
     if (end === 'epoch_changed') {
-      freshDocPending = true
+      freshDocPending.value = true
       resetDoc()
       refreshStatus()
     }
@@ -258,8 +260,7 @@ export function useCollaboration(nodeId: NodeId, options: UseCollaborationOption
       if (resolved === null) {
         return
       }
-      const epochReset = freshDocPending
-      freshDocPending = false
+      const epochReset = freshDocPending.value
       const generationChanged = resolved.generation !== previousGeneration
       if (!epochReset && (resolved.options.room !== previousRoom || generationChanged)) {
         resetDoc()
@@ -284,8 +285,7 @@ export function useCollaboration(nodeId: NodeId, options: UseCollaborationOption
       throw new CollaborationCancelledError()
     }
 
-    const epochReset = freshDocPending
-    freshDocPending = false
+    const epochReset = freshDocPending.value
     refused.value = false
     const generationChanged = previousGeneration !== undefined && resolved.generation !== previousGeneration
     if (!epochReset && (generationChanged || (previousRoom !== undefined && resolved.options.room !== previousRoom))) {
