@@ -1,0 +1,48 @@
+{
+    "schema": "vaulter.release/v2",
+    "php": [
+        {
+            "name": "axiomasoft/vaulter-collaboration",
+            "path": "packages/collaboration",
+            "split": "axiomasoft/vaulter-collaboration",
+            "channel": "private",
+            "release_line": "php-collaboration",
+            "tag_prefix": "collaboration-v",
+            "license": "proprietary",
+            "access": "restricted",
+            "tested_ranges": {
+                "axiomasoft/vaulter-core": "^1.0",
+                "axiomasoft/vaulter-drive": "^1.0",
+                "axiomasoft/vaulter-documents": "^1.0",
+                "axiomasoft/vaulter-media": "^1.0"
+            }
+        }
+    ],
+    "npm": [
+        {
+            "name": "@vaulter/vue-collaboration",
+            "path": "packages/vue-collaboration",
+            "api": "1",
+            "channel": "private",
+            "release_line": "npm-vue-collaboration",
+            "tag_prefix": "@vaulter/vue-collaboration@",
+            "registry": "https://registry.npmjs.org",
+            "access": "restricted",
+            "tested_ranges": {
+                "@vaulter/vue": "^1.0"
+            }
+        }
+    ],
+    "images": [
+        {
+            "name": "ghcr.io/axiomasoft/vaulter-collaboration-hub",
+            "path": "packages/hub",
+            "channel": "private",
+            "release_line": "image-collaboration-hub",
+            "tag_prefix": "collaboration-hub-v",
+            "registry": "ghcr.io",
+            "access": "restricted",
+            "legacy_tag_prefix_rejected": "vaulter-collaboration-hub-v"
+        }
+    ]
+}
