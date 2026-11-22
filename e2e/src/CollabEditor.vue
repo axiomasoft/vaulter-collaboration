@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { Editor, EditorContent } from '@tiptap/vue-3'
 import StarterKit from '@tiptap/starter-kit'
 import Collaboration from '@tiptap/extension-collaboration'
+import { useVaulterClient } from '@vaulter/vue'
 import { useCollaboration } from '@vaulter/vue-collaboration'
 
 const props = defineProps<{
@@ -10,12 +11,9 @@ const props = defineProps<{
   forceEditable?: boolean
 }>()
 
-// Реальный composable @vaulter/vue: тянет room-JWT с /nodes/{id}/collab/token и
-// поднимает HocuspocusProvider над общим Y.Doc. К этому Y.Doc цепляем TipTap через
-// расширение Collaboration — правки текут в Yjs и синкаются между браузерами.
-const collab = useCollaboration(props.nodeId)
+const collab = useCollaboration(props.nodeId, { client: useVaulterClient() })
 
-const editor = ref<Editor | null>(null)
+const editor = shallowRef<Editor | null>(null)
 const status = ref('connecting')
 const error = ref('')
 
@@ -27,7 +25,12 @@ onMounted(async () => {
     status.value = 'error'
     return
   }
+})
 
+watch(collab.connected, (connected) => {
+  if (!connected || editor.value) return
+
+  // Wait for the hub's seed before attaching TipTap's collaboration extension.
   // Боевое поведение: editable = !readOnly. forceEditable обходит это, чтобы тест мог
   // заставить viewer'а ПОПЫТАТЬСЯ писать и убедиться, что сервер дропает его апдейты.
   const editable = props.forceEditable ? true : !collab.readOnly.value
@@ -35,8 +38,8 @@ onMounted(async () => {
   editor.value = new Editor({
     extensions: [
       // history off — историю держит Yjs (UndoManager), иначе конфликт с CRDT.
-      StarterKit.configure({ history: false }),
-      Collaboration.configure({ document: collab.doc }),
+      StarterKit.configure({ undoRedo: false }),
+      Collaboration.configure({ document: collab.doc.value }),
     ],
     editable,
   })

@@ -9,7 +9,11 @@
 # Node
 /node_modules/
 /packages/*/node_modules/
+/e2e/node_modules/
+/e2e/playwright-report/
+/e2e/test-results/
 /dist/
+/packages/*/dist/
 *.log
 
 # Env / OS
@@ -23,5 +27,3 @@ __pycache__/
 /coverage/
 /coverage.xml
 /clover.xml
-
-packages/*/dist/

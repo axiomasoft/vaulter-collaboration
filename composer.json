@@ -83,7 +83,8 @@
     },
     "autoload-dev": {
         "psr-4": {
-            "Vaulter\\Collaboration\\Tests\\": "packages/collaboration/tests/"
+            "Vaulter\\Collaboration\\Tests\\": "packages/collaboration/tests/",
+            "Vaulter\\Collaboration\\Tests\\E2E\\": "e2e/php/"
         }
     },
     "minimum-stability": "dev",

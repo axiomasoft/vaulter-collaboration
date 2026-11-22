@@ -46,7 +46,7 @@ it('keeps an update appended while H is published, its payload and the marker pa
     expect(array_column($results, 'kind'))->toBe(['committed', 'committed'])
         ->and(Compaction::seqs($node))->toBe([3])
         ->and(DB::table(app(DatabaseOptions::class)->table('collaboration_receipts'))->count())->toBe(3)
-        ->and([$document->pending_generation, $document->pending_through_seq])->toBe([0, 3])
+        ->and([$document->syncState?->pending_generation, $document->syncState?->pending_through_seq])->toBe([0, 3])
         ->and(Compaction::head($node)?->checkpointSeq)->toBe(2);
 });
 
@@ -67,6 +67,6 @@ it('commits exactly one of two publications of the same (C, H) and leaves HS −
     sort($kinds);
     expect($kinds)->toBe(['collaboration_checkpoint_conflict', 'committed'])
         ->and(count(Compaction::seqs($node)))->toBe(3 - 2)
-        ->and(Hub::aggregate($node)->pending_through_seq)->toBe(3)
+        ->and(Hub::aggregate($node)->syncState?->pending_through_seq)->toBe(3)
         ->and(Compaction::head($node)?->checkpointSeq)->toBe(2);
 });

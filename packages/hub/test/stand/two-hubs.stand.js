@@ -38,7 +38,7 @@ test('I17-3: unrelated updates saved on two hubs at once are all in the state re
     session(stand.backend, scene.node_id, scene.writer_user),
     session(stand.backend, scene.node_id, scene.writer_user),
   ])
-  assert.equal(sessionA.room, sessionB.room, 'both hubs serve the same room')
+  assert.equal(sessionA.options.room, sessionB.options.room, 'both hubs serve the same room')
 
   const a = await connect(stand.hubA, sessionA, clients)
   await eventually(() => text(a.doc).includes('Hello from setup'), 'the seed on hub A')

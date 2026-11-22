@@ -119,7 +119,7 @@ it('rechecks live authority after the room was opened and preserves the ACKed lo
         'protocol' => 'yjs', 'state_format' => 'yjs-update-v1', 'schema_version' => 1, 'type' => 'vaulter/rich-text',
         'state' => base64_encode('accepted'), 'content' => Hub::tiptap('Accepted before revoke'),
     ], null)->assertOk()->assertJsonPath('marker_cleared', true);
-    expect(Hub::aggregate($this->node)->collab_state)->toBe('accepted')
+    expect(Hub::aggregate($this->node)->syncState?->collab_state)->toBe('accepted')
         ->and(Compaction::seqs($this->node))->toBe([])
         ->and(Compaction::marker($this->node))->toBe([null, null]);
 });

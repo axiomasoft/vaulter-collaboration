@@ -15,9 +15,9 @@ use Vaulter\Schema\ValueObjects\KeyColumnExpectation;
 /**
  * The side tables the collaboration module owns: the update log of a document generation, its committed receipts
  * and its head, and the permission versions of the drives. The log tables reference the documents aggregate only;
- * the working state, the generation (`collab_epoch`) and the pending marker stay in v_documents and change through the
- * documents state contract. The permission versions reference nothing: a drive's key is a string, and the drive adds no
- * column for collaboration.
+ * the generation (`collab_epoch`), working payload, binary checkpoint and pending marker belong to the Documents
+ * module and change through its state contract. The permission versions reference nothing: a drive's key is a string,
+ * and the drive adds no column for collaboration.
  */
 #[Internal]
 final class CollaborationSchema implements ModuleSchema

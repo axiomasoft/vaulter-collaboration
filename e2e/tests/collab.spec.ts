@@ -34,10 +34,10 @@ test('правки writer долетают до read-only viewer и снапшо
   const viewer = await viewerCtx.newPage()
 
   await writer.goto(`${baseURL}/?node=${node}&user=1`)
+  await expect(writer.getByTestId('status')).toHaveText('connected:writable')
   await viewer.goto(`${baseURL}/?node=${node}&user=2`)
 
   // Доступ кодируется из права на узле (бэкенд), а не из запроса.
-  await expect(writer.getByTestId('status')).toHaveText('connected:writable')
   await expect(viewer.getByTestId('status')).toHaveText('connected:readonly')
   await expect(viewer.getByTestId('readonly')).toHaveText('read-only')
 
@@ -45,7 +45,7 @@ test('правки writer долетают до read-only viewer и снапшо
   await typeInto(writer, 'привет от writer')
   await expect(editorOf(viewer)).toContainText('привет от writer')
 
-  // Debounced-снапшот хаба долетел до v_node_document_versions.collab_state.
+  // The hub published the revision's binary checkpoint.
   await expect
     .poll(
       async () => (await (await request.get(`${BACKEND}/e2e/snapshot/${node}`)).json()).has_state,
@@ -70,11 +70,11 @@ test('read-only viewer не может писать в общую комнату
   const viewer = await viewerCtx.newPage()
 
   await writer.goto(`${baseURL}/?node=${node}&user=1`)
+  await expect(writer.getByTestId('status')).toHaveText('connected:writable')
   // force=1 — насильно делаем редактор viewer'а editable, чтобы он ПОПЫТАЛСЯ писать;
   // read_only-сессию хаб должен задавить на сокете (апдейты viewer'а дропаются).
   await viewer.goto(`${baseURL}/?node=${node}&user=2&force=1`)
 
-  await expect(writer.getByTestId('status')).toHaveText('connected:writable')
   await expect(viewer.getByTestId('status')).toHaveText('connected:readonly')
 
   // writer ставит маркер, оба сходятся.

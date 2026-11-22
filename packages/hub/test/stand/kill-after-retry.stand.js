@@ -23,7 +23,7 @@ after(() => closeAll(clients))
 test('I17-2: every acknowledged update survives a backend outage that outlasts the retry deadline and a SIGKILL of all hubs', { timeout: 300000 }, async () => {
   const scene = await newScene(stand.backend)
   const writer = await session(stand.backend, scene.node_id, scene.writer_user)
-  assert.equal(writer.mode, 'rw')
+  assert.equal(writer.mode, 'write')
 
   const client = await connect(stand.hubA, writer, clients)
   await eventually(() => text(client.doc).includes('Hello from setup'), 'the seed')

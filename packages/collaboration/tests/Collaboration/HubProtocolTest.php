@@ -83,7 +83,7 @@ it('lets a read-only connection load but never append', function (): void {
     Hub::call('append', Hub::seedBody($node, 'reader-seed'), Hub::token($node, mode: 'ro'))->assertForbidden();
 
     expect(Compaction::head($node))->toBeNull()
-        ->and(Hub::aggregate($node)->pending_through_seq)->toBeNull();
+        ->and(Hub::aggregate($node)->syncState?->pending_through_seq)->toBeNull();
 });
 
 it('accepts exactly one seed per generation', function (): void {
@@ -132,7 +132,7 @@ it('publishes the projection the hub emits for a link, an image and a table in a
     $result = Compaction::publish(Compaction::leaseOf($node), overrides: ['content' => $projection]);
 
     expect($result->markerCleared)->toBeTrue()
-        ->and(Hub::aggregate($node)->content['content'][0]['content'][0]['marks'][0]['attrs']['href'])->toBe('https://example.com');
+        ->and(Hub::aggregate($node)->payload?->content['content'][0]['content'][0]['marks'][0]['attrs']['href'])->toBe('https://example.com');
 });
 
 it('refuses a seed built before a REST update and loses no text', function (): void {
@@ -140,10 +140,10 @@ it('refuses a seed built before a REST update and loses no text', function (): v
     $loaded = Hub::call('load', ['room' => Hub::room($node)], Hub::token($node))->assertOk();
     $version = $loaded->json('state_version');
 
-    // A REST replace of a collaborative document without a checkpoint is an explicit reseed: the generation moves once.
+    // A snapshot replacement advances the state version, so a seed from the old JSON is stale.
     $handle = Vaulter::drive($node->storage()->firstOrFail())->actingAs(AccessTestHelpers::user(1));
     Documents::in($handle)->update($node->id, Hub::tiptap('Written over REST'));
-    expect(Hub::aggregate($node)->collab_epoch)->toBe(1);
+    expect(Hub::aggregate($node)->collab_epoch)->toBe(0);
 
     // The hub still seeds from what it loaded ('Draft'): refused, 'Written over REST' survives.
     Hub::call('append', Hub::seedBody($node, 'stale-seed', stateVersion: $version), Hub::token($node))
@@ -152,10 +152,10 @@ it('refuses a seed built before a REST update and loses no text', function (): v
         ->assertJsonPath('meta.context.expected_state_version', $version)
         ->assertJsonPath('meta.context.actual_state_version', Hub::aggregate($node)->state_version);
     $after = Hub::aggregate($node);
-    expect($after->collab_state)->toBeNull()
-        ->and($after->pending_through_seq)->toBeNull()
+    expect($after->syncState?->collab_state)->toBeNull()
+        ->and($after->syncState?->pending_through_seq)->toBeNull()
         ->and(Compaction::seqs($node))->toBe([])
-        ->and($after->content['content'][0]['content'][0]['text'])->toBe('Written over REST');
+        ->and($after->payload?->content['content'][0]['content'][0]['text'])->toBe('Written over REST');
 
     // The hub loads again and seeds from the current content.
     $reloaded = Hub::call('load', ['room' => Hub::room($node)], Hub::token($node))
@@ -190,7 +190,7 @@ it('fences off an append from the room opened before a restore (V12)', function 
 
     $restored = Hub::aggregate($node);
     expect($restored->collab_epoch)->toBe(1)
-        ->and($restored->content['content'][0]['content'][0]['text'])->toBe('Draft');
+        ->and($restored->payload?->content['content'][0]['content'][0]['text'])->toBe('Draft');
     Event::assertDispatched(DocumentRestored::class, static fn (DocumentRestored $event): bool => $event->epoch === 1
         && $event->restoredFrom->id === (string) $first->getKey()
         && $event->stateVersion === $restored->state_version);
@@ -209,8 +209,8 @@ it('fences off an append from the room opened before a restore (V12)', function 
     }
 
     $after = Hub::aggregate($node);
-    expect($after->content)->toBe($restored->content)
-        ->and($after->collab_state)->toBe($restored->collab_state)
+    expect($after->payload?->content)->toBe($restored->payload?->content)
+        ->and($after->syncState?->collab_state)->toBe($restored->syncState?->collab_state)
         ->and($after->state_version)->toBe($restored->state_version)
         ->and(Compaction::head($node, 0))->toBeNull();
 
@@ -234,7 +234,7 @@ it('fences a past epoch inside the locked write itself, not only at the endpoint
         ->and(Compaction::head($node, 0))->toBeNull();
 });
 
-it('moves the epoch on an external JSON replace of a document with Yjs state', function (): void {
+it('replaces the snapshot and fences its old Yjs room when a writer reserves the journal', function (): void {
     $node = Hub::document(level: RoleRegistry::WRITER, actorId: 1);
     Hub::call('append', Hub::seedBody($node, 'room-state'), Hub::token($node))->assertOk();
     Compaction::publish(Compaction::leaseOf($node));
@@ -243,9 +243,10 @@ it('moves the epoch on an external JSON replace of a document with Yjs state', f
     Documents::in($handle)->update($node->id, Hub::tiptap('Replaced by API'));
 
     $document = Hub::aggregate($node);
-    expect($document->collab_epoch)->toBe(1)
-        // The hub seeds the next room from the replaced JSON.
-        ->and($document->collab_state)->toBeNull();
+    expect($document->collab_epoch)->toBe(0)
+        ->and($document->payload?->content)->toBe(Hub::tiptap('Replaced by API'))
+        ->and($document->syncState?->collab_state)->toBeNull();
+    Hub::session($node)->assertCreated()->assertJsonPath('data.generation', 1);
     Hub::call('append', Hub::appendBody($node, 'stale', generation: 0), Hub::token($node, epoch: 0))
         ->assertStatus(409)
         ->assertJsonPath('code', 'collaboration_epoch_mismatch');
@@ -328,7 +329,7 @@ it('refuses a checkpoint state above collaboration.max_state_bytes with 413 and 
     Hub::callV2('checkpoint', $checkpoint(str_repeat('y', 9)), token: null)
         ->assertStatus(413)
         ->assertJsonPath('code', 'collaboration_update_too_large');
-    expect(Hub::aggregate($node)->collab_state)->toBeNull()
+    expect(Hub::aggregate($node)->syncState?->collab_state)->toBeNull()
         ->and(Compaction::seqs($node))->toBe([1]);
 
     Hub::callV2('checkpoint', $checkpoint(str_repeat('y', 8)), token: null)->assertOk()->assertJsonPath('marker_cleared', true);
@@ -341,7 +342,7 @@ it('refuses a checkpoint projection above the content limit', function (): void 
 
     expect(fn (): CheckpointResult => Compaction::publish(Compaction::leaseOf($node), overrides: ['content' => Hub::tiptap(str_repeat('x', 2048))]))
         ->toThrow(InvalidDocumentContentException::class);
-    expect(Hub::aggregate($node)->collab_state)->toBeNull()
+    expect(Hub::aggregate($node)->syncState?->collab_state)->toBeNull()
         ->and(Compaction::marker($node))->toBe([0, 1]);
 });
 

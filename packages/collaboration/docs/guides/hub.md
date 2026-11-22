@@ -40,7 +40,7 @@ workflow is `.github/workflows/collaboration-hub-image.yml`.
         │                                  token renewal ──POST /v1/collaboration/hub/renew────────┤
         │                                  compaction ─────POST …/compaction/lease, …/checkpoint───┤
         └──── POST /api/vaulter/v1/documents/{node}/collaboration/session ──▶ Laravel ◀───────────┘
-                                                 update log + receipts (v_collaboration_*), checkpoint (v_documents)
+                                                 log + receipts (v_collaboration_*), checkpoint (v_document_sync_states)
 ```
 
 1. The client calls `POST /api/vaulter/v1/documents/{node}/collaboration/session` and gets a session: the room

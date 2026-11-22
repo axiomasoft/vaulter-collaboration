@@ -1,16 +1,16 @@
-# Docker variant of ../../testbench.yaml — bind-mounted to /app/testbench.yaml in the
-# laravel container. testbench's `serve` curates the child process env, so the DB
-# connection MUST travel through testbench.yaml `env` (not bare container env).
+# The container gives Testbench its own Laravel skeleton. This env list reaches the serve child.
+laravel: /tmp/vaulter-testbench-app
 providers:
   - Vaulter\VaulterServiceProvider
   - Vaulter\Media\VaulterMediaServiceProvider
   - Vaulter\Drive\VaulterDriveServiceProvider
   - Vaulter\Documents\VaulterDocumentsServiceProvider
   - Vaulter\Collaboration\VaulterCollaborationServiceProvider
-  - Vaulter\Tests\E2E\E2eServiceProvider
+  - Vaulter\Collaboration\Tests\E2E\E2eServiceProvider
 
 env:
   - APP_KEY="base64:lRknxO3IznrZODHVPvLNKylvYP19ch+EXZ8dM+i3OlY="
+  - APP_ENV="local"
   - APP_URL="http://localhost:8000"
   # Postgres-сервис из docker-compose.
   - DB_CONNECTION="pgsql"
@@ -21,7 +21,8 @@ env:
   - DB_PASSWORD="secret"
   # Hocuspocus-хаб. URL — БРАУЗЕРНО-достижимый адрес (клиент коннектится с хоста),
   # поэтому localhost:1234 (хаб опубликован на хост), а не имя сервиса.
-  - VAULTER_COLLAB_DRIVER="hocuspocus"
-  - VAULTER_COLLAB_URL="ws://localhost:1234"
+  - CACHE_STORE="database"
+  - VAULTER_COLLAB_URL="ws://localhost:1234?protocol=2"
   - VAULTER_COLLAB_JWT_KEYS="e2e-1:e2e-collab-jwt-key-change-me-at-least-32-bytes"
   - VAULTER_COLLAB_JWT_ACTIVE_KID="e2e-1"
+  - VAULTER_COLLAB_WEBHOOK_SECRET="e2e-collab-webhook-secret"

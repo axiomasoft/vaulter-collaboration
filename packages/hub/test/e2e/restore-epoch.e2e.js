@@ -24,8 +24,8 @@ after(() => closeAll(clients))
 test('V12: a restore during a live session fences the old room; the reopened room shows the restored document', async () => {
   const scene = await newScene(BACKEND)
   const writerSession = await session(BACKEND, scene.node_id, scene.writer_user)
-  assert.equal(writerSession.mode, 'rw')
-  assert.equal(writerSession.epoch, 0)
+  assert.equal(writerSession.mode, 'write')
+  assert.equal(writerSession.generation, 1)
 
   const writer = await connect(HUB, writerSession, clients)
   // The hub seeded the room from the JSON once, on the server.
@@ -36,9 +36,12 @@ test('V12: a restore during a live session fences the old room; the reopened roo
   const earlier = writer.edit('Edit before restore')
   await writer.ack(earlier.id)
 
-  // The restore drains the log (the hub's compaction worker checkpoints it), keeps it as a revision and closes the generation.
+  // Wait for compaction so the restore can use the current content ETag.
+  await eventually(async () => JSON.stringify((await stored(BACKEND, scene.node_id)).content)
+    .includes(earlier.words), 'the checkpoint of the first edit')
+  // The restore keeps the checkpoint as a revision and closes the generation.
   await restore(BACKEND, scene.node_id, scene.first_revision_id, scene.writer_user)
-  assert.equal((await stored(BACKEND, scene.node_id)).epoch, 1)
+  assert.equal((await stored(BACKEND, scene.node_id)).epoch, 2)
 
   // The old room keeps editing: its next append is refused and the hub closes the room.
   const late = writer.edit('Late edit after restore')
@@ -47,14 +50,14 @@ test('V12: a restore during a live session fences the old room; the reopened roo
   writer.destroy()
 
   const fenced = await stored(BACKEND, scene.node_id)
-  assert.equal(fenced.epoch, 1)
+  assert.equal(fenced.epoch, 2)
   assert.equal(JSON.stringify(fenced.content).includes('Late edit after restore'), false)
   assert.equal(JSON.stringify(fenced.content).includes('Edit before restore'), false)
 
   // A new session opens the next generation on a NEW Y.Doc.
   const reopenedSession = await session(BACKEND, scene.node_id, scene.writer_user)
-  assert.equal(reopenedSession.epoch, 1)
-  assert.notEqual(reopenedSession.room, writerSession.room)
+  assert.equal(reopenedSession.generation, 2)
+  assert.notEqual(reopenedSession.options.room, writerSession.options.room)
   const reopened = await connect(HUB, reopenedSession, clients)
   await eventually(() => text(reopened.doc).includes('Hello from setup'), 'the restored content')
   assert.equal(text(reopened.doc).includes('Edit before restore'), false)
@@ -74,7 +77,7 @@ test('a read-only client changes nothing', async () => {
   await eventually(() => text(writer.doc).includes('Hello from setup'), 'the seed')
 
   const viewerSession = await session(BACKEND, scene.node_id, scene.viewer_user)
-  assert.equal(viewerSession.mode, 'ro')
+  assert.equal(viewerSession.mode, 'read')
   const viewer = await connect(HUB, viewerSession, clients)
 
   const viewerEdit = viewer.edit('Viewer typing')
@@ -91,8 +94,10 @@ test('a read-only client changes nothing', async () => {
 
 test('V11: a client with an older schema version is read-only', async () => {
   const scene = await newScene(BACKEND)
+  const writer = await connect(HUB, await session(BACKEND, scene.node_id, scene.writer_user), clients)
+  await eventually(() => text(writer.doc).includes('Hello from setup'), 'the writer seed')
   const outdated = await session(BACKEND, scene.node_id, scene.writer_user, 0)
-  assert.equal(outdated.mode, 'ro')
+  assert.equal(outdated.mode, 'read')
   assert.equal(outdated.schema_version, 1)
 
   const client = await connect(HUB, outdated, clients)

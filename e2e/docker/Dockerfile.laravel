@@ -9,7 +9,7 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# vendor/ is bind-mounted from the repo (already installed). The DB connection reaches
-# the testbench-serve child via /app/testbench.yaml (mounted from docker/testbench.pgsql.yaml).
-# Migrations run in a dedicated one-shot `migrate` service (see e2e/docker-compose.yml) instead of migrate:fresh.
+ENV TESTBENCH_WORKING_PATH=/tmp/vaulter-testbench-config
+COPY --chmod=755 testbench-entrypoint.sh /usr/local/bin/vaulter-testbench
+ENTRYPOINT ["vaulter-testbench"]
 CMD ["vendor/bin/testbench", "serve", "--host", "0.0.0.0", "--port", "8000"]

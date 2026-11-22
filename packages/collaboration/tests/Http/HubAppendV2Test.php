@@ -18,6 +18,7 @@ use Vaulter\Collaboration\Tests\Collaboration\HubTestHelpers as Hub;
 use Vaulter\Collaboration\Tests\Support\DocumentsV1 as Docs;
 use Vaulter\Configuration\DatabaseOptions;
 use Vaulter\Drive\Models\Node;
+use Vaulter\Drive\Testing\Access\AccessTestHelpers;
 use Vaulter\Testing\Fixtures\TestUser;
 use Vaulter\ValueObjects\Access\ActorRef;
 
@@ -40,7 +41,7 @@ it('appends an update and answers the committed receipt with the protocol header
         ->assertHeader(HubProtocol::HEADER, '2')
         ->assertExactJson(['generation' => 0, 'update_id' => $id, 'seq' => 1, 'sha256' => hash('sha256', "\x00\x01update"), 'persisted' => true, 'permissions_stale' => false]);
 
-    expect([Hub::aggregate($this->node)->pending_generation, Hub::aggregate($this->node)->pending_through_seq])->toBe([0, 1]);
+    expect([Hub::aggregate($this->node)->syncState?->pending_generation, Hub::aggregate($this->node)->syncState?->pending_through_seq])->toBe([0, 1]);
 });
 
 it('answers a retried append with the same receipt', function (): void {
@@ -108,11 +109,11 @@ it('seeds a load from the content of the locked row, together with its state ver
     $room = $hub->open($call, $call->room);
 
     // A REST PUT commits between open() and the locked read of the log.
-    $opened = Hub::aggregate($this->node)->content;
-    $version = Hub::aggregate($this->node)->state_version + 1;
-    DB::table(app(DatabaseOptions::class)->table('documents'))
-        ->where('node_id', $this->node->getKey())
-        ->update(['content' => json_encode(Hub::tiptap('Changed')), 'state_version' => $version]);
+    $document = Hub::aggregate($this->node);
+    $opened = $document->payload?->content;
+    $version = $document->state_version + 1;
+    $this->actingAs(AccessTestHelpers::user());
+    Docs::put((string) $this->node->getKey(), Hub::tiptap('Changed'))->assertOk();
 
     $loaded = $hub->loadLog($room, $call);
 

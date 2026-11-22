@@ -36,7 +36,7 @@ function lockingAppend(Node $node, string $payload, string $updateId, bool $seed
 }
 
 /**
- * The selects `$run` issues on the log tables and v_documents, as MySQL would receive them.
+ * The selects `$run` issues on the log and working document tables, as MySQL would receive them.
  *
  * @return array<string, list<string>> by entity
  */
@@ -90,7 +90,7 @@ function lockingSelectsByEntity(array $selects): array
 {
     $tables = app(DatabaseOptions::class);
     $byEntity = [];
-    foreach (['documents', 'collaboration_heads', 'collaboration_updates', 'collaboration_receipts'] as $entity) {
+    foreach (['documents', 'document_payloads', 'document_sync_states', 'collaboration_heads', 'collaboration_updates', 'collaboration_receipts'] as $entity) {
         $from = 'from `'.$tables->table($entity).'`';
         $byEntity[$entity] = array_values(array_filter($selects, static fn (string $sql): bool => str_contains($sql, $from)));
     }
@@ -117,7 +117,7 @@ it('reads the receipt of an appended update id with a locking read, on a first a
     }
 });
 
-it('reads the document row and the tail of a load with locking reads', function (): void {
+it('reads the document row, payload, sync state and tail of a load with locking reads', function (): void {
     lockingAppend($this->node, 'first', (string) Str::uuid(), seed: true);
     lockingAppend($this->node, 'second', (string) Str::uuid());
 
@@ -130,6 +130,10 @@ it('reads the document row and the tail of a load with locking reads', function 
         ->and($snapshot->tail)->toHaveCount(2)
         ->and($selects['documents'])->not->toBeEmpty()
         ->each->toEndWith('for update')
+        ->and($selects['document_payloads'])->not->toBeEmpty()
+        ->each->toEndWith('lock in share mode')
+        ->and($selects['document_sync_states'])->not->toBeEmpty()
+        ->each->toEndWith('lock in share mode')
         ->and($selects['collaboration_heads'])->not->toBeEmpty()
         ->each->toEndWith('for update')
         ->and($selects['collaboration_updates'])->toHaveCount(1)

@@ -73,20 +73,20 @@ services:
       timeout: 3s
       retries: 30
 
-  # The Laravel host: Orchestra Testbench served on PostgreSQL, with the e2e routes (packages/core/tests/E2E).
+  # The Laravel host: Orchestra Testbench served on PostgreSQL, with the e2e routes from e2e/php.
   # `migrate` (not `migrate:fresh`): the scenarios restart this container and the data must stay.
   backend:
     build:
-      context: ../../..
-      dockerfile: e2e/docker/Dockerfile.laravel
+      context: ../../../e2e/docker
+      dockerfile: Dockerfile.laravel
     working_dir: /app
     command: ["sh", "-c", "vendor/bin/testbench migrate --force && vendor/bin/testbench serve --host 0.0.0.0 --port 8000"]
     volumes:
-      - ../../..:/app
+      - ../../..:/app:ro
       - ../../../../vaulter:/vaulter:ro
       - ../../../../packman:/packman:ro
       # The DB connection reaches the testbench-serve child only through testbench.yaml.
-      - ./testbench.yaml:/app/testbench.yaml:ro
+      - ./testbench.yaml:/tmp/vaulter-testbench-config/testbench.yaml:ro
     ports:
       - "127.0.0.1:${VAULTER_E2E_PORT:-8787}:8000"
     depends_on:

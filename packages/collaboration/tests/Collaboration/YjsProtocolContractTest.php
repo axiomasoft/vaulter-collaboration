@@ -11,6 +11,7 @@ use Vaulter\Collaboration\HocuspocusCollaborationDriver;
 use Vaulter\Collaboration\Revocation\PermissionVersions;
 use Vaulter\Collaboration\Tests\Collaboration\HubTestHelpers as Hub;
 use Vaulter\Collaboration\Tests\Support\Compaction;
+use Vaulter\Collaboration\Tests\Support\DocumentTestHelpers;
 use Vaulter\Documents\Contracts\CollaborationProtocolDriver;
 use Vaulter\Documents\Data\Collaboration\CollaborationGrant;
 use Vaulter\Documents\Data\Collaboration\CollaborationMode;
@@ -124,12 +125,12 @@ it('requires a nonempty yjs checkpoint and preserves pending updates on rejectio
     $node = Hub::document();
     Hub::call('append', Hub::seedBody($node, 'seed'), Hub::token($node))->assertOk();
     $lease = Compaction::leaseOf($node);
-    $before = Hub::aggregate($node)->getAttributes();
+    $before = DocumentTestHelpers::storedAttributes(Hub::aggregate($node));
     Hub::callV2('checkpoint', [
         'document' => $lease->nodeId, 'generation' => 0, 'lease_token' => $lease->token,
         'covered_from' => 0, 'covered_through' => 1, 'expected_checkpoint_version' => $lease->checkpointVersion,
         'state' => $checkpoint, 'content' => Hub::tiptap('Seed'),
     ], token: null)->assertStatus(422);
-    expect(Hub::aggregate($node)->getAttributes())->toBe($before)
+    expect(DocumentTestHelpers::storedAttributes(Hub::aggregate($node)))->toBe($before)
         ->and(Compaction::seqs($node))->toBe([1]);
 })->with(['null checkpoint' => null, 'empty checkpoint' => '']);

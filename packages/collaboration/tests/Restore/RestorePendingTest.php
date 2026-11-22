@@ -33,7 +33,7 @@ use Vaulter\Kernel;
 /** @return list<string|null> the binary state of each revision, oldest first */
 function pendingRevisionStates(mixed $node): array
 {
-    return DocumentTestHelpers::revisions($node)->pluck('collab_state')->all();
+    return DocumentTestHelpers::revisions($node)->pluck('syncState.collab_state')->all();
 }
 
 beforeEach(function (): void {
@@ -66,8 +66,8 @@ it('drains the saved edits through the hub, keeps them in a revision and closes 
         ->and(Compaction::rows('collaboration_receipts'))->toBe(3)
         ->and($document->collab_epoch)->toBe(1)
         ->and($closed?->retiredAt)->not->toBeNull()
-        ->and([$document->pending_generation, $document->pending_through_seq])->toBe([null, null])
-        ->and(data_get($document->content, 'content.0.content.0.text'))->toBe('Draft');
+        ->and([$document->syncState?->pending_generation, $document->syncState?->pending_through_seq])->toBe([null, null])
+        ->and(data_get($document->payload?->content, 'content.0.content.0.text'))->toBe('Draft');
 });
 
 it('refuses the restore with 409 when the hub does not answer, and keeps the generation and its log', function (): void {
@@ -88,7 +88,7 @@ it('refuses the restore with 409 when the hub does not answer, and keeps the gen
         ->and($after->collab_epoch)->toBe(0)
         ->and($after->state_version)->toBe($before->state_version)
         ->and($after->revision_count)->toBe($before->revision_count)
-        ->and([$after->pending_generation, $after->pending_through_seq])->toBe([0, 2])
+        ->and([$after->syncState?->pending_generation, $after->syncState?->pending_through_seq])->toBe([0, 2])
         ->and(Compaction::rows('collaboration_receipts'))->toBe(2)
         ->and(Compaction::seqs($this->node))->toBe([1, 2])
         ->and(Compaction::head($this->node, 0)?->retiredAt)->toBeNull()
@@ -112,7 +112,7 @@ it('answers the REST restore with 409 document_state_pending when the drain miss
         ->and(Compaction::rows('collaboration_receipts'))->toBe(1);
 });
 
-it('drains before a REST replace, keeps the drained edits in a revision and closes the generation', function (): void {
+it('drains before a snapshot replace and keeps the drained edits in a revision', function (): void {
     FakeHub::install();
     Compaction::append($this->node, 'u1');
     Compaction::append($this->node, 'u2');
@@ -122,10 +122,10 @@ it('drains before a REST replace, keeps the drained edits in a revision and clos
     $document = Hub::aggregate($this->node);
     expect(FakeHub::$drains)->toHaveCount(1)
         ->and(pendingRevisionStates($this->node))->toContain('u1u2')
-        ->and($document->collab_epoch)->toBe(1)
-        ->and($document->collab_state)->toBeNull()
-        ->and(data_get($document->content, 'content.0.content.0.text'))->toBe('Mine')
-        ->and(Compaction::head($this->node, 0)?->retiredAt)->not->toBeNull()
+        ->and($document->collab_epoch)->toBe(0)
+        ->and($document->syncState?->collab_state)->toBeNull()
+        ->and(data_get($document->payload?->content, 'content.0.content.0.text'))->toBe('Mine')
+        ->and(Compaction::head($this->node, 0)?->retiredAt)->toBeNull()
         ->and(Compaction::rows('collaboration_receipts'))->toBe(2);
 });
 

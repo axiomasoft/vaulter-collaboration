@@ -125,7 +125,7 @@ it('never prunes the document\'s current generation, even one marked retired', f
 it('prunes the updates a closed generation still held with it', function (): void {
     Compaction::append($this->node, 'u1');
     // Closed with its payload still in the log (the marker was cleared without a compaction).
-    Hub::aggregate($this->node)->forceFill(['pending_generation' => null, 'pending_through_seq' => null, 'pending_protocol' => null, 'pending_state_format' => null, 'pending_schema_version' => null])->save();
+    Compaction::clearPending(Hub::aggregate($this->node));
     retentionRestore($this->node);
     $this->travel(app(CollaborationOptions::class)->retiredGenerationGraceSeconds() + 1)->seconds();
 

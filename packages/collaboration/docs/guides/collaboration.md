@@ -6,7 +6,7 @@ outline: deep
 
 # Realtime Collaboration
 
-Vaulter edits **document nodes** (`kind = document`, content in the `v_documents` aggregate) collaboratively in
+Vaulter edits **document nodes** (`kind = document`, content in `v_document_payloads`) collaboratively in
 realtime. The conflict-free merge is powered by **Yjs**: the binary updates are the **source of truth**, the TipTap JSON
 is a projection of a checkpoint. Collaboration is a package of its own, three pieces that are installed together:
 
@@ -151,12 +151,10 @@ generation errors are not.
 
 ## Generations: the epoch
 
-Every document has a **collaboration generation** (`v_documents.collab_epoch`). It moves on when the working state is
-replaced from outside the room:
-
-- `restore()` of a revision;
-- `update()` of a collaborative document that already has a Yjs state (an API/PHP JSON replace — the Yjs state is
-  dropped and the next room seeds from the new JSON).
+Every document has a **collaboration generation** (`v_documents.collab_epoch`). Restoring a revision or reserving
+the journal with the first compatible writer session advances the generation. A JSON replacement in snapshot mode
+advances the state version and clears the binary checkpoint. In journal mode a JSON replacement is rejected with
+`409 document_command_required`.
 
 The generation is part of the room name, the token and every update. That is the **storage fence**: an append carries its
 generation and is compared with the document's current one under the document locks, so an update of a room opened
@@ -182,8 +180,8 @@ Vue client ──POST /api/vaulter/v1/documents/{node}/collaboration/session {sc
 ```
 
 1. The client calls `POST {prefix}/v1/documents/{node}/collaboration/session` (`201`), optionally with the
-   `schema_version` its editor supports. The route exists only while the module is active; an inactive module answers
-   `404` and `409 collaboration_unavailable` is the documented "not offered" answer.
+   `schema_version` its editor supports. Documents owns this route. Without a compatible registered driver it
+   answers `409 collaboration_unavailable`.
 2. `DocumentOperations::collaborationSession($document, $clientSchemaVersion)` locates the node, authorizes `View` (a
    node the actor cannot see answers `404 node_not_found`) and decides the mode. The session is **read-write** only when
    all of these hold:
@@ -191,27 +189,31 @@ Vue client ──POST /api/vaulter/v1/documents/{node}/collaboration/session {sc
    - the document's type is installed and its content reads without loss in a schema this installation writes;
    - the client's schema version is absent or equals the type's;
    - the drive is active (an archived drive is read-only).
-3. The driver mints the [session](#the-session-descriptor).
+3. The first writer reserves the journal generation. The driver then mints the [session](#the-session-descriptor).
 
 ::: warning Connect with `protocol=2`
 The hub treats a connection whose URL does not carry `?protocol=2` as a protocol-1 client and makes it **read-only**.
-The bundled `@vaulter/vue-collaboration` transport opens the provider with the session `url` as it is, so until it adds
-the parameter itself, pass it through the `createHocuspocusProvider` override of `createCollaborationAdapter({ providers })`.
+For the bundled `@vaulter/vue-collaboration` transport, include the parameter in `VAULTER_COLLAB_URL` so the session
+endpoint already carries it.
 :::
 
 ### The session descriptor
 
 ```json
 {
-  "driver": "hocuspocus",
-  "room": "vaulter.documents.01JDRIVE.01JNODE.3",
-  "node_id": "01JNODE",
-  "drive_id": "01JDRIVE",
-  "epoch": 3,
-  "schema_version": 1,
-  "mode": "rw",
+  "protocol": "yjs",
+  "version": "yjs/2",
+  "endpoint": "wss://collab.example.com?protocol=2",
   "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "url": "wss://collab.example.com"
+  "expires_at": 1800000300,
+  "mode": "write",
+  "node_id": "01JNODE",
+  "generation": 3,
+  "schema_version": 1,
+  "options": {
+    "room": "vaulter.documents.01JDRIVE.01JNODE.3",
+    "drive_id": "01JDRIVE"
+  }
 }
 ```
 
@@ -309,9 +311,8 @@ authentication with the reason `Collaboration token expired`, so the client rene
 The append-only log is folded into a **checkpoint** (a merged Yjs state and its JSON projection, kept on the document by
 the documents package) by the hub. PHP does not merge Yjs.
 
-- A generation with uncheckpointed records carries a **pending marker** on its document
-  (`v_documents.pending_generation`, `pending_through_seq`): the saved edits are in the log, the stored JSON and binary
-  checkpoint are stale.
+- A generation with uncheckpointed records carries a **pending marker** in `v_document_sync_states`
+  (`pending_generation`, `pending_through_seq`). The log holds edits newer than the stored JSON and binary checkpoint.
 - The hub's compaction worker leases due generations (see `compaction.*`), merges the checkpoint and the tail, and
   publishes with one compare-and-set; success deletes only the payloads of that generation up to the covered sequence and
   clears the marker when it is covered. An append that arrived meanwhile stays; a losing compaction deletes nothing.

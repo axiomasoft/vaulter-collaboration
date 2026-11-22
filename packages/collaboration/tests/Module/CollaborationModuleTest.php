@@ -19,6 +19,7 @@ use Vaulter\Collaboration\Drain\PendingRemovalGuard;
 use Vaulter\Collaboration\HocuspocusCollaborationDriver;
 use Vaulter\Collaboration\Operations\CollaborationOperations;
 use Vaulter\Collaboration\Schema\CollaborationSchema;
+use Vaulter\Collaboration\Tests\E2E\E2eServiceProvider;
 use Vaulter\Documents\Contracts\CollaborationProtocolDriver;
 use Vaulter\Documents\State\PendingStateDrainer;
 use Vaulter\Events\EventSink;
@@ -105,8 +106,16 @@ it('stays off by default: no routes, no driver, no operations, and the host stil
         ->and($app['router']->has('vaulter.v1.documents.collaboration.session'))->toBeTrue()
         ->and($kernel->extensions()->handlerKeys(CollaborationProtocolDriver::class) !== [])->toBeFalse()
         ->and($app->bound(CollaborationOperations::class))->toBeFalse()
-        ->and($app['config']->has('vaulter-collaboration'))->toBeTrue() // Installed Packman plugin defaults remain available.
+        ->and($app['config']->has('vaulter-collaboration'))->toBeFalse()
         ->and(FreshApplication::$queries)->toBe(0);
+});
+
+it('refuses to register the E2E authentication fixture in production', function (): void {
+    $app = FreshApplication::boot();
+    $app->instance('env', 'production');
+
+    expect(fn () => $app->register(E2eServiceProvider::class))
+        ->toThrow(LogicException::class, 'The collaboration test stand requires a local or testing environment.');
 });
 
 it('mounts the session and the hub routes behind the module middleware once it is switched on', function (): void {
@@ -126,6 +135,7 @@ it('mounts the session and the hub routes behind the module middleware once it i
             'vaulter.v1.collaboration.hub.recheck',
         ])
         ->and($kernel->extensions()->handler(CollaborationProtocolDriver::class, 'yjs'))->toBeInstanceOf(HocuspocusCollaborationDriver::class)
+        ->and($app['config']->has('vaulter-collaboration.hub.url'))->toBeTrue()
         ->and($app['config']->has('vaulter-collaboration.driver'))->toBeFalse()
         ->and(FreshApplication::$queries)->toBe(0);
 });

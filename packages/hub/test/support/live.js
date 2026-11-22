@@ -53,7 +53,7 @@ export function scene(backend) {
   return json(`${backend}/e2e/setup`)
 }
 
-/** A room session of the document (collaboration#protocol): { room, token, mode, epoch, schema_version, … }. */
+/** The versioned Documents API's room session, including the Yjs room in options. */
 export function session(backend, nodeId, user, schemaVersion) {
   return json(`${backend}${API}/documents/${nodeId}/collaboration/session`, {
     method: 'POST',
@@ -63,8 +63,19 @@ export function session(backend, nodeId, user, schemaVersion) {
 }
 
 /** Restore a revision of the document (closes the room's generation). */
-export function restore(backend, nodeId, revisionId, user) {
-  return json(`${backend}${API}/documents/${nodeId}/revisions/${revisionId}/restore`, { method: 'POST', user, body: {} })
+export async function restore(backend, nodeId, revisionId, user) {
+  const url = `${backend}${API}/documents/${nodeId}`
+  const headers = { Accept: 'application/json', 'X-E2E-User': String(user) }
+  const content = await fetch(`${url}/content`, { headers })
+  const etag = content.headers.get('ETag')
+  if (!content.ok || !etag) throw new Error(`GET ${url}/content → ${content.status}, expected an ETag`)
+
+  const response = await fetch(`${url}/revisions/${revisionId}/restore`, {
+    method: 'POST',
+    headers: { ...headers, 'If-Match': etag },
+  })
+  if (!response.ok) throw new Error(`Restore of ${revisionId} → ${response.status} ${await response.text()}`)
+  return response.json()
 }
 
 /** The working state as the backend stores it (the last checkpoint): { epoch, state_version, collab_state_size, content }. */
@@ -74,7 +85,9 @@ export function stored(backend, nodeId) {
 
 /** The hub URL of a protocol 2 client: the hub makes a connection without `protocol=2` read-only. */
 export function hubUrl(base) {
-  return `${base}${base.includes('?') ? '&' : '?'}protocol=2`
+  const url = new URL(base)
+  url.searchParams.set('protocol', '2')
+  return url.href
 }
 
 /** The document's content as the TipTap JSON string (what the editor shows). */
@@ -93,6 +106,7 @@ function sha256Hex(bytes) {
  */
 export async function connect(hub, descriptor, registry = []) {
   const doc = new Y.Doc()
+  const room = descriptor.options.room
   const client = {
     doc,
     descriptor,
@@ -117,7 +131,7 @@ export async function connect(hub, descriptor, registry = []) {
       const entry = { id, words }
       client.sent.push(entry)
       client.provider.sendStateless(JSON.stringify({
-        t: 'u', v: 2, g: descriptor.epoch, id, h: sha256Hex(update), b: Buffer.from(update).toString('base64'),
+        t: 'u', v: 2, g: descriptor.generation, id, h: sha256Hex(update), b: Buffer.from(update).toString('base64'),
       }))
 
       return entry
@@ -131,7 +145,7 @@ export async function connect(hub, descriptor, registry = []) {
     },
   }
 
-  client.provider = new HocuspocusProvider({ url: hubUrl(hub), name: descriptor.room, token: descriptor.token, document: doc })
+  client.provider = new HocuspocusProvider({ url: hubUrl(hub), name: room, token: descriptor.token, document: doc })
   client.provider.on('close', ({ event }) => client.closes.push({ code: event?.code, reason: event?.reason }))
   client.provider.on('authenticationFailed', ({ reason }) => client.refusals.push(reason))
   client.provider.on('stateless', ({ payload }) => {
@@ -152,7 +166,7 @@ export async function connect(hub, descriptor, registry = []) {
   })
   registry.push(client)
 
-  await eventually(() => client.provider.isSynced, `sync of ${descriptor.room} on ${hub}`)
+  await eventually(() => client.provider.isSynced, `sync of ${room} on ${hub}`)
 
   return client
 }

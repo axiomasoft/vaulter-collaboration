@@ -24,9 +24,9 @@ it('issues a read-write session to an editor and never lets it be cached', funct
     $response = $this->postJson(Docs::url('documents/'.$node->getKey().'/collaboration/session'))
         ->assertCreated()
         ->assertJsonPath('data.mode', 'write')
-        ->assertJsonPath('data.generation', 0)
+        ->assertJsonPath('data.generation', 1)
         ->assertJsonPath('data.node_id', (string) $node->getKey())
-        ->assertJsonPath('data.options.room', Hub::room($node))
+        ->assertJsonPath('data.options.room', Hub::room($node->fresh()))
         ->assertJsonStructure(['data' => ['protocol', 'version', 'options', 'node_id', 'generation', 'schema_version', 'mode', 'token', 'endpoint', 'expires_at']]);
 
     expect($response->headers->get('Cache-Control'))->toContain('no-store');

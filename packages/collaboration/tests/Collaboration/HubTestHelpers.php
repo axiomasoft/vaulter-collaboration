@@ -95,6 +95,11 @@ final class HubTestHelpers
         return app(CollaborationOptions::class)->room($node->drive_id, $node->getKey(), $epoch ?? self::aggregate($node)->collab_epoch);
     }
 
+    public static function session(Node $node): TestResponse
+    {
+        return test()->actingAs(AccessTestHelpers::user())->postJson('api/vaulter/v1/documents/'.$node->getKey().'/collaboration/session');
+    }
+
     /**
      * A room token as RoomTokens mints it: `$mode` rw is the scope write, anything else read; the permission versions
      * are the drive's current ones.
@@ -217,6 +222,6 @@ final class HubTestHelpers
 
     public static function aggregate(Node $node): Document
     {
-        return Document::query()->where('node_id', $node->getKey())->firstOrFail();
+        return DocumentTestHelpers::document($node);
     }
 }

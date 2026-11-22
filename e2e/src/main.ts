@@ -15,7 +15,6 @@ const forceEditable = params.get('force') === '1'
 // Клиент с заголовком тестовой аутентификации — middleware E2eActingAs читает его и
 // логинит соответствующего пользователя. Боевой хост ставит свой auth/куки вместо этого.
 const client = createVaulterClient({
-  baseUrl: '/api/vaulter',
   headers: { 'X-E2E-User': user },
 })
 

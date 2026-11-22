@@ -46,5 +46,5 @@ it('gives two concurrent appends of one generation the seqs after the seed, each
         ->and(DB::table($tables->table('collaboration_updates'))->count())->toBe(3)
         ->and((int) DB::table($tables->table('collaboration_heads'))->value('head_seq'))->toBe(3)
         ->and(DB::table($tables->table('collaboration_heads'))->count())->toBe(1)
-        ->and([$document->pending_generation, $document->pending_through_seq])->toBe([0, 3]);
+        ->and([$document->syncState?->pending_generation, $document->syncState?->pending_through_seq])->toBe([0, 3]);
 });

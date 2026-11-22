@@ -74,7 +74,7 @@ it('removes the module once the drain checkpointed every pending document; the d
         ->and(Schema::hasTable('v_collaboration_receipts'))->toBeFalse()
         ->and(Schema::hasTable('v_collaboration_heads'))->toBeFalse()
         ->and(Schema::hasTable('v_documents'))->toBeTrue()
-        ->and(Hub::aggregate($this->pending)->collab_state)->toBe('saved')
+        ->and(Hub::aggregate($this->pending)->syncState?->collab_state)->toBe('saved')
         ->and(Compaction::marker($this->pending))->toBe([null, null]);
 });
 

@@ -21,14 +21,14 @@ services:
 
   migrate:
     build:
-      context: ..
-      dockerfile: e2e/docker/Dockerfile.laravel
+      context: ./docker
+      dockerfile: Dockerfile.laravel
     working_dir: /app
     volumes:
-      - ..:/app
+      - ..:/app:ro
       - ../../vaulter:/vaulter:ro
       - ../../packman:/packman:ro
-      - ./docker/testbench.pgsql.yaml:/app/testbench.yaml:ro
+      - ./docker/testbench.pgsql.yaml:/tmp/vaulter-testbench-config/testbench.yaml:ro
     command: ["vendor/bin/testbench", "migrate", "--force"]
     depends_on:
       postgres:
@@ -37,17 +37,17 @@ services:
 
   laravel:
     build:
-      context: ..
-      dockerfile: e2e/docker/Dockerfile.laravel
+      context: ./docker
+      dockerfile: Dockerfile.laravel
     working_dir: /app
     volumes:
-      - ..:/app
+      - ..:/app:ro
       - ../../vaulter:/vaulter:ro
       - ../../packman:/packman:ro
       # The DB connection reaches the testbench-serve child only via testbench.yaml.
-      - ./docker/testbench.pgsql.yaml:/app/testbench.yaml:ro
+      - ./docker/testbench.pgsql.yaml:/tmp/vaulter-testbench-config/testbench.yaml:ro
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -68,10 +68,11 @@ services:
       NODE_ENV: "development"
       VAULTER_COLLAB_PORT: "1234"
       VAULTER_COLLAB_MANAGEMENT_PORT: "1235"
+      VAULTER_COLLAB_WEBHOOK_SECRET: "e2e-collab-webhook-secret"
       VAULTER_BACKEND_URL: "http://laravel:8000"
       VAULTER_API_PREFIX: "api/vaulter"
     ports:
-      - "1234:1234"
+      - "127.0.0.1:1234:1234"
     depends_on:
       laravel:
         condition: service_healthy
@@ -85,7 +86,8 @@ services:
       retries: 20
 
   vite:
-    image: node:26-alpine
+    image: node:26.13.1-bookworm-slim
+    user: node
     working_dir: /app/e2e
     environment:
       # Vite proxies /api + /e2e to the Laravel service inside the compose network.
@@ -93,17 +95,16 @@ services:
     volumes:
       - ..:/app
       - ../../vaulter:/vaulter:ro
-    command: sh -c "npm install --no-audit --no-fund && npm run dev -- --host 0.0.0.0"
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
     ports:
-      - "5273:5273"
+      - "127.0.0.1:5273:5273"
     depends_on:
       laravel:
         condition: service_healthy
       hub:
         condition: service_healthy
-    # node:26-alpine ships wget (busybox) — no extra install needed.
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:5273 >/dev/null 2>&1 || exit 1"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5273').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 3s
       timeout: 3s
       retries: 40

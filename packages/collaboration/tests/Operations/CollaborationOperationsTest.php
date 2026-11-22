@@ -62,12 +62,12 @@ it('binds a collaboration session to the document generation and schema', functi
 
     $session = sessions($acting)->collaborationSession($node->id);
 
-    expect($session->generation)->toBe(1)
+    expect($session->generation)->toBe(2)
         ->and($session->schemaVersion)->toBe(1)
         ->and($session->protocol)->toBe('yjs')
         ->and($session->nodeId)->toBe($node->id)
         ->and($session->options['drive_id'])->toBe($node->driveId)
-        ->and($session->options['room'])->toBe('vaulter.documents.'.$node->driveId.'.'.$node->id.'.1')
+        ->and($session->options['room'])->toBe('vaulter.documents.'.$node->driveId.'.'.$node->id.'.2')
         ->and($session->mode)->toBe(CollaborationMode::Write);
 });
 

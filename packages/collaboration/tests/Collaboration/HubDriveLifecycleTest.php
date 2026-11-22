@@ -44,7 +44,7 @@ it('refuses an append when the drive changes after the room was opened', functio
 
     $action = $status === DriveStatus::Archived ? ArchiveDriveAction::class : DeleteDriveAction::class;
     app($action)->execute(DocumentTestHelpers::context($node));
-    $before = Hub::aggregate($node)->getAttributes();
+    $before = DocumentTestHelpers::storedAttributes(Hub::aggregate($node));
     $history = DocumentTestHelpers::revisions($node)->modelKeys();
     $sequence = $node->fresh()->sequence;
     Event::fake([DocumentContentUpdated::class]);
@@ -52,7 +52,7 @@ it('refuses an append when the drive changes after the room was opened', functio
     expect(fn () => $hub->append($room, $call, new UpdateEnvelope(
         generation: 0, updateId: (string) Str::uuid(), payload: 'late-update', claimedSha256: hash('sha256', 'late-update'),
     )))->toThrow($exception)
-        ->and(Hub::aggregate($node)->getAttributes())->toBe($before)
+        ->and(DocumentTestHelpers::storedAttributes(Hub::aggregate($node)))->toBe($before)
         ->and(Compaction::head($node))->toBeNull()
         ->and(DocumentTestHelpers::revisions($node)->modelKeys())->toBe($history)
         ->and($node->fresh()->sequence)->toBe($sequence);

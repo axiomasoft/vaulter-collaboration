@@ -2,12 +2,12 @@
 
 declare(strict_types=1);
 
-use Illuminate\Support\Facades\DB;
 use Vaulter\Collaboration\Exceptions\CollaborationCheckpointConflictException;
 use Vaulter\Collaboration\Exceptions\CollaborationEpochMismatchException;
 use Vaulter\Collaboration\Persistence\CheckpointResult;
 use Vaulter\Collaboration\Tests\Collaboration\HubTestHelpers as Hub;
 use Vaulter\Collaboration\Tests\Support\Compaction;
+use Vaulter\Collaboration\Tests\Support\DocumentTestHelpers;
 use Vaulter\Collaboration\Tests\Support\DocumentsV1 as Docs;
 use Vaulter\Database\VaulterDatabase;
 use Vaulter\Documents\Events\Documents\DocumentContentUpdated;
@@ -36,7 +36,7 @@ function casState(mixed $node): array
         'receipts' => Compaction::rows('collaboration_receipts'),
         'head' => Compaction::head($node),
         'state_version' => $document->state_version,
-        'collab_state' => $document->collab_state,
+        'collab_state' => $document->syncState?->collab_state,
         'marker' => Compaction::marker($node),
         'revisions' => $document->revision_count,
     ];
@@ -67,7 +67,7 @@ it('keeps an update committed after the lease read the log, and its marker, when
         ->and(Compaction::marker($this->node))->toBe([0, 3])
         ->and(Compaction::seqs($this->node))->toBe([3])
         ->and(Compaction::rows('collaboration_receipts'))->toBe(3)
-        ->and($document->collab_state)->toBe('u1u2')
+        ->and($document->syncState?->collab_state)->toBe('u1u2')
         ->and($head?->checkpointSeq)->toBe(2)
         ->and($head?->headSeq)->toBe(3)
         ->and($head?->checkpointVersion)->toBe($document->state_version)
@@ -92,8 +92,8 @@ it('compacts the late update with the next lease and clears the marker then', fu
         ->and(Compaction::marker($this->node))->toBe([null, null])
         ->and(Compaction::seqs($this->node))->toBe([])
         ->and(Compaction::rows('collaboration_receipts'))->toBe(3)
-        ->and(Hub::aggregate($this->node)->collab_state)->toBe('u1u2u3')
-        ->and(Hub::aggregate($this->node)->content['content'][0]['content'][0]['text'])->toBe('Compacted through 3');
+        ->and(Hub::aggregate($this->node)->syncState?->collab_state)->toBe('u1u2u3')
+        ->and(Hub::aggregate($this->node)->payload?->content['content'][0]['content'][0]['text'])->toBe('Compacted through 3');
 });
 
 it('refuses the second publication of the same (C, H) and leaves HS − H updates (5)', function (): void {
@@ -195,7 +195,7 @@ it('answers a REST replace with document_state_pending while the marker of the l
     expect(Compaction::marker($this->node))->toBe([0, 2])
         ->and(Compaction::seqs($this->node))->toBe([2])
         ->and(Hub::aggregate($this->node)->collab_epoch)->toBe(0)
-        ->and(Hub::aggregate($this->node)->collab_state)->toBe('u1');
+        ->and(Hub::aggregate($this->node)->syncState?->collab_state)->toBe('u1');
 });
 
 it('publishes and answers over HTTP with the new checkpoint version and the marker cleared', function (): void {
@@ -240,7 +240,7 @@ it('binds publication to every leased binding component and preserves complete r
     $values = ['protocol' => $old->protocol, 'stateFormat' => $old->stateFormat, 'schemaVersion' => $old->schemaVersion, 'generation' => $old->generation];
     $values[$field] = $value;
     $foreign = new CollaborationStateBinding(...$values);
-    $snapshot = static fn (): array => array_map(static fn (string $table) => DB::table($table)->get()->toJson(), ['v_nodes', 'v_documents', 'v_document_revisions', 'v_collaboration_heads', 'v_collaboration_updates', 'v_collaboration_receipts']);
+    $snapshot = static fn (): array => DocumentTestHelpers::storedRows('nodes', 'collaboration_heads', 'collaboration_updates', 'collaboration_receipts');
     $before = $snapshot();
     expect(fn (): CheckpointResult => Compaction::publish($lease, overrides: ['binding' => $foreign]))->toThrow(CollaborationCheckpointConflictException::class);
     expect($snapshot())->toBe($before)->and($events)->toBe([]);

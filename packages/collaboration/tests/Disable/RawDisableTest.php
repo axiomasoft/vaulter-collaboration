@@ -153,9 +153,9 @@ it('answers 409 document_state_pending for the pending document on every path th
     expect(fn () => $this->documents->content($this->id))->toThrow(DocumentStatePendingException::class);
 
     $document = Document::query()->where('node_id', $this->pending->getKey())->firstOrFail();
-    expect([$document->pending_generation, $document->pending_through_seq])->toBe([0, 2])
+    expect([$document->syncState?->pending_generation, $document->syncState?->pending_through_seq])->toBe([0, 2])
         ->and($document->collab_epoch)->toBe(0)
-        ->and(data_get($document->content, 'content.0.content.0.text'))->toBe('Pending')
+        ->and(data_get($document->payload?->content, 'content.0.content.0.text'))->toBe('Pending')
         ->and(rawDisableLogQueries($this->queries))->toBe([])
         ->and(rawDisableServices($this->resolved))->toBe([])
         ->and(rawDisableLog())->toBe(['updates' => 2, 'receipts' => 2, 'heads' => 1]);

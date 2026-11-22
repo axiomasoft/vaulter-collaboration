@@ -19,6 +19,7 @@ use Vaulter\Collaboration\Persistence\UpdateEnvelope;
 use Vaulter\Collaboration\Persistence\UpdateLog;
 use Vaulter\Collaboration\Tests\Collaboration\HubTestHelpers as Hub;
 use Vaulter\Configuration\DatabaseOptions;
+use Vaulter\Documents\Models\Documents\Document;
 use Vaulter\Drive\Models\Node;
 
 /**
@@ -38,7 +39,7 @@ final class Compaction
     {
         $aggregate = Hub::aggregate($node);
         $generation ??= $aggregate->collab_epoch;
-        $seed = $seed || ($generation === $aggregate->collab_epoch && $aggregate->collab_state_size === null && (self::head($node, $generation)?->headSeq ?? 0) === 0);
+        $seed = $seed || ($generation === $aggregate->collab_epoch && $aggregate->syncState?->collab_state_size === null && (self::head($node, $generation)?->headSeq ?? 0) === 0);
 
         return app(UpdateLog::class)->append($node->getKey(), new UpdateEnvelope(
             generation: $generation,
@@ -133,6 +134,18 @@ final class Compaction
     {
         $document = Hub::aggregate($node);
 
-        return [$document->pending_generation, $document->pending_through_seq];
+        return [$document->syncState?->pending_generation, $document->syncState?->pending_through_seq];
+    }
+
+    /** Simulate a cleared marker in fixtures that exercise a later lifecycle step. */
+    public static function clearPending(Document $document): void
+    {
+        $document->syncState()->firstOrFail()->forceFill([
+            'pending_protocol' => null,
+            'pending_state_format' => null,
+            'pending_schema_version' => null,
+            'pending_generation' => null,
+            'pending_through_seq' => null,
+        ])->save();
     }
 }

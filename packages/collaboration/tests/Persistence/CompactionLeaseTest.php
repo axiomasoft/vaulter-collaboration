@@ -35,7 +35,7 @@ function requestDrain(Node $node): bool
         documentId: (string) $document->getKey(),
         nodeId: (string) $node->getKey(),
         binding: $document->collaborationBinding(),
-        throughSeq: (int) $document->pending_through_seq,
+        throughSeq: (int) $document->syncState?->pending_through_seq,
     ));
 }
 
@@ -185,7 +185,8 @@ it('never leases a retired generation or one its document left', function (strin
         $heads->update(['retired_at' => now()]);
     } else {
         // The generation moved on while the module was off: the head stayed open.
-        Hub::aggregate($this->node)->forceFill(['collab_epoch' => 1, 'pending_generation' => null, 'pending_through_seq' => null, 'pending_protocol' => null, 'pending_state_format' => null, 'pending_schema_version' => null])->save();
+        Hub::aggregate($this->node)->forceFill(['collab_epoch' => 1])->save();
+        Compaction::clearPending(Hub::aggregate($this->node));
     }
     $head = Compaction::head($this->node, 0);
 

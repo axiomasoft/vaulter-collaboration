@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-use Illuminate\Support\Facades\DB;
 use Vaulter\Collaboration\CollaborationCallResolver;
 use Vaulter\Collaboration\CollaborationHub;
 use Vaulter\Collaboration\Tests\Collaboration\HubTestHelpers as Hub;
 use Vaulter\Collaboration\Tests\Support\Compaction;
+use Vaulter\Collaboration\Tests\Support\DocumentTestHelpers;
 use Vaulter\Collaboration\Tests\Support\DocumentsV1 as Docs;
 use Vaulter\Documents\Contracts\CollaborationProtocolDriver;
 use Vaulter\Documents\Exceptions\CollaborationUnavailableException;
@@ -47,7 +47,7 @@ it('refuses a PUT after a hub append landed between the read and the write', fun
     Docs::put($this->id, Docs::doc('Late editor'), $tag)
         ->assertStatus(412)
         ->assertJsonPath('code', 'document_state_mismatch');
-    expect(Hub::aggregate($this->node)->content['content'][0]['content'][0]['text'])->toBe('From the hub');
+    expect(Hub::aggregate($this->node)->payload?->content['content'][0]['content'][0]['text'])->toBe('From the hub');
 });
 
 it('moves the collaboration epoch on a restore, so the old room is fenced off', function (): void {
@@ -63,12 +63,14 @@ it('moves the collaboration epoch on a restore, so the old room is fenced off', 
         ->assertJsonPath('code', 'collaboration_epoch_mismatch');
 });
 
-it('answers the hub of a document whose generation moved on a JSON replace with the epoch conflict', function (): void {
+it('fences the snapshot room when a writer reserves the journal and rejects a REST replace', function (): void {
     Hub::call('append', Hub::seedBody($this->node, 'first-room'), Hub::token($this->node))->assertOk();
     Compaction::publish(Compaction::leaseOf($this->node));
     $epoch = Hub::aggregate($this->node)->collab_epoch;
 
-    Docs::put($this->id, Docs::doc('Replaced outside the room'))->assertOk();
+    Hub::session($this->node)->assertCreated()->assertJsonPath('data.generation', $epoch + 1);
+    Docs::put($this->id, Docs::doc('Replaced outside the room'))->assertConflict()
+        ->assertJsonPath('code', 'document_command_required');
 
     expect(Hub::aggregate($this->node)->collab_epoch)->toBe($epoch + 1);
     Hub::call('append', Hub::appendBody($this->node, 'stale-room', generation: $epoch), Hub::token($this->node, epoch: $epoch))
@@ -95,12 +97,11 @@ it('keeps ordinary JSON editing after the adapter is disabled and never drops pe
     $before = Hub::aggregate($settled);
     foreach ([Hub::tiptap('Edited locally'), Hub::tiptap('Edited locally')] as $json) {
         $snapshot = $documents->update($settled->getKey(), $json);
-        expect($snapshot->epoch)->toBe($before->collab_epoch + 1)->and($snapshot->stateVersion)->toBe($before->state_version + 1)
+        expect($snapshot->epoch)->toBe($before->collab_epoch)->and($snapshot->stateVersion)->toBe($before->state_version + 1)
             ->and($snapshot->collabProtocol)->toBe('yjs')->and($snapshot->collabStateFormat)->toBe('yjs-update-v1')->and($snapshot->schemaVersion)->toBe(1)->and($snapshot->collabStateSize)->toBeNull();
         $before = Hub::aggregate($settled);
     }
-    $tables = ['v_documents', 'v_document_revisions', 'v_collaboration_updates', 'v_collaboration_receipts', 'v_collaboration_heads'];
-    $rows = static fn (): array => array_map(static fn (string $table) => DB::table($table)->get()->toJson(), $tables);
+    $rows = static fn (): array => DocumentTestHelpers::storedRows('collaboration_updates', 'collaboration_receipts', 'collaboration_heads');
     $unchanged = $rows();
     $pendingDocuments = Documents::in(Vaulter::drive($pending->storage()->firstOrFail())->actingAs(AccessTestHelpers::user(1)));
     expect(fn () => $pendingDocuments->update($pending->getKey(), Hub::tiptap('Lose pending edits')))->toThrow(DocumentStatePendingException::class);

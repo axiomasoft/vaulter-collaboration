@@ -57,8 +57,8 @@ frontend.
 | Doctor | `collaboration.hub` |
 | Tests | the package's own `TestCase` on the public test kits of the packages it depends on (`Vaulter\Testing`, `Vaulter\Drive\Testing`, `Vaulter\Documents\Testing`); `Vaulter\Collaboration\Testing\Fixtures\FakeHostUserResolver` is a fake for hosts' tests |
 
-The documents package keeps the aggregate (`collab_epoch`, `state_version`, the binary checkpoint) and the pending marker;
-this package never writes the documents table itself — it goes through `Vaulter\Documents\State\CollaborativeState`.
+The documents package owns the aggregate counters, the JSON payload, and the sync state with the binary checkpoint
+and pending marker. Collaboration accesses that state through `Vaulter\Documents\State\CollaborativeState`.
 
 ## Operating
 

@@ -23,7 +23,7 @@ function idemAppend(Node $node, string $payload, string $updateId, ?string $sha2
 {
     // The first record of an empty, unseeded generation is its seed (server origin, CAS on the state version).
     $aggregate = Hub::aggregate($node);
-    $seed = $aggregate->collab_state_size === null && (Compaction::head($node)?->headSeq ?? 0) === 0;
+    $seed = $aggregate->syncState?->collab_state_size === null && (Compaction::head($node)?->headSeq ?? 0) === 0;
 
     return app(UpdateLog::class)->append($node->getKey(), new UpdateEnvelope(
         generation: $aggregate->collab_epoch,
@@ -61,7 +61,7 @@ it('commits the first append as seq 1 with its receipt, head and pending marker'
         ->and(idemCount('collaboration_receipts'))->toBe(1)
         ->and(DB::table(app(DatabaseOptions::class)->table('collaboration_heads'))->value('head_seq'))->toBe(1)
         ->and(base64_decode($storedPayload, true))->toBe("\x01\x00yjs")
-        ->and([$document->pending_generation, $document->pending_through_seq])->toBe([0, 1]);
+        ->and([$document->syncState?->pending_generation, $document->syncState?->pending_through_seq])->toBe([0, 1]);
 });
 
 it('answers a retried update id from its receipt without a second row, an event or a moved marker', function (): void {
@@ -86,7 +86,7 @@ it('answers a retried update id from its receipt without a second row, an event 
         ->and($retry->ack()['persisted'])->toBeTrue()
         ->and(idemCount('collaboration_updates'))->toBe(2)
         ->and(idemCount('collaboration_receipts'))->toBe(2)
-        ->and([$after->pending_generation, $after->pending_through_seq])->toBe([0, 2])
+        ->and([$after->syncState?->pending_generation, $after->syncState?->pending_through_seq])->toBe([0, 2])
         ->and($after->state_version)->toBe($before->state_version);
 });
 
@@ -95,7 +95,7 @@ it('refuses the same update id with another payload and writes nothing', functio
 
     expect(fn (): mixed => idemAppend($this->node, 'update-other', $this->id))->toThrow(CollaborationUpdateMismatchException::class)
         ->and(idemCount('collaboration_updates'))->toBe(1)
-        ->and(Hub::aggregate($this->node)->pending_through_seq)->toBe(1);
+        ->and(Hub::aggregate($this->node)->syncState?->pending_through_seq)->toBe(1);
 });
 
 it('refuses a hash that is not the payload\'s before anything is locked or written', function (): void {
@@ -103,13 +103,13 @@ it('refuses a hash that is not the payload\'s before anything is locked or writt
         ->and(idemCount('collaboration_updates'))->toBe(0)
         ->and(idemCount('collaboration_receipts'))->toBe(0)
         ->and(idemCount('collaboration_heads'))->toBe(0)
-        ->and(Hub::aggregate($this->node)->pending_generation)->toBeNull();
+        ->and(Hub::aggregate($this->node)->syncState?->pending_generation)->toBeNull();
 });
 
 it('numbers the updates of a generation one after the other and moves the marker with the head', function (): void {
     $seqs = array_map(fn (string $payload): int => idemAppend($this->node, $payload, (string) Str::uuid())->seq, ['one', 'two', 'three']);
 
     expect($seqs)->toBe([1, 2, 3])
-        ->and(Hub::aggregate($this->node)->pending_through_seq)->toBe(3)
+        ->and(Hub::aggregate($this->node)->syncState?->pending_through_seq)->toBe(3)
         ->and(DB::table(app(DatabaseOptions::class)->table('collaboration_heads'))->value('head_seq'))->toBe(3);
 });

@@ -15,6 +15,7 @@ use Vaulter\Collaboration\Persistence\AppendResult;
 use Vaulter\Collaboration\Persistence\CompactionLeases;
 use Vaulter\Collaboration\Tests\Collaboration\HubTestHelpers as Hub;
 use Vaulter\Collaboration\Tests\Support\Compaction;
+use Vaulter\Collaboration\Tests\Support\DocumentTestHelpers;
 use Vaulter\Collaboration\Tests\Support\DocumentsV1 as Docs;
 use Vaulter\Collaboration\Tests\Support\FakeHub;
 use Vaulter\Documents\State\PendingMarker;
@@ -75,8 +76,8 @@ it('checkpoints every pending document through the hub and exits 0: no marker, e
         ->and(FakeHub::$drains)->each->toMatchArray(['transactionLevel' => 0])
         ->and(array_column(FakeHub::$published, 'status'))->toBe([200, 200])
         // The checkpoint covers every saved receipt; the receipts stay, the covered updates go.
-        ->and(Hub::aggregate($this->first)->collab_state)->toBe('a1a2')
-        ->and(Hub::aggregate($this->second)->collab_state)->toBe('b1')
+        ->and(Hub::aggregate($this->first)->syncState?->collab_state)->toBe('a1a2')
+        ->and(Hub::aggregate($this->second)->syncState?->collab_state)->toBe('b1')
         ->and(Compaction::head($this->first)?->checkpointSeq)->toBe(2)
         ->and(Compaction::head($this->first)?->drainRequestedAt)->toBeNull()
         ->and(Compaction::rows('collaboration_receipts'))->toBe(3)
@@ -157,7 +158,7 @@ it('drains the marker of an append that missed the flag and committed within the
 
     expect($late)->toBeTrue()
         ->and(Compaction::marker($this->first))->toBe([null, null])
-        ->and(Hub::aggregate($this->first)->collab_state)->toBe('late')
+        ->and(Hub::aggregate($this->first)->syncState?->collab_state)->toBe('late')
         ->and(FakeHub::$drains)->toHaveCount(1);
 });
 
@@ -231,17 +232,17 @@ it('refuses a deadline that is not a whole number of seconds', function (string 
 
 it('drains and allows Yjs removal while both pending scanners preserve unrelated Acme markers', function (): void {
     $acme = Hub::aggregate($this->second);
-    $acme->forceFill(['collab_protocol' => 'acme-ot', 'collab_state_format' => 'acme-json-v1', 'pending_protocol' => 'acme-ot', 'pending_state_format' => 'acme-json-v1', 'pending_schema_version' => 1, 'pending_generation' => 0, 'pending_through_seq' => 1])->save();
+    $acme->syncState()->firstOrFail()->forceFill(['collab_protocol' => 'acme-ot', 'collab_state_format' => 'acme-json-v1', 'pending_protocol' => 'acme-ot', 'pending_state_format' => 'acme-json-v1', 'pending_schema_version' => 1, 'pending_generation' => 0, 'pending_through_seq' => 1])->save();
     DB::table('v_collaboration_heads')->insert(['document_id' => $acme->getKey(), 'generation' => 0, 'head_seq' => 1, 'checkpoint_seq' => 0, 'checkpoint_version' => $acme->state_version, 'created_at' => now(), 'updated_at' => now()]);
     config()->set('vaulter-collaboration.compaction.trigger_updates', 1);
-    $before = $acme->getAttributes();
+    $before = DocumentTestHelpers::storedAttributes($acme);
     Hub::callV2('append', Hub::seedBody($this->first, 'saved-yjs'), Hub::token($this->first))->assertOk();
     expect(array_map(static fn (PendingMarker $m): string => $m->nodeId, app(PendingDocuments::class)->all()))->toBe([(string) $this->first->getKey()]);
     expect(app(CompactionLeases::class)->pending()['total'])->toBe(1);
     FakeHub::install();
     $this->artisan('vaulter:collaboration:drain')->assertExitCode(0);
     expect(app(PendingRemovalGuard::class)->blockers('collaboration'))->toBe([])
-        ->and(Hub::aggregate($this->second)->getAttributes())->toBe($before)
+        ->and(DocumentTestHelpers::storedAttributes(Hub::aggregate($this->second)))->toBe($before)
         ->and(Compaction::marker($this->first))->toBe([null, null]);
 });
 
@@ -255,5 +256,5 @@ it('drains Markdown ACKed history through the hub with null and non-null initial
     }
     FakeHub::install();
     $this->artisan('vaulter:collaboration:drain')->assertExitCode(0);
-    expect(Compaction::marker($node))->toBe([null, null])->and(Hub::aggregate($node)->collab_state)->toBe($checkpoint ? 'markdown-seedtail' : 'markdown-seed');
+    expect(Compaction::marker($node))->toBe([null, null])->and(Hub::aggregate($node)->syncState?->collab_state)->toBe($checkpoint ? 'markdown-seedtail' : 'markdown-seed');
 })->with(['null checkpoint' => [false], 'non-null checkpoint' => [true]]);

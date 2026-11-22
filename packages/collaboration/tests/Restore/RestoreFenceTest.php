@@ -45,7 +45,7 @@ it('refuses the publication of a lease the restore outlived and changes nothing'
     $after = Hub::aggregate($this->node);
     expect($restored->collab_epoch)->toBe(1)
         ->and($after->state_version)->toBe($restored->state_version)
-        ->and($after->collab_state)->toBe($restored->collab_state)
+        ->and($after->syncState?->collab_state)->toBe($restored->syncState?->collab_state)
         ->and($after->revision_count)->toBe($restored->revision_count)
         ->and(Compaction::head($this->node, 0))->toEqual($closed)
         ->and($closed?->retiredAt)->not->toBeNull()
@@ -95,12 +95,12 @@ it('starts the next generation with an open log of its own', function (): void {
         ->and(Compaction::leaseOf($this->node)->log->generation)->toBe(1);
 });
 
-it('closes the generation a REST replace moves past, with no pending edits to drain', function (): void {
+it('closes the snapshot generation when switching to the journal, with no pending edits to drain', function (): void {
     Compaction::append($this->node, 'u1');
     Compaction::publish(Compaction::leaseOf($this->node));
     FakeHub::install();
 
-    $this->documents->update($this->id, DocumentTestHelpers::content('Replaced')->toArray());
+    Hub::session($this->node)->assertCreated()->assertJsonPath('data.generation', 1);
 
     expect(FakeHub::$drains)->toBe([])
         ->and(Hub::aggregate($this->node)->collab_epoch)->toBe(1)

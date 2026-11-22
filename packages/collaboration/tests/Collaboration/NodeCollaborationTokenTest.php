@@ -100,10 +100,10 @@ it('issues a writable session for a writer (edit)', function (): void {
         'document_id' => (string) $node->getKey(),
         'drive_id' => (string) $node->drive_id,
         'tenant' => null,
-        'generation' => 0,
+        'generation' => 1,
         'schema_version' => 1,
         'scope' => 'write',
-        'room' => 'vaulter.documents.'.$node->drive_id.'.'.$node->getKey().'.0',
+        'room' => 'vaulter.documents.'.$node->drive_id.'.'.$node->getKey().'.1',
     ])->and((array) $claims['permissions_version'])->toBe(['drive' => 0, 'global' => 0])
         ->and($claims['jti'])->toBeString()->not->toBe('')
         ->and($claims['exp'] - $claims['iat'])->toBe(300);
