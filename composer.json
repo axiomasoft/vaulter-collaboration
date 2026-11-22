@@ -24,18 +24,78 @@
                     "axiomasoft/vaulter-collaboration": "1.0.x-dev"
                 }
             }
+        },
+        {
+            "type": "path",
+            "url": "../vaulter/packages/*",
+            "options": {
+                "symlink": true,
+                "versions": {
+                    "axiomasoft/vaulter-core": "1.0.x-dev",
+                    "axiomasoft/vaulter-drive": "1.0.x-dev",
+                    "axiomasoft/vaulter-documents": "1.0.x-dev",
+                    "axiomasoft/vaulter-media": "1.0.x-dev"
+                }
+            }
+        },
+        {
+            "type": "path",
+            "url": "../packman/packages/*",
+            "options": {
+                "symlink": false,
+                "versions": {
+                    "axiomasoft/packman": "0.1.1",
+                    "axiomasoft/packman-devtools": "0.1.1",
+                    "axiomasoft/packman-filament": "0.1.1",
+                    "axiomasoft/packman-panels": "0.1.1",
+                    "axiomasoft/packman-plugins": "0.1.1",
+                    "axiomasoft/packman-schema": "0.1.1",
+                    "axiomasoft/packman-testkit": "0.1.1"
+                }
+            }
         }
     ],
     "require": {
-        "php": ">=8.4 <8.6"
+        "php": ">=8.4 <8.6",
+        "axiomasoft/vaulter-collaboration": "^1.0",
+        "axiomasoft/vaulter-core": "^1.0",
+        "axiomasoft/vaulter-documents": "^1.0",
+        "axiomasoft/vaulter-drive": "^1.0",
+        "firebase/php-jwt": "^7.0"
+    },
+    "require-dev": {
+        "axiomasoft/vaulter-media": "^1.0",
+        "larastan/larastan": "^3.12",
+        "laravel/pint": "^1.32",
+        "laravel/sanctum": "^4.0",
+        "opis/json-schema": "^2.4",
+        "orchestra/testbench": "^11.3",
+        "pestphp/pest": "^5.2",
+        "pestphp/pest-plugin-type-coverage": "^5.1",
+        "phpstan/phpstan": "^2.2.16 <2.3.6",
+        "spaze/phpstan-disallowed-calls": "^4.15",
+        "symfony/yaml": "^8.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Vaulter\\Collaboration\\": "packages/collaboration/src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Vaulter\\Collaboration\\Tests\\": "packages/collaboration/tests/"
+        }
     },
     "minimum-stability": "dev",
     "prefer-stable": true,
     "config": {
-        "sort-packages": true
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
     },
     "scripts": {
-        "test": "@php vendor/bin/phpunit -c phpunit.xml.dist",
-        "phpstan": "@php vendor/bin/phpstan analyse -c phpstan.neon.dist --no-progress"
+        "test": "@php vendor/bin/pest -c phpunit.xml.dist --test-directory=packages/collaboration/tests",
+        "phpstan": "@php vendor/bin/phpstan analyse -c phpstan.neon.dist --no-progress --memory-limit=512M"
     }
 }

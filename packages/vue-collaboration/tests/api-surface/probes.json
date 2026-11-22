@@ -1,0 +1,11 @@
+{
+  "mutations": [
+    {
+      "id": "removed-export",
+      "report": "api",
+      "file": "index.d.ts",
+      "from": "createCollaborationAdapter }",
+      "to": "}"
+    }
+  ]
+}

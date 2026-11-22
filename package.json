@@ -11,5 +11,12 @@
   "workspaces": [
     "packages/vue-collaboration",
     "packages/hub"
-  ]
+  ],
+  "scripts": {
+    "test:vue": "npm --workspace=packages/vue-collaboration test",
+    "test:hub": "npm --workspace=packages/hub test",
+    "check:hub": "npm --workspace=packages/hub run check",
+    "build:vue": "npm --workspace=packages/vue-collaboration run build",
+    "test": "npm run test:vue && npm run test:hub"
+  }
 }

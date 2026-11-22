@@ -1,0 +1,171 @@
+# Surface manifest of the package `collaboration` (D27): the types marked #[Api] and #[Spi] with their public and protected members that are not #[Internal].
+# Generated: scripts/php84 php scripts/inventory/inventory.php surface --write. Do not edit by hand.
+
+Vaulter\Collaboration\CollaborationModule api since 1.0 final class implements Packman\Extensions\Contracts\Composition\WithSlots, Packman\Extensions\Contracts\Configuration\WithConfiguration, Packman\Extensions\Contracts\Persistence\WithSchema, Packman\Extensions\Contracts\Runtime\WithDiagnostics, Packman\Plugins\Contracts\Registry\ExtensionPlugin, Vaulter\Modules\GuardsRemoval, Vaulter\Modules\WithModuleRuntime uses Packman\Extensions\Concerns\Composition\ContributesToSlots, Packman\Extensions\Concerns\Configuration\Configurable, Packman\Extensions\Concerns\Persistence\OwnsSchema, Packman\Extensions\Concerns\Runtime\ProvidesDiagnostics
+  public function configRoot(): string
+  public function defaultConfigPath(): string
+  public function healthChecks(): array
+  public function manifest(): Packman\Plugins\Data\Plugin\PluginManifest
+  public function migrationPath(): string
+  public function moduleRuntime(): Vaulter\Modules\PluginModuleSpec
+  public function optionsClass(): string
+  public function problemProviders(): array
+  public function register(Packman\Plugins\Laravel\PluginRegistrar $registrar): void
+  public static function removalGuard(): string
+  public function schemaComponents(): array
+  public function schemaSetProviders(): array
+  public function slotContributions(): array
+  public function tableNouns(): array
+  public function tablePrefix(): string
+
+Vaulter\Collaboration\Configuration\CollaborationOptions api since 1.0 final readonly class implements Packman\Config\Contracts\OptionsFactory
+  public const array CONTROL_TRANSPORTS = ['redis', 'http', 'none']
+  public const string JWT_AUDIENCE = 'vaulter-collaboration-hub'
+  public const string JWT_PROTOCOL = 'yjs/2'
+  public const int MAX_CLOCK_SKEW = 30
+  public const int MAX_TOKEN_TTL = 300
+  public const int MIN_JWT_KEY_BYTES = 32
+  public const int RETRY_HORIZON_SECONDS = 10
+  public function assertDistinctHubSecrets(): void
+  public function channelPrefix(): string
+  public function checkpointRequestBytes(): int
+  public function compactionLeaseTtl(): int
+  public function compactionTriggerAge(): int
+  public function compactionTriggerBytes(): int
+  public function compactionTriggerUpdates(): int
+  public function controlHttpTimeout(): int
+  public function controlHttpUrls(): array
+  public function controlRedisConnection(): string
+  public function controlTransport(): string
+  public function drainCacheStore(): ?string
+  public function drainMaxAppendTx(): int
+  public static function fromArray(array $config, string $path = 'vaulter-collaboration'): self
+  public function hubClockSkew(): int
+  public function hubIssuer(): ?string
+  public function hubJwtActiveKid(): ?string
+  public function hubJwtKeys(): array
+  public function hubJwtKeysViolation(): ?string
+  public function hubJwtSigningKey(): ?Packman\Config\Data\SecretRef
+  public function hubTimestampTolerance(): int
+  public function hubTokenTtl(): int
+  public function hubUrl(): ?string
+  public function hubWebhookSecret(): ?Packman\Config\Data\SecretRef
+  public function maxStateBytes(): int
+  public function mode(): string
+  public function parseRoom(string $room): ?Vaulter\Collaboration\Data\RoomRef
+  public function requestBytes(): int
+  public function restoreDeadline(): int
+  public function retiredGenerationDays(): int
+  public function retiredGenerationGraceSeconds(): int
+  public function room(mixed $driveId, mixed $nodeId, int $epoch): string
+  public function updateBytes(): int
+  public function withContext(Vaulter\Documents\Configuration\DocumentsOptions $documents, ?string $appUrl): self
+
+Vaulter\Collaboration\Contracts\HostUserResolver spi:implement since 1.0 interface
+  public function find(Vaulter\ValueObjects\Access\ActorRef $principal): ?Illuminate\Contracts\Auth\Access\Authorizable
+
+Vaulter\Collaboration\Data\RoomRef api since 1.0 final readonly class
+  public string $driveId
+  public int $epoch
+  public string $nodeId
+  public function __construct(string $driveId, string $nodeId, int $epoch)
+
+Vaulter\Collaboration\Errors\CollaborationErrorCode api since 1.0 enum: string implements Packman\Errors\Contracts\ErrorCode
+  case CheckpointConflict = 'collaboration.checkpoint_conflict'
+  case Config = 'collaboration.config'
+  case Draining = 'collaboration.draining'
+  case EpochMismatch = 'collaboration.epoch_mismatch'
+  case ProtocolMismatch = 'collaboration.protocol_mismatch'
+  case SeedConflict = 'collaboration.seed_conflict'
+  case UpdateMismatch = 'collaboration.update_mismatch'
+  case UpdateTooLarge = 'collaboration.update_too_large'
+  public function value(): string
+
+Vaulter\Collaboration\Errors\CollaborationProblemDefinitions spi:call since 1.0 final class implements Packman\Errors\Contracts\ProblemDefinitionProvider
+  public function definitions(): iterable
+
+Vaulter\Collaboration\Exceptions\CollaborationCheckpointConflictException api since 1.0 final class extends Vaulter\Exceptions\VaulterException implements Vaulter\Exceptions\Contracts\ProblemException uses Vaulter\Exceptions\Concerns\ProvidesProblemDetails
+  public const string COVERAGE = 'coverage'
+  public const string LEASE = 'lease'
+  public const string VERSION = 'checkpoint_version'
+  public readonly string $reason
+  public function errorDescriptor(): Packman\Errors\Data\ErrorDescriptor
+  public function httpStatus(): int
+  public function problemCode(): string
+  public function problemDetails(): array
+
+Vaulter\Collaboration\Exceptions\CollaborationConfigException api since 1.0 final class extends Vaulter\Exceptions\VaulterException
+  public function errorDescriptor(): Packman\Errors\Data\ErrorDescriptor
+  public static function missingIssuer(): self
+  public static function missingSecret(): self
+
+Vaulter\Collaboration\Exceptions\CollaborationDrainingException api since 1.0 final class extends Vaulter\Exceptions\VaulterException implements Vaulter\Exceptions\Contracts\ProblemException uses Vaulter\Exceptions\Concerns\ProvidesProblemDetails
+  public function errorDescriptor(): Packman\Errors\Data\ErrorDescriptor
+  public function httpStatus(): int
+  public function problemCode(): string
+
+Vaulter\Collaboration\Exceptions\CollaborationEpochMismatchException api since 1.0 final class extends Vaulter\Exceptions\VaulterException implements Vaulter\Exceptions\Contracts\ProblemException uses Vaulter\Exceptions\Concerns\ProvidesProblemDetails
+  public readonly int $actual
+  public readonly int $expected
+  public function __construct(int $expected, int $actual)
+  public function errorDescriptor(): Packman\Errors\Data\ErrorDescriptor
+  public function httpStatus(): int
+  public function problemCode(): string
+  public function problemDetails(): array
+
+Vaulter\Collaboration\Exceptions\CollaborationProtocolMismatchException api since 1.0 final class extends Vaulter\Exceptions\VaulterException implements Vaulter\Exceptions\Contracts\ProblemException uses Vaulter\Exceptions\Concerns\ProvidesProblemDetails
+  public readonly int $expected
+  public readonly ?string $presented
+  public function errorDescriptor(): Packman\Errors\Data\ErrorDescriptor
+  public function httpStatus(): int
+  public function problemCode(): string
+  public function problemDetails(): array
+
+Vaulter\Collaboration\Exceptions\CollaborationSeedConflictException api since 1.0 final class extends Vaulter\Exceptions\VaulterException implements Vaulter\Exceptions\Contracts\ProblemException uses Vaulter\Exceptions\Concerns\ProvidesProblemDetails
+  public readonly ?int $actualStateVersion
+  public readonly ?int $expectedStateVersion
+  public readonly string $nodeId
+  public function __construct(string $nodeId, ?int $expectedStateVersion = null, ?int $actualStateVersion = null)
+  public function errorDescriptor(): Packman\Errors\Data\ErrorDescriptor
+  public function httpStatus(): int
+  public function problemCode(): string
+  public function problemDetails(): array
+
+Vaulter\Collaboration\Exceptions\CollaborationUpdateMismatchException api since 1.0 final class extends Vaulter\Exceptions\VaulterException implements Vaulter\Exceptions\Contracts\ProblemException uses Vaulter\Exceptions\Concerns\ProvidesProblemDetails
+  public readonly string $reason
+  public readonly string $updateId
+  public function errorDescriptor(): Packman\Errors\Data\ErrorDescriptor
+  public static function hash(string $updateId): self
+  public function httpStatus(): int
+  public function problemCode(): string
+  public function problemDetails(): array
+  public static function receipt(string $updateId): self
+
+Vaulter\Collaboration\Exceptions\CollaborationUpdateTooLargeException api since 1.0 final class extends Vaulter\Exceptions\VaulterException implements Vaulter\Exceptions\Contracts\ProblemException uses Vaulter\Exceptions\Concerns\ProvidesProblemDetails
+  public readonly int $maxBytes
+  public readonly ?int $sizeBytes
+  public function errorDescriptor(): Packman\Errors\Data\ErrorDescriptor
+  public function httpStatus(): int
+  public function problemCode(): string
+  public function problemDetails(): array
+
+Vaulter\Collaboration\Persistence\AppendResult api since 1.0 final readonly class
+  public string $documentId
+  public bool $duplicate
+  public int $generation
+  public int $seq
+  public string $sha256
+  public string $updateId
+  public function ack(): array
+
+Vaulter\Collaboration\Providers\CollaborationPackageRegistrar spi:call since 1.0 final class implements Packman\Foundation\Contracts\PackageRegistrar
+  public function boot(Illuminate\Contracts\Foundation\Application $app): void
+  public function register(Illuminate\Contracts\Foundation\Application $app): void
+
+Vaulter\Collaboration\Schema\CollaborationSchemaSets spi:call since 1.0 final class implements Packman\Schema\Contracts\Migration\SchemaSetProvider
+  public function sets(): array
+
+Vaulter\Collaboration\VaulterCollaborationServiceProvider api since 1.0 final class extends Illuminate\Support\ServiceProvider uses Packman\Foundation\Concerns\RegistersPackageRegistrars
+  protected const array REGISTRARS = [\Vaulter\Collaboration\Providers\CollaborationPackageRegistrar::class]
+  public function boot(): void
+  public function register(): void

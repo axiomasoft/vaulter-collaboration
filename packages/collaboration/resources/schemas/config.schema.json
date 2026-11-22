@@ -1,0 +1,195 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "axiomasoft/vaulter-collaboration configuration",
+    "type": "object",
+    "properties": {
+        "vaulter-collaboration": {
+            "type": "object",
+            "properties": {
+                "compaction": {
+                    "type": "object",
+                    "properties": {
+                        "lease_ttl": {
+                            "type": "integer",
+                            "default": 60
+                        },
+                        "trigger_age": {
+                            "type": "integer",
+                            "default": 600
+                        },
+                        "trigger_bytes": {
+                            "type": "integer",
+                            "default": 1048576
+                        },
+                        "trigger_updates": {
+                            "type": "integer",
+                            "default": 500
+                        }
+                    },
+                    "additionalProperties": false
+                },
+                "control": {
+                    "type": "object",
+                    "properties": {
+                        "http": {
+                            "type": "object",
+                            "properties": {
+                                "timeout": {
+                                    "type": "integer",
+                                    "default": 2
+                                },
+                                "urls": {
+                                    "type": "string",
+                                    "default": ""
+                                }
+                            },
+                            "additionalProperties": false
+                        },
+                        "redis": {
+                            "type": "object",
+                            "properties": {
+                                "connection": {
+                                    "type": "string",
+                                    "default": "default"
+                                }
+                            },
+                            "additionalProperties": false
+                        },
+                        "transport": {
+                            "type": "string",
+                            "default": "none"
+                        }
+                    },
+                    "additionalProperties": false
+                },
+                "drain": {
+                    "type": "object",
+                    "properties": {
+                        "cache_store": {
+                            "type": [
+                                "string",
+                                "null"
+                            ],
+                            "default": null
+                        },
+                        "max_append_tx": {
+                            "type": "integer",
+                            "default": 5
+                        },
+                        "restore_deadline": {
+                            "type": "integer",
+                            "default": 10
+                        }
+                    },
+                    "additionalProperties": false
+                },
+                "hub": {
+                    "type": "object",
+                    "properties": {
+                        "clock_skew": {
+                            "type": "integer",
+                            "default": 30
+                        },
+                        "issuer": {
+                            "type": [
+                                "string",
+                                "integer",
+                                "number",
+                                "boolean",
+                                "null"
+                            ],
+                            "default": null
+                        },
+                        "jwt_active_kid": {
+                            "type": [
+                                "string",
+                                "integer",
+                                "number",
+                                "boolean",
+                                "null"
+                            ],
+                            "default": null
+                        },
+                        "jwt_keys": {
+                            "type": [
+                                "string",
+                                "integer",
+                                "number",
+                                "boolean",
+                                "null"
+                            ],
+                            "default": null
+                        },
+                        "timestamp_tolerance": {
+                            "type": "integer",
+                            "default": 300
+                        },
+                        "token_ttl": {
+                            "type": "integer",
+                            "default": 300
+                        },
+                        "url": {
+                            "type": "string",
+                            "default": "ws://localhost:1234"
+                        },
+                        "webhook_secret": {
+                            "type": [
+                                "string",
+                                "integer",
+                                "number",
+                                "boolean",
+                                "null"
+                            ],
+                            "default": null
+                        }
+                    },
+                    "additionalProperties": false
+                },
+                "limits": {
+                    "type": "object",
+                    "properties": {
+                        "request_bytes": {
+                            "type": "integer",
+                            "default": 2097152
+                        },
+                        "update_bytes": {
+                            "type": "integer",
+                            "default": 1048576
+                        }
+                    },
+                    "additionalProperties": false
+                },
+                "max_state_bytes": {
+                    "type": "integer",
+                    "default": 16777216
+                },
+                "mode": {
+                    "type": "string",
+                    "default": "buffered"
+                },
+                "retention": {
+                    "type": "object",
+                    "properties": {
+                        "retired_generation_days": {
+                            "type": "integer",
+                            "default": 7
+                        }
+                    },
+                    "additionalProperties": false
+                },
+                "schedule": {
+                    "type": "object",
+                    "properties": {
+                        "collaboration_prune": {
+                            "type": "string",
+                            "default": "dailyAt:03:40"
+                        }
+                    },
+                    "additionalProperties": false
+                }
+            },
+            "additionalProperties": false
+        }
+    },
+    "additionalProperties": false
+}

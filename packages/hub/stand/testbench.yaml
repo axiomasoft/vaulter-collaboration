@@ -1,0 +1,27 @@
+# The Laravel host of the stand (docker-compose.yml, service `backend`), bind-mounted to /app/testbench.yaml.
+# `testbench serve` hands its child a curated environment, so the whole host configuration travels here.
+# The secrets are throwaway values of the stand; the hubs hold the same webhook secret.
+providers:
+  - Vaulter\VaulterServiceProvider
+  - Vaulter\Media\VaulterMediaServiceProvider
+  - Vaulter\Drive\VaulterDriveServiceProvider
+  - Vaulter\Documents\VaulterDocumentsServiceProvider
+  - Vaulter\Collaboration\VaulterCollaborationServiceProvider
+  - Vaulter\Tests\E2E\E2eServiceProvider
+
+env:
+  - APP_KEY="base64:lRknxO3IznrZODHVPvLNKylvYP19ch+EXZ8dM+i3OlY="
+  - APP_ENV="local"
+  - APP_URL="http://backend:8000"
+  - DB_CONNECTION="pgsql"
+  - DB_HOST="postgres"
+  - DB_PORT="5432"
+  - DB_DATABASE="vaulter_stand"
+  - DB_USERNAME="vaulter"
+  - DB_PASSWORD="secret"
+  - CACHE_STORE="file"
+  - VAULTER_COLLAB_DRIVER="hocuspocus"
+  - VAULTER_COLLAB_URL="ws://localhost:18234"
+  - VAULTER_COLLAB_JWT_KEYS="stand-1:stand-collab-jwt-key-at-least-32-bytes-long"
+  - VAULTER_COLLAB_JWT_ACTIVE_KID="stand-1"
+  - VAULTER_COLLAB_WEBHOOK_SECRET="stand-collab-webhook-secret"

@@ -1,0 +1,1190 @@
+# Private hub contract. Shared referenced primitives are copied from the public spec and checked for equality.
+openapi: 3.1.1
+info:
+  title: Vaulter private hub API
+  version: 1.0.0
+  license:
+    name: Proprietary
+servers:
+- url: /api/vaulter/v1
+security: []
+tags:
+- name: hub
+paths:
+  /collaboration/hub/authenticate:
+    post:
+      operationId: collaboration.hub.authenticate
+      tags:
+      - hub
+      summary: 'Hub: authenticate a room connection'
+      description: 'Requires X-Vaulter-Collab-Protocol: 2 (409 collaboration_protocol_mismatch otherwise).'
+      security:
+      - hubSecret: []
+      parameters:
+      - $ref: '#/components/parameters/XVaulterCollabProtocol'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - room
+              properties:
+                room:
+                  type: string
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Vaulter-Api-Version:
+              $ref: '#/components/headers/XVaulterApiVersion'
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlStore'
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-Vaulter-Collab-Protocol:
+              $ref: '#/components/headers/XVaulterCollabProtocol'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HubAuthenticated'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '429':
+          $ref: '#/components/responses/Problem429'
+        '500':
+          $ref: '#/components/responses/Problem500'
+  /collaboration/hub/load:
+    post:
+      operationId: collaboration.hub.load
+      tags:
+      - hub
+      summary: 'Hub: load the state of a room'
+      description: 'Requires X-Vaulter-Collab-Protocol: 2 (409 collaboration_protocol_mismatch otherwise). The checkpoint and
+        the committed tail to replay on it; before the generation has any record, the JSON the hub builds its seed from.'
+      security:
+      - hubSecret: []
+      parameters:
+      - $ref: '#/components/parameters/XVaulterCollabProtocol'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - room
+              properties:
+                room:
+                  type: string
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Vaulter-Api-Version:
+              $ref: '#/components/headers/XVaulterApiVersion'
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlStore'
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-Vaulter-Collab-Protocol:
+              $ref: '#/components/headers/XVaulterCollabProtocol'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HubLoadedV2'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '429':
+          $ref: '#/components/responses/Problem429'
+        '500':
+          $ref: '#/components/responses/Problem500'
+  /collaboration/hub/append:
+    post:
+      operationId: collaboration.hub.append
+      tags:
+      - hub
+      summary: 'Hub: append one update to the log of a room (protocol 2)'
+      description: 'Requires X-Vaulter-Collab-Protocol: 2 (409 collaboration_protocol_mismatch otherwise). The body size is
+        checked by its Content-Length and the payload by its base64 length before decoding (413 collaboration_update_too_large).
+        The answer is the committed receipt: a retry with the same update_id and payload gets the same seq. The hub''s seed
+        of an empty generation carries seed_state_version: it is appended only while the generation has no checkpoint and
+        no record and the document''s state version still equals it (409 collaboration_seed_conflict otherwise). While
+        vaulter:collaboration:drain drains the log before the module is switched off, every append answers 503
+        collaboration_draining and nothing is written; the hub keeps the update and retries it with backoff.'
+      security:
+      - hubSecret: []
+      parameters:
+      - $ref: '#/components/parameters/XVaulterCollabProtocol'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - room
+              - generation
+              - update_id
+              - sha256
+              - payload
+              properties:
+                room:
+                  type: string
+                generation:
+                  type: integer
+                update_id:
+                  type: string
+                  description: UUID of the update, unchanged on every retry.
+                sha256:
+                  type: string
+                  description: Hex sha256 of the decoded payload; checked by the backend, never trusted.
+                payload:
+                  type: string
+                  description: Base64 Yjs update.
+                origin:
+                  type: string
+                  enum:
+                  - client
+                  - server
+                seed_state_version:
+                  type: integer
+                  minimum: 0
+                  description: Only on the hub's seed (the first record of a generation, built from the JSON load returned)
+                    — the state_version load returned.
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Vaulter-Api-Version:
+              $ref: '#/components/headers/XVaulterApiVersion'
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlStore'
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-Vaulter-Collab-Protocol:
+              $ref: '#/components/headers/XVaulterCollabProtocol'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HubAppended'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '422':
+          $ref: '#/components/responses/Problem422'
+        '429':
+          $ref: '#/components/responses/Problem429'
+        '500':
+          $ref: '#/components/responses/Problem500'
+        '503':
+          $ref: '#/components/responses/Problem503'
+  /collaboration/hub/compaction/lease:
+    post:
+      operationId: collaboration.hub.compaction.lease
+      tags:
+      - hub
+      summary: 'Hub: lease document generations due for compaction (protocol 2)'
+      description: 'The hub''s compaction worker, not a room connection: the body signature authenticates the call, no room
+        token. Requires X-Vaulter-Collab-Protocol: 2. Up to max generations with uncheckpointed edits or a drain request, drain
+        requests first; each entry carries what the hub merges (the checkpoint and the tail (checkpoint_seq, head_seq]) and
+        the values its checkpoint publication repeats. A lease gives no right to append.'
+      security:
+      - hubSecret: []
+      parameters:
+      - $ref: '#/components/parameters/XVaulterCollabProtocol'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - hub_id
+              properties:
+                hub_id:
+                  type: string
+                  minLength: 1
+                  maxLength: 191
+                  description: The id of the hub instance; the lease owner.
+                max:
+                  type: integer
+                  minimum: 1
+                  maximum: 100
+                  description: The most leases to hand out, 1..100; 1 when absent.
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Vaulter-Api-Version:
+              $ref: '#/components/headers/XVaulterApiVersion'
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlStore'
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-Vaulter-Collab-Protocol:
+              $ref: '#/components/headers/XVaulterCollabProtocol'
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/HubCompactionLease'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '422':
+          $ref: '#/components/responses/Problem422'
+        '429':
+          $ref: '#/components/responses/Problem429'
+        '500':
+          $ref: '#/components/responses/Problem500'
+  /collaboration/hub/checkpoint:
+    post:
+      operationId: collaboration.hub.checkpoint
+      tags:
+      - hub
+      summary: 'Hub: publish a checkpoint merged under a compaction lease (protocol 2)'
+      description: 'The hub''s compaction worker: the body signature authenticates the call, no room token. Requires X-Vaulter-Collab-Protocol:
+        2. One compare-and-set: the lease holds the generation, covered_from is the last checkpoint''s sequence, expected_checkpoint_version
+        its version and the document''s state version, covered_through is in the log. Otherwise 409 collaboration_checkpoint_conflict
+        (a closed generation: 409 collaboration_epoch_mismatch), and nothing changes. On success the updates through covered_through
+        are deleted (their receipts stay) and the pending marker is cleared when the checkpoint covers it. The body is checked
+        by its Content-Length and the state by its base64 length before decoding (413 collaboration_update_too_large).'
+      security:
+      - hubSecret: []
+      parameters:
+      - $ref: '#/components/parameters/XVaulterCollabProtocol'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - document
+              - generation
+              - lease_token
+              - covered_from
+              - covered_through
+              - protocol
+              - state_format
+              - schema_version
+              - type
+              - expected_checkpoint_version
+              - state
+              - content
+              properties:
+                document:
+                  type: string
+                  description: The node id of the document, as the lease named it.
+                generation:
+                  type: integer
+                  minimum: 0
+                lease_token:
+                  type: string
+                covered_from:
+                  type: integer
+                  minimum: 0
+                  description: The checkpoint_seq the lease reported (C).
+                covered_through:
+                  type: integer
+                  minimum: 0
+                  description: The last log sequence the checkpoint holds (H), at most the head_seq the lease reported.
+                protocol:
+                  type: string
+                state_format:
+                  type: string
+                schema_version:
+                  type: integer
+                  minimum: 1
+                type:
+                  type: string
+                expected_checkpoint_version:
+                  type: integer
+                  minimum: 0
+                state:
+                  type: string
+                  description: Base64 Yjs state of the merged checkpoint.
+                content:
+                  type: object
+                  description: The JSON projection of the state.
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Vaulter-Api-Version:
+              $ref: '#/components/headers/XVaulterApiVersion'
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlStore'
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-Vaulter-Collab-Protocol:
+              $ref: '#/components/headers/XVaulterCollabProtocol'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HubCheckpointPublished'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '422':
+          $ref: '#/components/responses/Problem422'
+        '429':
+          $ref: '#/components/responses/Problem429'
+        '500':
+          $ref: '#/components/responses/Problem500'
+  /collaboration/hub/renew:
+    post:
+      operationId: collaboration.hub.renew
+      tags:
+      - hub
+      summary: 'Hub: renew the room token of a connection by the rights now (protocol 2)'
+      description: 'Requires X-Vaulter-Collab-Protocol: 2. The bearer is the connection''s current token (accepted up to hub.clock_skew
+        past its exp). The rights are checked now, as on every hub call: the new token expires hub.token_ttl from now, carries
+        the current permission versions and a scope no wider than the old token''s or the subject''s rights now (a writer
+        who lost Edit is renewed read-only, an archived drive renews read-only). A subject without View gets 403 permission_denied,
+        a gone or trashed document 404, a past generation 409 collaboration_epoch_mismatch. The old token is not extended.'
+      security:
+      - hubSecret: []
+      parameters:
+      - $ref: '#/components/parameters/XVaulterCollabProtocol'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - room
+              properties:
+                room:
+                  type: string
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Vaulter-Api-Version:
+              $ref: '#/components/headers/XVaulterApiVersion'
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlStore'
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-Vaulter-Collab-Protocol:
+              $ref: '#/components/headers/XVaulterCollabProtocol'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HubRenewed'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '422':
+          $ref: '#/components/responses/Problem422'
+        '429':
+          $ref: '#/components/responses/Problem429'
+        '500':
+          $ref: '#/components/responses/Problem500'
+  /collaboration/hub/recheck:
+    post:
+      operationId: collaboration.hub.recheck
+      tags:
+      - hub
+      summary: 'Hub: what each named connection may do now, after a control message (protocol 2)'
+      description: 'Requires X-Vaulter-Collab-Protocol: 2. The hub''s own call: the body signature authenticates it, no room token;
+        every token in the body is verified on its own. Up to 200 connections, answered in order: none (close the connection;
+        reason token, gone, generation, unavailable or revoked), read (read-only) or write. The body is checked by its Content-Length
+        (413 collaboration_update_too_large).'
+      security:
+      - hubSecret: []
+      parameters:
+      - $ref: '#/components/parameters/XVaulterCollabProtocol'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - connections
+              properties:
+                connections:
+                  type: array
+                  minItems: 1
+                  maxItems: 200
+                  items:
+                    type: object
+                    required:
+                    - id
+                    - token
+                    properties:
+                      id:
+                        type: string
+                        description: The hub's own key of the connection, 1 to 191 bytes.
+                      token:
+                        type: string
+                        description: The connection's current room token.
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Vaulter-Api-Version:
+              $ref: '#/components/headers/XVaulterApiVersion'
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlStore'
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-Vaulter-Collab-Protocol:
+              $ref: '#/components/headers/XVaulterCollabProtocol'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HubRecheck'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '422':
+          $ref: '#/components/responses/Problem422'
+        '429':
+          $ref: '#/components/responses/Problem429'
+        '500':
+          $ref: '#/components/responses/Problem500'
+components:
+  securitySchemes:
+    hubSecret:
+      type: apiKey
+      in: header
+      name: X-Vaulter-Collab-Secret
+      description: Shared secret of the collaboration hub.
+  parameters:
+    XVaulterCollabProtocol:
+      name: X-Vaulter-Collab-Protocol
+      in: header
+      required: true
+      description: 'The hub ↔ backend protocol version the call speaks: `2`. A call without it, or with any other value,
+        answers 409 collaboration_protocol_mismatch before anything is read.'
+      schema:
+        type: string
+  headers:
+    XVaulterApiVersion:
+      description: Major version of the REST API that answered.
+      required: true
+      schema:
+        type: string
+        const: '1'
+    XRequestId:
+      description: 'Correlation id: the caller''s X-Request-Id when well formed, else a fresh ULID.'
+      required: true
+      schema:
+        type: string
+        pattern: ^[A-Za-z0-9._:-]{1,64}$
+    CacheControlStore:
+      description: Lists, mutations, sessions, secrets, downloads and errors are never stored.
+      required: true
+      schema:
+        type: string
+        const: no-store, private
+    CacheControlError:
+      description: Errors are never stored.
+      required: true
+      schema:
+        type: string
+        enum:
+        - no-store
+        - no-store, private
+    RetryAfter:
+      description: 'Seconds to wait before repeating the request: until the rate limit window resets, while an operation under the same Idempotency-Key still runs (operation_in_progress), or until a competing update settles (concurrent_update). Present only on the codes that name a delay.'
+      schema:
+        type: integer
+    XRateLimitLimit:
+      description: Requests allowed per window.
+      schema:
+        type: integer
+    XRateLimitRemaining:
+      description: Requests left in the window.
+      schema:
+        type: integer
+    XVaulterCollabProtocol:
+      description: The hub ↔ backend protocol version of the answer (protocol 2 calls).
+      schema:
+        type: string
+        const: '2'
+  responses:
+    Problem401:
+      description: No authenticated actor (actor_required) or a share password is required.
+      headers:
+        X-Vaulter-Api-Version:
+          $ref: '#/components/headers/XVaulterApiVersion'
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlError'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Problem403:
+      description: The caller may see the resource but lacks the ability (permission_denied, profile_restriction).
+      headers:
+        X-Vaulter-Api-Version:
+          $ref: '#/components/headers/XVaulterApiVersion'
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlError'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Problem404:
+      description: The resource does not exist or is not visible to the caller (same answer for both).
+      headers:
+        X-Vaulter-Api-Version:
+          $ref: '#/components/headers/XVaulterApiVersion'
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlError'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Problem409:
+      description: Conflict with the current state (node_name_conflict, invalid_destination, drive_archived, ...).
+      headers:
+        X-Vaulter-Api-Version:
+          $ref: '#/components/headers/XVaulterApiVersion'
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlError'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Problem413:
+      description: Payload too large or quota exceeded.
+      headers:
+        X-Vaulter-Api-Version:
+          $ref: '#/components/headers/XVaulterApiVersion'
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlError'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Problem422:
+      description: Validation failed (validation_failed and field-bound codes).
+      headers:
+        X-Vaulter-Api-Version:
+          $ref: '#/components/headers/XVaulterApiVersion'
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlError'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Problem429:
+      description: Rate limited (rate_limited).
+      headers:
+        X-Vaulter-Api-Version:
+          $ref: '#/components/headers/XVaulterApiVersion'
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlError'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Problem500:
+      description: Unexpected failure (internal_error).
+      headers:
+        X-Vaulter-Api-Version:
+          $ref: '#/components/headers/XVaulterApiVersion'
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlError'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Problem503:
+      description: Temporarily unavailable; retry with backoff (collaboration_draining).
+      headers:
+        X-Vaulter-Api-Version:
+          $ref: '#/components/headers/XVaulterApiVersion'
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlError'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+  schemas:
+    Problem:
+      type: object
+      description: RFC 9457 problem details, served as application/problem+json.
+      required:
+      - type
+      - title
+      - status
+      - code
+      - request_id
+      properties:
+        type:
+          type: string
+          description: URI of the error code reference (docs/reference/errors.md#<code>).
+        title:
+          type: string
+          description: Localized, human readable summary (Content-Language).
+        status:
+          type: integer
+          description: HTTP status, repeated from the response line.
+        code:
+          type: string
+          description: Stable machine readable code (SemVer). A status without a Vaulter code answers http_<status>.
+          examples:
+          - actor_required
+          - blob_unavailable
+          - cannot_delete_head_revision
+          - collaboration_checkpoint_conflict
+          - collaboration_draining
+          - collaboration_epoch_mismatch
+          - collaboration_protocol_contract
+          - collaboration_protocol_mismatch
+          - collaboration_seed_conflict
+          - collaboration_unavailable
+          - collaboration_update_mismatch
+          - collaboration_update_too_large
+          - comment_not_found
+          - concurrent_update
+          - content_unavailable
+          - cross_drive_operation
+          - cursor_expired
+          - dependency_unavailable
+          - document_content_degraded
+          - document_revision_not_found
+          - document_state_mismatch
+          - document_state_pending
+          - document_state_too_large
+          - document_type_unavailable
+          - drive_archived
+          - drive_not_found
+          - duplicate_registration
+          - extension_failed
+          - file_size_limit_exceeded
+          - folder_children_limit_exceeded
+          - grant_not_found
+          - idempotency_key_reused
+          - internal_error
+          - invalid_cursor
+          - invalid_destination
+          - invalid_document_content
+          - invalid_drive_state
+          - invalid_node_name
+          - invalid_properties
+          - invalid_webhook_signature
+          - method_not_allowed
+          - module_graph_invalid
+          - module_not_ready
+          - node_move_cycle
+          - node_name_conflict
+          - node_not_found
+          - node_not_trashed
+          - node_sequence_exhausted
+          - node_sequence_mismatch
+          - node_trashed_by_ancestor
+          - not_a_document
+          - not_a_file
+          - operation_in_progress
+          - payload_too_large
+          - permission_denied
+          - precondition_required
+          - profile_restriction
+          - quota_exceeded
+          - rate_limited
+          - registry_frozen
+          - restore_destination_changed
+          - restore_destination_required
+          - revision_not_found
+          - revision_pinned
+          - route_not_found
+          - share_link_ttl_exceeded
+          - share_not_found
+          - share_password_required
+          - share_role_not_allowed
+          - stale_write
+          - tree_depth_limit_exceeded
+          - tree_traversal_incomplete
+          - unknown_document_type
+          - unknown_export_format
+          - unknown_profile
+          - unknown_role
+          - unsupported_node_kind
+          - upload_conflict
+          - upload_not_found
+          - upload_offset_mismatch
+          - upload_rejected
+          - validation_failed
+          - webhook_delivery_not_found
+          - webhook_delivery_not_redeliverable
+          - webhook_endpoint_not_found
+          - write_outside_operation
+        detail:
+          type:
+          - string
+          - 'null'
+          description: Localized explanation; never storage paths, tokens or SQL.
+        retryable:
+          type: string
+          enum:
+          - never
+          - after_refetch
+          - with_backoff
+          description: Whether the request may be repeated — never as is, after refetching the resource (stale precondition), or later with backoff honouring Retry-After. Declared per code in docs/reference/errors.md.
+        request_id:
+          type: string
+          description: Equals the X-Request-Id response header.
+        errors:
+          type:
+          - object
+          - 'null'
+          description: Laravel field map for validation_failed and field-bound errors.
+        meta:
+          type: object
+          description: Allow-listed machine readable extras (reason, header, node_id, ...).
+      x-vaulter-problems:
+        actor_required: {status: 401, retryable: never, receipt: never, module: core}
+        blob_unavailable: {status: 409, retryable: never, receipt: never, module: media}
+        cannot_delete_head_revision: {status: 409, retryable: never, receipt: cacheable, module: drive}
+        collaboration_checkpoint_conflict: {status: 409, retryable: after_refetch, receipt: never, module: collaboration}
+        collaboration_draining: {status: 503, retryable: with_backoff, receipt: never, module: collaboration}
+        collaboration_epoch_mismatch: {status: 409, retryable: after_refetch, receipt: cacheable, module: collaboration}
+        collaboration_protocol_mismatch: {status: 409, retryable: never, receipt: never, module: collaboration}
+        collaboration_seed_conflict: {status: 409, retryable: after_refetch, receipt: cacheable, module: collaboration}
+        collaboration_protocol_contract: {status: 503, retryable: never, receipt: never, module: documents}
+        collaboration_unavailable: {status: 409, retryable: never, receipt: never, module: documents}
+        collaboration_update_mismatch: {status: 422, retryable: never, receipt: never, module: collaboration}
+        collaboration_update_too_large: {status: 413, retryable: never, receipt: never, module: collaboration}
+        comment_not_found: {status: 404, retryable: never, receipt: never, module: documents}
+        concurrent_update: {status: 409, retryable: with_backoff, receipt: never, module: core}
+        content_unavailable: {status: 423, retryable: with_backoff, receipt: never, module: drive}
+        cross_drive_operation: {status: 409, retryable: never, receipt: cacheable, module: drive}
+        cursor_expired: {status: 410, retryable: after_refetch, receipt: never, module: drive}
+        dependency_unavailable: {status: 503, retryable: with_backoff, receipt: never, module: core}
+        document_content_degraded: {status: 409, retryable: never, receipt: cacheable, module: documents}
+        document_revision_not_found: {status: 404, retryable: never, receipt: never, module: documents}
+        document_state_mismatch: {status: 412, retryable: after_refetch, receipt: cacheable, module: documents}
+        document_state_pending: {status: 409, retryable: with_backoff, receipt: never, module: documents}
+        document_state_too_large: {status: 413, retryable: never, receipt: cacheable, module: documents}
+        document_type_unavailable: {status: 409, retryable: never, receipt: cacheable, module: documents}
+        drive_archived: {status: 409, retryable: never, receipt: cacheable, module: drive}
+        drive_not_found: {status: 404, retryable: never, receipt: never, module: drive}
+        duplicate_registration: {status: 500, retryable: never, receipt: never, module: core}
+        extension_failed: {status: 500, retryable: never, receipt: never, module: core}
+        file_size_limit_exceeded: {status: 413, retryable: never, receipt: cacheable, module: drive}
+        folder_children_limit_exceeded: {status: 409, retryable: never, receipt: cacheable, module: drive}
+        grant_not_found: {status: 404, retryable: never, receipt: never, module: drive}
+        idempotency_key_reused: {status: 422, retryable: never, receipt: never, module: core}
+        internal_error: {status: 500, retryable: never, receipt: never, module: core}
+        invalid_cursor: {status: 400, retryable: never, receipt: never, module: drive}
+        invalid_destination: {status: 409, retryable: never, receipt: cacheable, module: drive}
+        invalid_document_content: {status: 422, retryable: never, receipt: cacheable, module: documents}
+        invalid_drive_state: {status: 409, retryable: never, receipt: cacheable, module: drive}
+        invalid_node_name: {status: 422, retryable: never, receipt: cacheable, module: drive}
+        invalid_properties: {status: 422, retryable: never, receipt: cacheable, module: drive}
+        invalid_webhook_signature: {status: 400, retryable: never, receipt: never, module: webhooks}
+        method_not_allowed: {status: 405, retryable: never, receipt: never, module: core}
+        module_graph_invalid: {status: 503, retryable: never, receipt: never, module: core}
+        module_not_ready: {status: 503, retryable: never, receipt: never, module: core}
+        node_move_cycle: {status: 409, retryable: never, receipt: cacheable, module: drive}
+        node_name_conflict: {status: 409, retryable: never, receipt: cacheable, module: drive}
+        node_not_found: {status: 404, retryable: never, receipt: never, module: drive}
+        node_not_trashed: {status: 409, retryable: never, receipt: cacheable, module: drive}
+        node_sequence_exhausted: {status: 409, retryable: never, receipt: cacheable, module: drive}
+        node_sequence_mismatch: {status: 412, retryable: after_refetch, receipt: cacheable, module: drive}
+        node_trashed_by_ancestor: {status: 409, retryable: never, receipt: cacheable, module: drive}
+        not_a_document: {status: 409, retryable: never, receipt: cacheable, module: documents}
+        not_a_file: {status: 422, retryable: never, receipt: cacheable, module: drive}
+        operation_in_progress: {status: 409, retryable: with_backoff, receipt: never, module: core}
+        payload_too_large: {status: 413, retryable: never, receipt: cacheable, module: core}
+        permission_denied: {status: 403, retryable: never, receipt: never, module: core}
+        precondition_required: {status: 428, retryable: after_refetch, receipt: never, module: core}
+        profile_restriction: {status: 403, retryable: never, receipt: never, module: drive}
+        quota_exceeded: {status: 413, retryable: never, receipt: cacheable, module: drive}
+        rate_limited: {status: 429, retryable: with_backoff, receipt: never, module: core}
+        registry_frozen: {status: 500, retryable: never, receipt: never, module: core}
+        restore_destination_changed: {status: 409, retryable: after_refetch, receipt: never, module: drive}
+        restore_destination_required: {status: 409, retryable: never, receipt: cacheable, module: drive}
+        revision_not_found: {status: 404, retryable: never, receipt: never, module: drive}
+        revision_pinned: {status: 409, retryable: never, receipt: cacheable, module: drive}
+        route_not_found: {status: 404, retryable: never, receipt: never, module: core}
+        share_link_ttl_exceeded: {status: 422, retryable: never, receipt: cacheable, module: drive}
+        share_not_found: {status: 404, retryable: never, receipt: never, module: drive}
+        share_password_required: {status: 401, retryable: never, receipt: never, module: drive}
+        share_role_not_allowed: {status: 422, retryable: never, receipt: cacheable, module: drive}
+        stale_write: {status: 412, retryable: after_refetch, receipt: cacheable, module: core}
+        tree_depth_limit_exceeded: {status: 409, retryable: never, receipt: cacheable, module: drive}
+        tree_traversal_incomplete: {status: 409, retryable: never, receipt: cacheable, module: drive}
+        unknown_document_type: {status: 422, retryable: never, receipt: cacheable, module: documents}
+        unknown_export_format: {status: 422, retryable: never, receipt: cacheable, module: documents}
+        unknown_profile: {status: 422, retryable: never, receipt: cacheable, module: drive}
+        unknown_role: {status: 422, retryable: never, receipt: cacheable, module: drive}
+        unsupported_node_kind: {status: 409, retryable: never, receipt: cacheable, module: drive}
+        upload_conflict: {status: 409, retryable: after_refetch, receipt: never, module: drive}
+        upload_not_found: {status: 404, retryable: never, receipt: never, module: drive}
+        upload_offset_mismatch: {status: 409, retryable: after_refetch, receipt: never, module: drive}
+        upload_rejected: {status: 422, retryable: never, receipt: cacheable, module: drive}
+        validation_failed: {status: 422, retryable: never, receipt: never, module: core}
+        webhook_delivery_not_found: {status: 404, retryable: never, receipt: never, module: webhooks}
+        webhook_delivery_not_redeliverable: {status: 409, retryable: never, receipt: cacheable, module: webhooks}
+        webhook_endpoint_not_found: {status: 404, retryable: never, receipt: never, module: webhooks}
+        write_outside_operation: {status: 500, retryable: never, receipt: never, module: core}
+      additionalProperties: true
+    HubAuthenticated:
+      type: object
+      required:
+      - allowed
+      - mode
+      - userId
+      properties:
+        allowed:
+          type: boolean
+        mode:
+          type: string
+          enum:
+          - ro
+          - rw
+        userId:
+          type:
+          - string
+          - 'null'
+        epoch:
+          type: integer
+    HubAppended:
+      type: object
+      description: The committed receipt of an appended update (protocol 2), sent only after the commit.
+      required:
+      - generation
+      - update_id
+      - seq
+      - sha256
+      - persisted
+      - permissions_stale
+      properties:
+        generation:
+          type: integer
+        update_id:
+          type: string
+        seq:
+          type: integer
+        sha256:
+          type: string
+        persisted:
+          type: boolean
+          const: true
+        permissions_stale:
+          type: boolean
+          description: True when the token predates a change of its drive's or of every drive's permissions. The append
+            was allowed by the rights now; the hub renews the token.
+    HubPermissionsVersion:
+      type: object
+      description: The permission versions of the token's drive and of every drive.
+      required:
+      - drive
+      - global
+      properties:
+        drive:
+          type: integer
+          minimum: 0
+        global:
+          type: integer
+          minimum: 0
+    HubRenewed:
+      type: object
+      description: A renewed room token, scoped by the rights now.
+      required:
+      - token
+      - room
+      - generation
+      - scope
+      - mode
+      - exp
+      - jti
+      - permissions_version
+      properties:
+        token:
+          type: string
+        room:
+          type: string
+        generation:
+          type: integer
+        scope:
+          type: string
+          enum:
+          - read
+          - write
+        mode:
+          type: string
+          enum:
+          - ro
+          - rw
+        exp:
+          type: integer
+          description: Unix seconds, hub.token_ttl from the renewal.
+        jti:
+          type: string
+        permissions_version:
+          $ref: '#/components/schemas/HubPermissionsVersion'
+    HubRecheck:
+      type: object
+      description: What each connection of a recheck may do now, in the order of the request.
+      required:
+      - results
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            required:
+            - id
+            - access
+            - reason
+            - jti
+            properties:
+              id:
+                type: string
+              access:
+                type: string
+                enum:
+                - none
+                - read
+                - write
+              reason:
+                type:
+                - string
+                - 'null'
+                description: 'Why access is none: token (invalid or expired), gone, generation, unavailable or revoked; null
+                  otherwise.'
+              jti:
+                type:
+                - string
+                - 'null'
+    HubCompactionLease:
+      type: object
+      description: 'A compaction lease on one document generation and what the hub merges under it, read with the lease under
+        the document and head locks: the checkpoint (null before the first one, then content is the JSON to seed from) and
+        the tail (checkpoint_seq, head_seq].'
+      required:
+      - document
+      - generation
+      - lease_token
+      - lease_expires_at
+      - checkpoint_seq
+      - head_seq
+      - checkpoint_version
+      - type
+      - schema_version
+      - protocol
+      - state_format
+      - checkpoint
+      - content
+      - tail
+      properties:
+        document:
+          type: string
+          description: The node id of the document.
+        generation:
+          type: integer
+        lease_token:
+          type: string
+        lease_expires_at:
+          type: string
+          format: date-time
+        checkpoint_seq:
+          type: integer
+        head_seq:
+          type: integer
+        checkpoint_version:
+          type: integer
+          description: The state version the publication must expect (expected_checkpoint_version).
+        type:
+          type: string
+        protocol:
+          type: string
+        state_format:
+          type: string
+        schema_version:
+          type: integer
+        checkpoint:
+          type:
+          - string
+          - 'null'
+          description: Base64 Yjs checkpoint, null before the first one.
+        content:
+          type:
+          - object
+          - 'null'
+        tail:
+          type: array
+          items:
+            type: object
+            required:
+            - seq
+            - update_id
+            - payload
+            properties:
+              seq:
+                type: integer
+              update_id:
+                type: string
+              payload:
+                type: string
+                description: Base64 Yjs update.
+    HubCheckpointPublished:
+      type: object
+      description: A published checkpoint. marker_cleared is false when edits committed after the lease read the log keep
+        the document pending; their updates stay in the log.
+      required:
+      - checkpoint_version
+      - marker_cleared
+      properties:
+        checkpoint_version:
+          type: integer
+        marker_cleared:
+          type: boolean
+    HubLoadedV2:
+      type: object
+      description: 'Protocol 2 load: the checkpoint and the committed tail (checkpoint_seq, head_seq] to replay on it. Before
+        the first checkpoint, content is the JSON projection to seed the room from.'
+      required:
+      - generation
+      - schema_version
+      - protocol
+      - state_format
+      - type
+      - state_version
+      - checkpoint
+      - checkpoint_seq
+      - head_seq
+      - content
+      - tail
+      properties:
+        generation:
+          type: integer
+        protocol:
+          type: string
+        state_format:
+          type: string
+        schema_version:
+          type: integer
+        type:
+          type: string
+        state_version:
+          type: integer
+        checkpoint:
+          type:
+          - string
+          - 'null'
+          description: Base64 Yjs checkpoint, null before the first one.
+        checkpoint_seq:
+          type: integer
+        head_seq:
+          type: integer
+        content:
+          type:
+          - object
+          - 'null'
+        tail:
+          type: array
+          items:
+            type: object
+            required:
+            - seq
+            - update_id
+            - payload
+            properties:
+              seq:
+                type: integer
+              update_id:
+                type: string
+              payload:
+                type: string
+                description: Base64 Yjs update.

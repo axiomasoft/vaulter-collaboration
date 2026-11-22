@@ -1,0 +1,43 @@
+{
+  "name": "@vaulter/collaboration-hub",
+  "version": "0.1.0",
+  "description": "Vaulter collaboration hub: real-time server (Hocuspocus + Yjs). Loads a room from its update log and appends every update through the Laravel backend (collaboration protocol 2).",
+  "license": "UNLICENSED",
+  "type": "module",
+  "private": true,
+  "main": "src/index.js",
+  "bin": {
+    "vaulter-collaboration-hub": "src/cli.js"
+  },
+  "scripts": {
+    "start": "node src/cli.js serve",
+    "dev": "node --watch src/cli.js serve",
+    "check": "node --check src/cli.js && node --check src/index.js && node --check src/config.js && node --check src/backend.js && node --check src/retry.js && node --check src/ledger.js && node --check src/persistence.js && node --check src/rooms.js && node --check src/schema.js && node --check src/compaction.js && node --check src/worker.js && node --check src/limits.js && node --check src/metrics.js && node --check src/management.js && node --check src/shutdown.js && node --check src/tokens.js && node --check src/registry.js && node --check src/revocation.js && node --check src/control.js",
+    "test": "node --test test/*.test.js",
+    "test:e2e": "node --test test/e2e/restore-epoch.e2e.js"
+  },
+  "dependencies": {
+    "@hocuspocus/extension-logger": "^4.3",
+    "@hocuspocus/extension-redis": "^4.9.0",
+    "@hocuspocus/extension-throttle": "^4.3",
+    "@hocuspocus/provider": "^4.9.0",
+    "@hocuspocus/server": "^4.9.0",
+    "@hocuspocus/transformer": "^4.3",
+    "@tiptap/core": "^3.34.0",
+    "@tiptap/extension-image": "^3.34.0",
+    "@tiptap/extension-link": "^3.34.0",
+    "@tiptap/extension-table": "^3.34.0",
+    "@tiptap/pm": "^3.34.0",
+    "@tiptap/starter-kit": "^3.34.0",
+    "dotenv": "^16.4.5",
+    "ioredis": "^5.11.1",
+    "y-prosemirror": "^1.3.0",
+    "yjs": "^13.6.33"
+  },
+  "devDependencies": {
+    "ws": "^8.21.0"
+  },
+  "engines": {
+    "node": ">=26.13.1"
+  }
+}

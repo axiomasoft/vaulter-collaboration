@@ -1,0 +1,22 @@
+{
+    "1": {"lanes": ["php", "node"], "files": ["tests/Persistence/AppendIdempotencyTest.php", "hub/test/ledger.test.js"]},
+    "2": {"lanes": ["stand"], "files": ["hub/test/stand/kill-after-retry.stand.js"]},
+    "3": {"lanes": ["stand", "serial"], "files": ["hub/test/stand/two-hubs.stand.js", "tests/Concurrency/AppendRaceTest.php"]},
+    "4": {"lanes": ["php", "serial"], "files": ["tests/Persistence/CompactionCasTest.php", "tests/Concurrency/CompactionRaceTest.php"]},
+    "5": {"lanes": ["php"], "files": ["tests/Persistence/CompactionCasTest.php"]},
+    "6": {"lanes": ["php"], "files": ["tests/Persistence/ReceiptRetentionTest.php"]},
+    "7": {"lanes": ["php"], "files": ["tests/Persistence/GenerationFenceTest.php"]},
+    "8": {"lanes": ["php", "node"], "files": ["tests/Revocation/AppendRevokedTest.php", "hub/test/revocation.test.js"]},
+    "9": {"lanes": ["php", "node"], "files": ["tests/Revocation/RenewTest.php", "hub/test/control-lost.test.js"]},
+    "10": {"lanes": ["stand", "node"], "files": ["hub/test/stand/sigterm-drain.stand.js", "hub/test/shutdown.test.js"]},
+    "11": {"lanes": ["node"], "files": ["hub/test/origins.test.js"]},
+    "12": {"lanes": ["php"], "files": ["tests/Disable/RawDisableTest.php", "tests/Disable/ManagedDrainTest.php"]},
+    "13": {"lanes": ["php"], "files": ["tests/Restore/RestoreFenceTest.php"]},
+    "14": {"lanes": ["vitest", "node", "php"], "files": ["packages/vue-collaboration/tests/envelope.test.ts", "hub/test/envelope.test.js", "tests/Persistence/AppendIdempotencyTest.php"]},
+    "15": {"lanes": ["php", "node"], "files": ["tests/Revocation/EffectivePermissionsTest.php", "hub/test/control-lost.test.js"]},
+    "16": {"lanes": ["node"], "files": ["hub/test/hocuspocus-v4.test.js", "hub/test/ledger.test.js", "hub/test/shutdown.test.js"]},
+    "17": {"lanes": ["php", "node"], "files": ["tests/Persistence/AppendValidationTest.php", "hub/test/limits.test.js"]},
+    "18": {"lanes": ["php"], "files": ["tests/Restore/RestorePendingTest.php"]},
+    "19": {"lanes": ["php", "node"], "files": ["tests/Persistence/CompactionLeaseTest.php", "hub/test/worker.test.js", "hub/test/compact-cli.test.js"]},
+    "20": {"lanes": ["php"], "files": ["tests/Persistence/CompactionCasTest.php", "packages/documents/tests/State/PendingStateGuardTest.php"]}
+}

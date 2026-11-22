@@ -1,0 +1,150 @@
+{
+    "name": "axiomasoft/vaulter-collaboration",
+    "description": "Real-time collaboration for Vaulter — Hocuspocus/Yjs document rooms, signed room tokens and the hub endpoints over the vaulter-documents module.",
+    "type": "library",
+    "license": "proprietary",
+    "keywords": [
+        "laravel",
+        "collaboration",
+        "yjs",
+        "hocuspocus",
+        "real-time",
+        "vaulter"
+    ],
+    "homepage": "https://github.com/axiomasoft/vaulter-collaboration",
+    "authors": [
+        {
+            "name": "Dmitry Vostrikov",
+            "email": "dv.vostrikov@gmail.com"
+        }
+    ],
+    "support": {
+        "issues": "https://github.com/axiomasoft/vaulter-collaboration/issues",
+        "source": "https://github.com/axiomasoft/vaulter-collaboration"
+    },
+    "replace": {
+        "axioma-studio/vaulter-collaboration": "self.version"
+    },
+    "require": {
+        "axiomasoft/packman": "^0.1",
+        "axiomasoft/packman-plugins": "^0.1",
+        "axiomasoft/packman-schema": "^0.1",
+        "axiomasoft/vaulter-core": "^1.0",
+        "axiomasoft/vaulter-documents": "^1.0",
+        "axiomasoft/vaulter-drive": "^1.0",
+        "firebase/php-jwt": "^7.0",
+        "php": ">=8.4 <8.6"
+    },
+    "require-dev": {
+        "opis/json-schema": "^2.4",
+        "symfony/yaml": "^8.0",
+        "axiomasoft/vaulter-media": "^1.0",
+        "larastan/larastan": "^3.12",
+        "laravel/pint": "^1.32",
+        "orchestra/testbench": "^11.3",
+        "pestphp/pest": "^5.2",
+        "pestphp/pest-plugin-type-coverage": "^5.1",
+        "phpstan/phpstan": "^2.2.16 <2.3.6",
+        "laravel/sanctum": "^4.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Vaulter\\Collaboration\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Vaulter\\Collaboration\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Vaulter\\Collaboration\\VaulterCollaborationServiceProvider"
+            ]
+        },
+        "branch-alias": {
+            "dev-main": "1.0.x-dev"
+        },
+        "packman": {
+            "schema-version": 1,
+            "package-type": "addon",
+            "stability": "stable",
+            "owns": [
+                "Configuration",
+                "Console",
+                "Contracts",
+                "Data",
+                "Doctor",
+                "Drain",
+                "Errors",
+                "Exceptions",
+                "Http",
+                "Operations",
+                "Persistence",
+                "Providers",
+                "Revocation",
+                "Schema",
+                "Security",
+                "Testing"
+            ],
+            "error-prefix": "collaboration"
+        }
+    },
+    "repositories": [
+        {
+            "type": "path",
+            "url": "../core",
+            "options": {
+                "symlink": true,
+                "versions": {
+                    "axiomasoft/vaulter-core": "1.0.x-dev"
+                }
+            }
+        },
+        {
+            "type": "path",
+            "url": "../media",
+            "options": {
+                "symlink": true,
+                "versions": {
+                    "axiomasoft/vaulter-media": "1.0.x-dev"
+                }
+            }
+        },
+        {
+            "type": "path",
+            "url": "../drive",
+            "options": {
+                "symlink": true,
+                "versions": {
+                    "axiomasoft/vaulter-drive": "1.0.x-dev"
+                }
+            }
+        },
+        {
+            "type": "path",
+            "url": "../documents",
+            "options": {
+                "symlink": true,
+                "versions": {
+                    "axiomasoft/vaulter-documents": "1.0.x-dev"
+                }
+            }
+        }
+    ],
+    "minimum-stability": "dev",
+    "prefer-stable": true,
+    "config": {
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    },
+    "scripts": {
+        "test": "../../scripts/t sqlite -p collaboration",
+        "test:types": "vendor/bin/pest --type-coverage --min=100",
+        "lint": "vendor/bin/pint",
+        "lint:check": "vendor/bin/pint --test",
+        "analyse": "vendor/bin/phpstan analyse --memory-limit=512M"
+    }
+}

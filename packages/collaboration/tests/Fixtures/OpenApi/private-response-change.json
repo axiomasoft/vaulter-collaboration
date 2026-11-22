@@ -1,0 +1,5 @@
+{
+    "schema": "HubAuthenticated",
+    "property": "allowed",
+    "type": "string"
+}

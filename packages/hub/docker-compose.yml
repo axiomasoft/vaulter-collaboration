@@ -1,0 +1,75 @@
+# Vaulter collaboration hub — reference deployment.
+#
+# The recommended model is to REFERENCE the published image (not vendor the sources):
+#   image: ghcr.io/axiomasoft/vaulter-collaboration-hub:<version>   # pin @sha256:… in prod
+# and configure it entirely through environment variables. For LOCAL development against
+# this repo, uncomment `build: .` to build the image from source instead.
+#
+# The tag is REQUIRED (no floating `:latest` default) — set
+# VAULTER_COLLAB_IMAGE_TAG to a released vaulter-collaboration-hub version (semver, e.g. `1.2.3`;
+# in production prefer the immutable `@sha256:…` digest published alongside each release —
+# see .github/workflows/collaboration-hub-image.yml) before bringing this stack up.
+#
+# Full env contract + security guidance (wss/TLS, Origin allowlist, scaling): see
+# docs/guides/hub.md.
+services:
+  vaulter-collab:
+    image: ghcr.io/axiomasoft/vaulter-collaboration-hub:${VAULTER_COLLAB_IMAGE_TAG:?Set VAULTER_COLLAB_IMAGE_TAG to a pinned vaulter-collaboration-hub release tag or @sha256 digest — see docs/guides/hub.md}
+    # build: .   # ← local dev: build from source instead of pulling the published image
+    ports:
+      # Bound to 127.0.0.1 by default: the WS port must NOT face the internet directly.
+      # The per-IP Throttle keys on the X-Real-IP / X-Forwarded-For headers, which a directly
+      # connected client can SPOOF to bypass the ban — so always front the hub with a TLS
+      # reverse proxy that OVERWRITES those headers (see docs/guides/hub.md). To
+      # expose it for a remote proxy on another host, change this to "${VAULTER_COLLAB_PORT:-1234}:1234".
+      - "127.0.0.1:${VAULTER_COLLAB_PORT:-1234}:1234"
+      # The management port (/livez, /readyz, /metrics) is not published: it is unauthenticated and
+      # binds loopback inside the container (the healthcheck below runs there). To scrape /metrics
+      # from the host, set VAULTER_COLLAB_MANAGEMENT_HOST to 0.0.0.0 and publish it on the host's
+      # loopback only:
+      # - "127.0.0.1:${VAULTER_COLLAB_MANAGEMENT_PORT:-1235}:1235"
+    environment:
+      # — Connectivity —
+      VAULTER_COLLAB_PORT: 1234
+      # — Management listener (never a public ingress) —
+      VAULTER_COLLAB_MANAGEMENT_HOST: ${VAULTER_COLLAB_MANAGEMENT_HOST:-127.0.0.1}
+      VAULTER_COLLAB_MANAGEMENT_PORT: 1235
+      # The Laravel backend the hub calls back into (v1/collaboration/hub/*).
+      VAULTER_BACKEND_URL: ${VAULTER_BACKEND_URL:-http://host.docker.internal}
+      VAULTER_API_PREFIX: ${VAULTER_API_PREFIX:-api/vaulter}
+      # Optional: the full versioned base; must end with /v1 (overrides the two above).
+      VAULTER_API_URL: ${VAULTER_API_URL:-}
+      # Optional shared webhook secret; when unset the webhooks are authenticated by the
+      # forwarded room JWT alone (never open). MUST equal the Laravel webhook_secret.
+      VAULTER_COLLAB_WEBHOOK_SECRET: ${VAULTER_COLLAB_WEBHOOK_SECRET:-}
+
+      # — Security (CSWSH / DoS) — REQUIRED in production —
+      # Comma-separated EXACT browser origins allowed to connect ("*" = any, dev only).
+      VAULTER_COLLAB_ALLOWED_ORIGINS: ${VAULTER_COLLAB_ALLOWED_ORIGINS:-}
+      # Empty: the frame the limits need (a sync step 2 of MAX_DOCUMENT_BYTES); a smaller value stops the hub at start.
+      VAULTER_COLLAB_MAX_PAYLOAD_BYTES: ${VAULTER_COLLAB_MAX_PAYLOAD_BYTES:-}
+      VAULTER_COLLAB_THROTTLE: ${VAULTER_COLLAB_THROTTLE:-15}
+      VAULTER_COLLAB_THROTTLE_SECONDS: ${VAULTER_COLLAB_THROTTLE_SECONDS:-60}
+      VAULTER_COLLAB_BAN_TIME: ${VAULTER_COLLAB_BAN_TIME:-5}
+
+      # — Liveness / persistence pressure —
+      VAULTER_COLLAB_TIMEOUT_MS: ${VAULTER_COLLAB_TIMEOUT_MS:-30000}
+      VAULTER_COLLAB_DEBOUNCE_MS: ${VAULTER_COLLAB_DEBOUNCE_MS:-5000}
+      VAULTER_COLLAB_MAX_DEBOUNCE_MS: ${VAULTER_COLLAB_MAX_DEBOUNCE_MS:-30000}
+
+      # — Scaling (multi-instance) — set a Redis URL + a unique instance name —
+      VAULTER_COLLAB_REDIS_URL: ${VAULTER_COLLAB_REDIS_URL:-}
+      VAULTER_COLLAB_INSTANCE_NAME: ${VAULTER_COLLAB_INSTANCE_NAME:-vaulter-hocuspocus}
+
+      # — Shutdown — SIGTERM drains: writes stop, pending updates flush, then destroy() —
+      VAULTER_COLLAB_SHUTDOWN_FLUSH_MS: ${VAULTER_COLLAB_SHUTDOWN_FLUSH_MS:-30000}
+      VAULTER_COLLAB_SHUTDOWN_DESTROY_MS: ${VAULTER_COLLAB_SHUTDOWN_DESTROY_MS:-5000}
+    # More than flush + destroy: docker stop would otherwise SIGKILL the drain after 10 s.
+    stop_grace_period: 40s
+    healthcheck:
+      # Liveness: /livez of the management listener (no backend, database or Redis behind it).
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:1235/livez').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped

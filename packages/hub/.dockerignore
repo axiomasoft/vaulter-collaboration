@@ -1,0 +1,11 @@
+# Only package.json, package-lock.json and src/ are needed to build the image; keep the
+# build context tiny and never let local env/secrets or node_modules leak into a layer.
+node_modules
+.env
+.env.*
+test
+*.md
+Dockerfile
+.dockerignore
+docker-compose.yml
+npm-debug.log*

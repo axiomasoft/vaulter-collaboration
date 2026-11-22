@@ -1,0 +1,116 @@
+# Stand for the collaboration hub (scenarios 2, 3 and 10, collaboration#tests): REAL processes only —
+# PostgreSQL, Redis, the Laravel host behind `testbench serve`, and TWO hubs of the image built from this
+# repository. The scenarios (packages/collaboration/hub/test/stand/*.stand.js) crash, stop and signal these
+# containers; no backend is mocked.
+#
+# Started by scripts/collab-stand.sh (which also runs the scenarios and tears the stand down with its volumes):
+#   bash scripts/collab-stand.sh
+# Not part of CI; scripts/collab-stand.sh or a person runs it by hand.
+#
+# Ports (host loopback only), same variables as scripts/collab-e2e.sh:
+#   VAULTER_E2E_PORT            the Laravel host            (default 8787)
+#   VAULTER_E2E_HUB_PORT        hub A WebSocket             (default 18234), its management listener on +1
+#   VAULTER_E2E_HUB_B_PORT      hub B WebSocket             (default 18334), its management listener on +1
+# The secrets below are throwaway values of this stand and protect nothing.
+name: vaulter-collab-stand
+
+x-hub: &hub
+  build:
+    context: ..
+  depends_on:
+    backend:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  # Longer than the shutdown flush + destroy below: SIGTERM drains, only then the container stops.
+  stop_grace_period: 30s
+  healthcheck:
+    test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:1235/livez').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+    interval: 2s
+    timeout: 3s
+    retries: 30
+
+x-hub-environment: &hub-environment
+  # Not production: the Origin allowlist is open (a node client sends no Origin anyway).
+  NODE_ENV: development
+  VAULTER_COLLAB_PORT: "1234"
+  VAULTER_COLLAB_MANAGEMENT_HOST: 0.0.0.0
+  VAULTER_COLLAB_MANAGEMENT_PORT: "1235"
+  VAULTER_LARAVEL_WEBHOOK_URL: http://backend:8000/api/vaulter/v1
+  VAULTER_COLLAB_WEBHOOK_SECRET: stand-collab-webhook-secret
+  VAULTER_COLLAB_REDIS_URL: redis://redis:6379
+  VAULTER_COLLAB_MODE: ${VAULTER_STAND_MODE:-buffered}
+  # A short retry series, so an outage outlasts it within seconds (scenario 2).
+  VAULTER_COLLAB_RETRY_BASE_MS: "100"
+  VAULTER_COLLAB_RETRY_CAP_MS: "500"
+  VAULTER_COLLAB_RETRY_MAX_ATTEMPTS: "4"
+  VAULTER_COLLAB_RETRY_DEADLINE_MS: "3000"
+  VAULTER_COLLAB_RETRY_ATTEMPT_TIMEOUT_MS: "1000"
+  VAULTER_COLLAB_FLUSH_INTERVAL_MS: "500"
+  VAULTER_COLLAB_COMPACTION_INTERVAL_MS: "1000"
+  VAULTER_COLLAB_SHUTDOWN_FLUSH_MS: "10000"
+  VAULTER_COLLAB_SHUTDOWN_DESTROY_MS: "5000"
+  VAULTER_COLLAB_THROTTLE: "1000"
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: vaulter
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: vaulter_stand
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vaulter -d vaulter_stand"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # The Laravel host: Orchestra Testbench served on PostgreSQL, with the e2e routes (packages/core/tests/E2E).
+  # `migrate` (not `migrate:fresh`): the scenarios restart this container and the data must stay.
+  backend:
+    build:
+      context: ../../../..
+      dockerfile: e2e/docker/Dockerfile.laravel
+    working_dir: /app
+    command: ["sh", "-c", "vendor/bin/testbench migrate --force && vendor/bin/testbench serve --host 0.0.0.0 --port 8000"]
+    volumes:
+      - ../../../..:/app
+      # The DB connection reaches the testbench-serve child only through testbench.yaml.
+      - ./testbench.yaml:/app/testbench.yaml:ro
+    ports:
+      - "127.0.0.1:${VAULTER_E2E_PORT:-8787}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # `testbench serve` listens only after the migrations ran: an open port means ready.
+    healthcheck:
+      test: ["CMD-SHELL", "php -r 'exit(@fsockopen(\"127.0.0.1\",8000)?0:1);'"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  hub-a:
+    <<: *hub
+    environment:
+      <<: *hub-environment
+      VAULTER_COLLAB_INSTANCE_NAME: hub-a
+    ports:
+      - "127.0.0.1:${VAULTER_E2E_HUB_PORT:-18234}:1234"
+      - "127.0.0.1:${VAULTER_E2E_HUB_MANAGEMENT_PORT:-18235}:1235"
+
+  hub-b:
+    <<: *hub
+    environment:
+      <<: *hub-environment
+      VAULTER_COLLAB_INSTANCE_NAME: hub-b
+    ports:
+      - "127.0.0.1:${VAULTER_E2E_HUB_B_PORT:-18334}:1234"
+      - "127.0.0.1:${VAULTER_E2E_HUB_B_MANAGEMENT_PORT:-18335}:1235"

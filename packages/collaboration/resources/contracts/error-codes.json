@@ -1,0 +1,94 @@
+{
+    "schema": "packman-error-codes/1",
+    "package": "axiomasoft/vaulter-collaboration",
+    "codes": [
+        {
+            "package": "axiomasoft/vaulter-collaboration",
+            "enum": "Vaulter\\Collaboration\\Errors\\CollaborationErrorCode",
+            "case": "CheckpointConflict",
+            "code": "collaboration.checkpoint_conflict",
+            "type": "urn:packman:problem:collaboration.checkpoint_conflict",
+            "status": 409,
+            "title": "Checkpoint conflict",
+            "retryable": true,
+            "category": "conflict"
+        },
+        {
+            "package": "axiomasoft/vaulter-collaboration",
+            "enum": "Vaulter\\Collaboration\\Errors\\CollaborationErrorCode",
+            "case": "Config",
+            "code": "collaboration.config",
+            "type": "urn:packman:problem:collaboration.config",
+            "status": 500,
+            "title": "Config",
+            "retryable": false,
+            "category": "internal"
+        },
+        {
+            "package": "axiomasoft/vaulter-collaboration",
+            "enum": "Vaulter\\Collaboration\\Errors\\CollaborationErrorCode",
+            "case": "Draining",
+            "code": "collaboration.draining",
+            "type": "urn:packman:problem:collaboration.draining",
+            "status": 503,
+            "title": "Draining",
+            "retryable": true,
+            "category": "unavailable"
+        },
+        {
+            "package": "axiomasoft/vaulter-collaboration",
+            "enum": "Vaulter\\Collaboration\\Errors\\CollaborationErrorCode",
+            "case": "EpochMismatch",
+            "code": "collaboration.epoch_mismatch",
+            "type": "urn:packman:problem:collaboration.epoch_mismatch",
+            "status": 409,
+            "title": "Epoch mismatch",
+            "retryable": true,
+            "category": "conflict"
+        },
+        {
+            "package": "axiomasoft/vaulter-collaboration",
+            "enum": "Vaulter\\Collaboration\\Errors\\CollaborationErrorCode",
+            "case": "ProtocolMismatch",
+            "code": "collaboration.protocol_mismatch",
+            "type": "urn:packman:problem:collaboration.protocol_mismatch",
+            "status": 409,
+            "title": "Protocol mismatch",
+            "retryable": false,
+            "category": "conflict"
+        },
+        {
+            "package": "axiomasoft/vaulter-collaboration",
+            "enum": "Vaulter\\Collaboration\\Errors\\CollaborationErrorCode",
+            "case": "SeedConflict",
+            "code": "collaboration.seed_conflict",
+            "type": "urn:packman:problem:collaboration.seed_conflict",
+            "status": 409,
+            "title": "Seed conflict",
+            "retryable": true,
+            "category": "conflict"
+        },
+        {
+            "package": "axiomasoft/vaulter-collaboration",
+            "enum": "Vaulter\\Collaboration\\Errors\\CollaborationErrorCode",
+            "case": "UpdateMismatch",
+            "code": "collaboration.update_mismatch",
+            "type": "urn:packman:problem:collaboration.update_mismatch",
+            "status": 422,
+            "title": "Update mismatch",
+            "retryable": false,
+            "category": "validation"
+        },
+        {
+            "package": "axiomasoft/vaulter-collaboration",
+            "enum": "Vaulter\\Collaboration\\Errors\\CollaborationErrorCode",
+            "case": "UpdateTooLarge",
+            "code": "collaboration.update_too_large",
+            "type": "urn:packman:problem:collaboration.update_too_large",
+            "status": 413,
+            "title": "Update too large",
+            "retryable": false,
+            "category": "validation"
+        }
+    ]
+}

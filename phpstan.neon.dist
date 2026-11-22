@@ -1,14 +1,27 @@
-# Root scaffold. Package trees arrive in later waves; until then there is no PHP under this root.
-# Vendor extensions are intentionally not included: nothing is installed yet.
+includes:
+    - vendor/larastan/larastan/extension.neon
+    - vendor/spaze/phpstan-disallowed-calls/extension.neon
 
 parameters:
     level: max
     tmpDir: build/phpstan
     paths:
-        - .
+        - packages/collaboration/src
     excludePaths:
         - vendor/*
         - node_modules/*
         - .github/*
         - release/*
     inferPrivatePropertyTypeFromConstructor: true
+    disallowedFunctionCalls:
+        -
+            function: 'parse_url()'
+            message: 'Use Uri\WhatWg\Url (PHP 8.5) or strict host/IDNA validation instead of parse_url().'
+    disallowedStaticCalls:
+        -
+            method: 'Illuminate\Support\Facades\DB::transaction()'
+            message: 'Use VaulterDatabase::transaction() instead of DB::transaction().'
+    disallowedMethodCalls:
+        -
+            method: 'ZipArchive::extractTo()'
+            message: 'ZipArchive::extractTo() is forbidden; use ZipCentralDirectoryGuard.'

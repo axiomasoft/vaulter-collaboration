@@ -1,0 +1,104 @@
+# Full realtime-collaboration e2e stack: Postgres + Laravel(testbench) + Hocuspocus hub + Vite.
+# Bring up:  docker compose up --build -d
+# Then run the browser e2e from the host:
+#   VAULTER_BACKEND_URL=http://localhost:8000 E2E_BASE_URL=http://localhost:5273 npm test
+name: vaulter-collab-e2e
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: vaulter
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: vaulter_e2e
+    ports:
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vaulter -d vaulter_e2e"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: e2e/docker/Dockerfile.laravel
+    working_dir: /app
+    volumes:
+      - ..:/app
+      - ./docker/testbench.pgsql.yaml:/app/testbench.yaml:ro
+    command: ["vendor/bin/testbench", "migrate", "--force"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  laravel:
+    build:
+      context: ..
+      dockerfile: e2e/docker/Dockerfile.laravel
+    working_dir: /app
+    volumes:
+      - ..:/app
+      # The DB connection reaches the testbench-serve child only via testbench.yaml.
+      - ./docker/testbench.pgsql.yaml:/app/testbench.yaml:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "php -r 'exit(@fsockopen(\"127.0.0.1\",8000)?0:1);'"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+
+  hub:
+    build:
+      context: ../packages/hub
+    environment:
+      # Dev stand: NODE_ENV=development opens the Origin allowlist (a published/prod image
+      # defaults to production and REQUIRES VAULTER_COLLAB_ALLOWED_ORIGINS — see config.js).
+      NODE_ENV: "development"
+      VAULTER_COLLAB_PORT: "1234"
+      VAULTER_COLLAB_MANAGEMENT_PORT: "1235"
+      VAULTER_BACKEND_URL: "http://laravel:8000"
+      VAULTER_API_PREFIX: "api/vaulter"
+    ports:
+      - "1234:1234"
+    depends_on:
+      laravel:
+        condition: service_healthy
+    # Symmetric with the reference deployment's own healthcheck
+    # (packages/collaboration/hub/docker-compose.yml) — /livez of the management listener on
+    # VAULTER_COLLAB_MANAGEMENT_PORT (loopback inside the container).
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:1235/livez').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  vite:
+    image: node:26-alpine
+    working_dir: /app/e2e
+    environment:
+      # Vite proxies /api + /e2e to the Laravel service inside the compose network.
+      VAULTER_BACKEND_URL: "http://laravel:8000"
+    volumes:
+      - ..:/app
+    command: sh -c "npm install --no-audit --no-fund && npm run dev -- --host 0.0.0.0"
+    ports:
+      - "5273:5273"
+    depends_on:
+      laravel:
+        condition: service_healthy
+      hub:
+        condition: service_healthy
+    # node:26-alpine ships wget (busybox) — no extra install needed.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:5273 >/dev/null 2>&1 || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
