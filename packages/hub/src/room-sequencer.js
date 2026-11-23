@@ -2,9 +2,10 @@ import crypto from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { TiptapTransformer } from '@hocuspocus/transformer'
 import { getSchema } from '@tiptap/core'
+import { updateYFragment } from 'y-prosemirror'
 import * as Y from 'yjs'
 import { COMMITTED_ORIGIN, LOAD_ORIGIN, sha256Hex } from './persistence.js'
-import { extensionsFor, FIELD } from './schema.js'
+import { extensionsFor, FIELD, lostAttributes } from './schema.js'
 
 export function refusal(code) {
   return Object.assign(new Error(code), { code })
@@ -186,10 +187,35 @@ export function prepareOnCopy(base, intent, clientId, commandId, type = 'vaulter
   return prepareCommand(base, intent, clientId, commandId, type, Infinity)
 }
 
+function prepareReviewReplacement(schema, before, effect) {
+  try {
+    const expected = schema.nodeFromJSON(effect.expected)
+    const replacement = schema.nodeFromJSON(effect.replacement)
+    const current = schema.nodeFromJSON(before)
+    expected.check()
+    replacement.check()
+    if (expected.type !== schema.topNodeType || replacement.type !== schema.topNodeType ||
+        lostAttributes(effect.expected, expected.toJSON()).length > 0 ||
+        lostAttributes(effect.replacement, replacement.toJSON()).length > 0 ||
+        lostAttributes(before, current.toJSON()).length > 0 || !current.eq(expected)) {
+      throw refusal('precondition_failed')
+    }
+    return replacement
+  } catch {
+    throw refusal('precondition_failed')
+  }
+}
+
 /** Prepare on a disposable copy. Confirm the emitted bytes reproduce the entire checked tree. */
 function prepareCommand(base, intent, clientId, commandId, type, maxBytes) {
   if (!Number.isInteger(clientId) || clientId < 1 || clientId >= 0x80000000 ||
-      !Array.isArray(intent?.atomic_effects) || intent.atomic_effects.length === 0) {
+      !Array.isArray(intent?.atomic_effects)) {
+    throw refusal('invalid_intent')
+  }
+  if (intent.atomic_effects.length === 0) {
+    if (intent.operation === 'review.suggestion.reject' && intent.decision === 'rejected') {
+      return { bytes: null, evidence: { ranges: [] } }
+    }
     throw refusal('invalid_intent')
   }
   const copy = cloneRoom(base)
@@ -219,8 +245,15 @@ function prepareCommand(base, intent, clientId, commandId, type, maxBytes) {
       }
     }
     const ranges = []
+    let replacement = null
     copy.transact(() => {
       intent.atomic_effects.forEach((effect, index) => {
+        if (effect.effect === 'replace_review_document' && intent.operation === 'review.suggestion.accept' &&
+            intent.decision === 'accepted' && intent.atomic_effects.length === 1 && type === 'vaulter/rich-text') {
+          replacement = prepareReviewReplacement(schema, before, effect)
+          updateYFragment(copy, copy.getXmlFragment(FIELD), replacement, { mapping: new Map(), isOMark: new Map() })
+          return
+        }
         const block = blockOf(copy, effect.block_id)
         if (effect.effect === 'replace_exact') {
           exactReplacement(block, effect, ranges)
@@ -235,7 +268,9 @@ function prepareCommand(base, intent, clientId, commandId, type, maxBytes) {
     })
     complete(copy)
     const after = TiptapTransformer.fromYdoc(copy, FIELD)
-    schema.nodeFromJSON(after).check()
+    const afterNode = schema.nodeFromJSON(after)
+    afterNode.check()
+    if (replacement !== null && !afterNode.eq(replacement)) throw refusal('precondition_failed')
     for (const range of ranges) {
       const block = findNode(after, range.block_id)
       if (!block) throw refusal('postcondition_failed')
@@ -248,8 +283,9 @@ function prepareCommand(base, intent, clientId, commandId, type, maxBytes) {
       try {
         Y.applyUpdate(replay, bytes)
         complete(replay)
-        if (!isDeepStrictEqual(TiptapTransformer.fromYdoc(replay, FIELD), after)) {
-          throw refusal('postcondition_failed')
+        const replayed = TiptapTransformer.fromYdoc(replay, FIELD)
+        if (replacement === null ? !isDeepStrictEqual(replayed, after) : !schema.nodeFromJSON(replayed).eq(afterNode)) {
+          throw refusal(replacement === null ? 'postcondition_failed' : 'precondition_failed')
         }
       } finally {
         replay.destroy()
@@ -412,7 +448,8 @@ export function createRoomSequencer({ room, generation, load, append, onBypass =
         try {
           prepared = prepareCommand(room, command.intent, clientId, command.command_id, type, maxBytes)
         } catch (error) {
-          if (error?.code !== 'precondition_failed' && error?.code !== 'document_too_large') throw error
+          const legacyReviewIntent = command.intent?.operation === 'review.suggestion.accept' && error?.code === 'invalid_intent'
+          if (error?.code !== 'precondition_failed' && error?.code !== 'document_too_large' && !legacyReviewIntent) throw error
           // The command settlement endpoint uses precondition_failed for hub rejections.
           prepared = { reason: 'precondition_failed' }
         }

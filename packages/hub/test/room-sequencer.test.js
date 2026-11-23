@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { TiptapTransformer } from '@hocuspocus/transformer'
 import * as Y from 'yjs'
 import { createRoomSequencer, prepareOnCopy, verifyCurrentRange } from '../src/room-sequencer.js'
 import { sha256Hex } from '../src/persistence.js'
 import { createStrictRooms } from '../src/strict-rooms.js'
+import { extensionsFor } from '../src/schema.js'
 
 const browserId = 0x80000007
 const field = 'default'
@@ -82,6 +84,76 @@ test('a partial command failure leaves the base untouched and a valid replacemen
   Y.applyUpdate(base, bytes)
   assert.deepEqual(textOf(base).toDelta(), [{ insert: 'Pay in 30 days', attributes: { link: { href: 'https://example.com/' }, bold: {} } }])
   base.destroy()
+})
+
+test('strict review commits all six structural profiles and settles review rejection without an update', async (t) => {
+  const type = 'vaulter/rich-text'
+  const paragraph = (blockId, text, marks) => ({
+    type: 'paragraph', attrs: { blockId }, content: [{ type: 'text', text, ...(marks && { marks }) }],
+  })
+  const heading = level => ({ ...paragraph('title', 'Title'), type: 'heading', attrs: { blockId: 'title', level } })
+  const cell = (blockId, text) => ({ type: 'tableCell', content: [paragraph(blockId, text)] })
+  const document = { type: 'doc', content: [heading(1), paragraph('left', 'Alpha Beta'), paragraph('right', 'Gamma')] }
+  const base = TiptapTransformer.toYdoc(document, field, extensionsFor(type))
+  const room = new Y.Doc()
+  const checkpoint = Buffer.from(Y.encodeStateAsUpdate(base)).toString('base64')
+  const log = { generation: 3, type, checkpoint, checkpoint_seq: 1, head_seq: 1, tail: [] }
+  const sequencer = createRoomSequencer({ room, generation: 3, load: async () => log, append: async () => assert.fail() })
+  t.after(() => {
+    sequencer.close()
+    room.destroy()
+    base.destroy()
+  })
+
+  const settle = async request => {
+    for (const { payload, sha256 } of request.updates) log.tail.push({ seq: ++log.head_seq, payload, sha256 })
+    return request.kind === 'commit' ? { state: 'committed', to_seq: log.head_seq } : { state: 'rejected' }
+  }
+  const run = (intent, expectedKind, updates) => sequencer.runCommand(
+    { id: 'row', command_id: 'review-key', fingerprint: 'fingerprint', intent }, 2, type,
+    request => {
+      assert.equal(request.kind, expectedKind)
+      assert.equal(request.updates.length, updates)
+      return settle(request)
+    },
+  )
+  const accept = (expected, replacement) => ({
+    operation: 'review.suggestion.accept', decision: 'accepted',
+    atomic_effects: [{ effect: 'replace_review_document', expected, replacement }],
+  })
+  const reject = { operation: 'review.suggestion.reject', decision: 'rejected', atomic_effects: [] }
+  const edits = [
+    ['mark_change', children => { children[1] = paragraph('left', 'Alpha Beta', [{ type: 'bold' }]) }],
+    ['attr_change', children => { children[0] = heading(2) }],
+    ['block_split', children => { children.splice(1, 1, paragraph('left', 'Alpha'), paragraph('split', ' Beta')) }],
+    ['block_join', children => { children.splice(2, 2, paragraph('split', ' BetaGamma')) }],
+    ['list_change', children => {
+      children[1] = { type: 'bulletList', content: [{ type: 'listItem', content: [children[1]] }] }
+    }],
+    ['table_change', children => {
+      children.push({ type: 'table', content: [{ type: 'tableRow', content: [cell('a1', 'A'), cell('b1', 'B')] }] })
+    }],
+  ]
+  let current = document
+  for (const [kind, edit] of edits) {
+    const replacement = structuredClone(current)
+    edit(replacement.content)
+    assert.equal((await run({ ...reject, suggestions: [{ kind }] }, 'commit', 0)).state, 'committed')
+    assert.equal((await run({ ...accept(current, replacement), suggestions: [{ kind }] }, 'commit', 1)).state, 'committed')
+    const expectedRoom = TiptapTransformer.toYdoc(replacement, field, extensionsFor(type))
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(TiptapTransformer.fromYdoc(room, field))),
+      JSON.parse(JSON.stringify(TiptapTransformer.fromYdoc(expectedRoom, field))),
+    )
+    expectedRoom.destroy()
+    current = replacement
+  }
+
+  const before = Y.encodeStateAsUpdate(room)
+  assert.equal((await run(accept(document, current), 'reject', 0)).state, 'rejected')
+  assert.deepEqual(Y.encodeStateAsUpdate(room), before)
+  assert.equal(log.head_seq, 7)
+  assert.throws(() => prepareOnCopy(room, { atomic_effects: [] }, 2, 'unsupported'), { code: 'invalid_intent' })
 })
 
 test('the strict worker rejects an oversized command and can commit the next command', async (t) => {
