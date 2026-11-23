@@ -412,7 +412,8 @@ export function createRoomSequencer({ room, generation, load, append, onBypass =
         try {
           prepared = prepareCommand(room, command.intent, clientId, command.command_id, type, maxBytes)
         } catch (error) {
-          if (error?.code !== 'precondition_failed') throw error
+          if (error?.code !== 'precondition_failed' && error?.code !== 'document_too_large') throw error
+          // The command settlement endpoint uses precondition_failed for hub rejections.
           prepared = { reason: 'precondition_failed' }
         }
         const bytes = prepared.bytes

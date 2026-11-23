@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import * as Y from 'yjs'
 import { createRoomSequencer, prepareOnCopy, verifyCurrentRange } from '../src/room-sequencer.js'
 import { sha256Hex } from '../src/persistence.js'
+import { createStrictRooms } from '../src/strict-rooms.js'
 
 const browserId = 0x80000007
 const field = 'default'
@@ -83,34 +84,68 @@ test('a partial command failure leaves the base untouched and a valid replacemen
   base.destroy()
 })
 
-test('an oversized command leaves the room unchanged without calling settlement', async (t) => {
+test('the strict worker rejects an oversized command and can commit the next command', async (t) => {
   const base = fixture()
   const room = new Y.Doc()
   const checkpoint = Buffer.from(Y.encodeStateAsUpdate(base)).toString('base64')
-  const sequence = createRoomSequencer({
-    room, generation: 3,
-    load: async () => ({ generation: 3, checkpoint, checkpoint_seq: 40, head_seq: 40, tail: [] }),
-    maxBytes: Y.encodeStateAsUpdateV2(base).length + 1,
+  const log = { generation: 3, type: 'vaulter/rich-text', checkpoint, checkpoint_seq: 40, head_seq: 40, tail: [] }
+  const documentId = 'document'
+  const command = (id, commandId, replacement) => ({
+    id, command_id: commandId, fingerprint: `fingerprint-${id}`,
+    intent: { atomic_effects: [{ effect: 'replace_exact', block_id: 'terms', expected: '15', replacement }] },
   })
-  t.after(() => {
-    sequence.close()
+  const oversized = command('oversized', 'A42', 'x'.repeat(1000))
+  const valid = command('valid', 'A43', '30')
+  const pending = [oversized, valid]
+  const settleCommand = t.mock.fn(async ({ id, kind, reason, updates }) => {
+    assert.equal(id, pending[0].id)
+    if (kind === 'reject') {
+      assert.equal(reason, 'precondition_failed')
+      assert.deepEqual(updates, [])
+      pending.shift()
+      return { state: 'rejected', rejection_code: reason }
+    }
+    for (const { payload, sha256 } of updates) log.tail.push({ seq: ++log.head_seq, payload, sha256 })
+    pending.shift()
+    return { state: 'committed', to_seq: log.head_seq }
+  })
+  const worker = createStrictRooms({
+    enabled: true,
+    conf: { maxDocumentBytes: Y.encodeStateAsUpdateV2(base).length + 128 },
+    log: {},
+    backend: {
+      acquireOwnership: async () => ({ owner_fence: 1, log, server_client_id: 2 }),
+      renewOwnership: async () => {},
+      nextCommand: async ({ document_id: document }) => document
+        ? { command: pending[0] ?? null }
+        : { targets: pending.length ? [{ document: documentId, generation: 3 }] : [] },
+      settleCommand,
+    },
+  })
+  t.after(async () => {
+    await worker.stop()
     room.destroy()
     base.destroy()
   })
-  const settle = t.mock.fn(async () => ({ state: 'committed', to_seq: 40 }))
-  const command = {
-    id: 'command', command_id: 'A42', fingerprint: 'fingerprint',
-    intent: {
-      atomic_effects: [
-        { effect: 'replace_exact', block_id: 'terms', expected: '15', replacement: 'x'.repeat(1000) },
-      ],
-    },
-  }
+  const entry = await worker.open({ document_id: documentId, generation: 3 }, room, {})
+  worker.start()
 
-  await assert.rejects(sequence.runCommand(command, 2, 'vaulter/rich-text', settle), { code: 'document_too_large' })
-  assert.equal(settle.mock.callCount(), 0)
-  assert.equal(sequence.appliedSeq, 40)
+  await worker.wake()
+  assert.equal(settleCommand.mock.callCount(), 1)
+  assert.partialDeepStrictEqual(settleCommand.mock.calls[0].arguments[0], {
+    id: oversized.id, kind: 'reject', reason: 'precondition_failed', base_seq: 40, updates: [],
+  })
+  assert.deepEqual(pending, [valid])
+  assert.equal(log.head_seq, 40)
+  assert.equal(entry.seq.appliedSeq, 40)
   assert.deepEqual(textOf(room).toDelta(), textOf(base).toDelta())
+
+  await worker.wake()
+  assert.equal(settleCommand.mock.callCount(), 2)
+  assert.partialDeepStrictEqual(settleCommand.mock.calls[1].arguments[0], { id: valid.id, kind: 'commit', base_seq: 40 })
+  assert.deepEqual(pending, [])
+  assert.equal(entry.seq.appliedSeq, 41)
+  assert.equal(textOf(room).toDelta()[0].insert, 'Pay in 30 days')
 })
 
 test('replaces a unique text run on either side of a hard break and verifies its evidence', async (t) => {
