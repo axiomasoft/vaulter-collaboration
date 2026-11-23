@@ -6,6 +6,7 @@ import { fetchCollaborationSession, type CollaborationOptions } from './session'
 import { deriveStatus } from './status'
 import {
   openCollaborationTransport,
+  writerBinding,
   type Collaborator,
   type CollaborationEnd,
   type CollaborationTransportHandle,
@@ -119,7 +120,8 @@ export function useCollaboration(nodeId: NodeId, options: UseCollaborationOption
   const status = ref<CollaborationStatus>('pending')
   const collaborators = ref<Collaborator[]>([])
   const error = ref<unknown>(null)
-  const readOnly = computed(() => freshDocPending.value || sessionReadOnly.value || queueFailed.value || refused.value)
+  const readOnly = computed(() => freshDocPending.value || sessionReadOnly.value || queueFailed.value || refused.value
+    || (session.value?.options.writer_binding === true && !writerBinding(doc.value).ready.value))
 
   let stopWatchers: Array<() => void> = []
   // Every connect(), reopen and disconnect() starts a new generation. A session answer that

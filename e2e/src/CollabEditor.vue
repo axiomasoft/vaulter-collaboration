@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { Editor, EditorContent } from '@tiptap/vue-3'
+import { Extension } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
 import Collaboration from '@tiptap/extension-collaboration'
 import { useVaulterClient, type CollaborationHandle } from '@vaulter/vue'
-import { createCollaborationAdapter } from '@vaulter/vue-collaboration'
+import { createCollaborationAdapter, limitCollaborationUndo } from '@vaulter/vue-collaboration'
 import type { Doc as YDoc } from 'yjs'
+import { UndoManager } from 'yjs'
 
 const props = defineProps<{
   nodeId: string | number
@@ -18,6 +20,20 @@ const collab = shallowRef<CollaborationHandle | null>(null)
 
 const editor = shallowRef<Editor | null>(null)
 let editorDoc: YDoc | undefined
+let stopUndo = () => {}
+const BlockIdentity = Extension.create({
+  name: 'blockIdentity',
+  addGlobalAttributes: () => [{
+    types: ['paragraph', 'heading'],
+    attributes: {
+      blockId: {
+        default: null,
+        parseHTML: element => element.getAttribute('data-block-id'),
+        renderHTML: attrs => attrs.blockId ? { 'data-block-id': attrs.blockId } : {},
+      },
+    },
+  }],
+})
 const error = ref('')
 const status = computed(() => {
   if (error.value) return 'error'
@@ -39,6 +55,7 @@ watch(
   () => [collab.value?.doc, collab.value?.connected?.value, collab.value?.readOnly.value] as const,
   ([doc, connected, readOnly]) => {
     if (doc !== editorDoc) {
+      stopUndo()
       editor.value?.destroy()
       editor.value = null
       editorDoc = doc as YDoc | undefined
@@ -61,14 +78,22 @@ watch(
       extensions: [
         // history off — историю держит Yjs (UndoManager), иначе конфликт с CRDT.
         StarterKit.configure({ undoRedo: false }),
+        BlockIdentity,
         Collaboration.configure({ document: editorDoc }),
       ],
+      onCreate: ({ editor: created }) => {
+        const manager = created.state.plugins
+          .map(plugin => plugin.getState(created.state)?.undoManager as unknown)
+          .find((candidate): candidate is UndoManager => candidate instanceof UndoManager)
+        if (manager) stopUndo = limitCollaborationUndo(manager)
+      },
       editable,
     })
   },
 )
 
 onBeforeUnmount(() => {
+  stopUndo()
   editor.value?.destroy()
   collab.value?.end()
 })

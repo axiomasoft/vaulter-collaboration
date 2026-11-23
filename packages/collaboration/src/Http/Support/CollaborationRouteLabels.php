@@ -19,6 +19,10 @@ final class CollaborationRouteLabels implements RouteLabelSource
             'vaulter.v1.collaboration.hub.checkpoint' => 'collab_checkpoint',
             'vaulter.v1.collaboration.hub.renew' => 'collab_renew',
             'vaulter.v1.collaboration.hub.recheck' => 'collab_recheck',
+            'vaulter.v1.collaboration.hub.ownership.acquire' => 'collab_ownership_acquire',
+            'vaulter.v1.collaboration.hub.ownership.renew' => 'collab_ownership_renew',
+            'vaulter.v1.collaboration.hub.commands.next' => 'collab_commands_next',
+            'vaulter.v1.collaboration.hub.commands.settle' => 'collab_commands_settle',
         ];
     }
 
@@ -30,6 +34,10 @@ final class CollaborationRouteLabels implements RouteLabelSource
             ['methods' => ['POST'], 'pattern' => 'v1/collaboration/hub/checkpoint', 'operation' => 'collab_checkpoint'],
             ['methods' => ['POST'], 'pattern' => 'v1/collaboration/hub/renew', 'operation' => 'collab_renew'],
             ['methods' => ['POST'], 'pattern' => 'v1/collaboration/hub/recheck', 'operation' => 'collab_recheck'],
+            ['methods' => ['POST'], 'pattern' => 'v1/collaboration/hub/ownership/acquire', 'operation' => 'collab_ownership_acquire'],
+            ['methods' => ['POST'], 'pattern' => 'v1/collaboration/hub/ownership/renew', 'operation' => 'collab_ownership_renew'],
+            ['methods' => ['POST'], 'pattern' => 'v1/collaboration/hub/commands/next', 'operation' => 'collab_commands_next'],
+            ['methods' => ['POST'], 'pattern' => 'v1/collaboration/hub/commands/settle', 'operation' => 'collab_commands_settle'],
         ];
     }
 
@@ -42,6 +50,10 @@ final class CollaborationRouteLabels implements RouteLabelSource
             'vaulter.v1.collaboration.hub.checkpoint' => 'collab.checkpoint',
             'vaulter.v1.collaboration.hub.renew' => 'collab.renew',
             'vaulter.v1.collaboration.hub.recheck' => 'collab.recheck',
+            'vaulter.v1.collaboration.hub.ownership.acquire' => 'collab.ownership.acquire',
+            'vaulter.v1.collaboration.hub.ownership.renew' => 'collab.ownership.renew',
+            'vaulter.v1.collaboration.hub.commands.next' => 'collab.commands.next',
+            'vaulter.v1.collaboration.hub.commands.settle' => 'collab.commands.settle',
         ];
     }
 }

@@ -133,6 +133,10 @@ it('mounts the session and the hub routes behind the module middleware once it i
             'vaulter.v1.collaboration.hub.checkpoint',
             'vaulter.v1.collaboration.hub.renew',
             'vaulter.v1.collaboration.hub.recheck',
+            'vaulter.v1.collaboration.hub.ownership.acquire',
+            'vaulter.v1.collaboration.hub.ownership.renew',
+            'vaulter.v1.collaboration.hub.commands.next',
+            'vaulter.v1.collaboration.hub.commands.settle',
         ])
         ->and($kernel->extensions()->handler(CollaborationProtocolDriver::class, 'yjs'))->toBeInstanceOf(HocuspocusCollaborationDriver::class)
         ->and($app['config']->has('vaulter-collaboration.hub.url'))->toBeTrue()

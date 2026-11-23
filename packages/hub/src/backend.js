@@ -178,8 +178,9 @@ function header(response, name) {
  * problem of a 409: the room's epoch is over (the client asks for a new session) or the backend does
  * not speak protocol 2. `status` is the HTTP status (the readiness reads it).
  */
-export async function authenticate({ token, room }, options = {}) {
-  const response = await post('authenticate', { room }, token, options)
+export async function authenticate({ token, room, strictCapable, bindSession }, options = {}) {
+  const body = { room, strict_capable: strictCapable, bind_session: bindSession }
+  const response = await post('authenticate', body, token, options)
 
   if (!response.ok) {
     const code = response.status === 409 ? problemCode(response) : null
@@ -194,6 +195,7 @@ export async function authenticate({ token, room }, options = {}) {
     mode: payload?.mode === 'rw' ? 'rw' : 'ro',
     userId: payload?.userId ?? null,
     epoch: Number.isInteger(payload?.epoch) ? payload.epoch : null,
+    ...(payload?.profile === 'strict' ? { profile: 'strict', boundClientId: payload.bound_client_id } : {}),
     conflict: null,
     status: response.status,
   }
@@ -231,8 +233,11 @@ export async function load({ token, room }, options = {}) {
  * Throws when there is no answer (network error, `timeoutMs` elapsed) — src/retry.js reads that
  * as retryable.
  */
-export async function append({ token, room, generation, updateId, sha256, payload, origin = 'client', seedStateVersion }, options = {}) {
+export async function append({ token, room, generation, updateId, sha256, payload, origin = 'client', seedStateVersion, ownerId, fence, baseSeq, boundClientId, clientSession, receiptOnly }, options = {}) {
   const body = { room, generation, update_id: updateId, sha256, payload, origin }
+  if (ownerId !== undefined) {
+    Object.assign(body, { owner_id: ownerId, owner_fence: fence, base_seq: baseSeq, bound_client_id: boundClientId, client_session_id: clientSession, receipt_only: receiptOnly })
+  }
   const seed = Number.isInteger(seedStateVersion)
 
   if (seed) {
@@ -255,12 +260,30 @@ export async function append({ token, room, generation, updateId, sha256, payloa
   return refusal(response)
 }
 
+async function ownerCall(operation, body, options) {
+  const response = await post(operation, body, null, options, { seed: body.kind === 'seed' })
+  if (!response.ok || response.body === null || typeof response.body !== 'object') {
+    throw new BackendRejection(operation, response.status, ownerCode(response))
+  }
+  return response.body
+}
+
+function ownerCode(response) {
+  const code = problemCode(response)
+  return code === 'collaboration_room_conflict' ? (response.body?.meta?.context?.reason ?? code) : code
+}
+
+export const acquireOwnership = (body, options = {}) => ownerCall('ownership/acquire', body, options)
+export const renewOwnership = (body, options = {}) => ownerCall('ownership/renew', body, options)
+export const nextCommand = (body, options = {}) => ownerCall('commands/next', body, options)
+export const settleCommand = (body, options = {}) => ownerCall('commands/settle', body, options)
+
 /** A non-2xx answer: its status, problem code and, for a 429, the Retry-After wait. */
 function refusal(response) {
   return {
     ok: false,
     status: response.status,
-    code: problemCode(response),
+    code: ownerCode(response),
     retryAfterMs: response.status === 429 ? parseRetryAfter(header(response, 'Retry-After')) : null,
   }
 }

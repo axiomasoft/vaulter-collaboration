@@ -45,8 +45,12 @@ it('names every collaboration route vaulter.v1.* under the versioned prefix', fu
 
     expect($routes)->not->toBeEmpty();
     $names = array_map(static fn (Route $route): string => (string) $route->getName(), $routes);
-    expect(array_values($names))->toHaveCount(7)
-        ->toContain('vaulter.v1.collaboration.hub.authenticate', 'vaulter.v1.collaboration.hub.load', 'vaulter.v1.collaboration.hub.renew', 'vaulter.v1.collaboration.hub.append', 'vaulter.v1.collaboration.hub.compaction.lease', 'vaulter.v1.collaboration.hub.checkpoint', 'vaulter.v1.collaboration.hub.recheck');
+    expect(array_values($names))->toHaveCount(11)->toContain(
+        'vaulter.v1.collaboration.hub.authenticate', 'vaulter.v1.collaboration.hub.load', 'vaulter.v1.collaboration.hub.renew',
+        'vaulter.v1.collaboration.hub.append', 'vaulter.v1.collaboration.hub.compaction.lease', 'vaulter.v1.collaboration.hub.checkpoint',
+        'vaulter.v1.collaboration.hub.recheck', 'vaulter.v1.collaboration.hub.ownership.acquire', 'vaulter.v1.collaboration.hub.ownership.renew',
+        'vaulter.v1.collaboration.hub.commands.next', 'vaulter.v1.collaboration.hub.commands.settle',
+    );
     foreach ($routes as $route) {
         expect($route->getName())->toStartWith('vaulter.v1.collaboration.hub.')
             ->and($route->uri())->toStartWith('api/vaulter/v1/collaboration/hub/');

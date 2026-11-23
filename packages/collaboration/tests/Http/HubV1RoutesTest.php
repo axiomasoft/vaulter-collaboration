@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Illuminate\Routing\Route;
 use Illuminate\Support\Facades\Route as Router;
+use Illuminate\Support\Str;
 use Vaulter\Collaboration\Http\Middleware\ResolveCollaborationCall;
 use Vaulter\Collaboration\Tests\Collaboration\HubTestHelpers as Hub;
 use Vaulter\Collaboration\Tests\Support\DocumentsV1 as Docs;
@@ -89,4 +90,30 @@ it('rate-limits the hub like the other public surface and names it for the metri
         ->and(app(VaulterThrottledRouteMap::class)->routeFor('vaulter.v1.collaboration.hub.authenticate'))->toBe('collab.authenticate')
         ->and(app(VaulterThrottledRouteMap::class)->routeFor('vaulter.v1.collaboration.hub.store'))->toBeNull()
         ->and(app(VaulterHttpOperationMap::class)->operationFor('vaulter.v1.collaboration.hub.append'))->toBe('collab_append');
+});
+
+it('requires signed ownership calls and fences legacy append on a strict generation', function (): void {
+    $node = Hub::document();
+    config()->set('vaulter-collaboration.strict_profile', true);
+    app(VaulterDatabase::class)->write(fn () => Hub::aggregate($node)->forceFill(['write_mode' => 'journal'])->save());
+    $room = Hub::room($node);
+    $token = Hub::token($node);
+    Hub::call('authenticate', ['room' => $room, 'strict_capable' => true], $token)->assertOk()->assertJsonPath('profile', 'strict');
+    Hub::call('authenticate', ['room' => $room], $token)->assertConflict()->assertJsonPath('meta.context.reason', 'strict_hub_required');
+
+    $address = ['document_id' => (string) Hub::aggregate($node)->getKey(), 'generation' => 0, 'owner_id' => (string) Str::uuid()];
+    $this->postJson(Docs::url('collaboration/hub/ownership/acquire'), $address, [
+        'Content-Length' => (string) strlen(json_encode($address, JSON_THROW_ON_ERROR)),
+    ])->assertUnauthorized();
+    Hub::callV2('ownership/acquire', $address + ['include_log' => true], null)
+        ->assertOk()->assertJsonPath('owner_fence', 1)->assertJsonPath('log.head_seq', 0);
+    Hub::callV2('commands/next', $address + ['owner_fence' => 1], null)
+        ->assertOk()->assertJsonPath('command', null);
+    Hub::callV2('ownership/renew', $address + ['owner_fence' => 2], null)
+        ->assertConflict()->assertJsonPath('meta.context.reason', 'stale_owner');
+
+    $seed = Hub::seedBody($node, 'seed');
+    Hub::call('append', $seed, $token)->assertConflict()->assertJsonPath('meta.context.reason', 'strict_profile_required');
+    Hub::call('append', $seed + ['owner_id' => $address['owner_id'], 'owner_fence' => 1, 'base_seq' => 0], $token)
+        ->assertOk()->assertJsonPath('seq', 1);
 });

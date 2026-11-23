@@ -317,3 +317,22 @@ suite against a stub backend; no running stack). Two scripts need a real stack:
   at once, and `SIGTERM` during typing (readiness falls at once, no receipt after the drain boundary). Ports are
   `VAULTER_E2E_PORT`, `VAULTER_E2E_HUB_PORT` and `VAULTER_E2E_HUB_B_PORT` (each hub's management listener on the next port),
   `VAULTER_STAND_MODE=buffered|durable`. It needs Docker and is not part of the fast test set.
+
+## Strict room writers
+
+Strict room creation is disabled by default. A validated deployment sets
+`VAULTER_COLLAB_STRICT_PROFILE=true` on PHP and compatible Hubs. The first writer
+selects the profile for the generation. Existing heads retain their profile.
+Use `VAULTER_COLLAB_CONTROL_REDIS_URL` for notifications and leave
+`VAULTER_COLLAB_REDIS_URL` unset on strict Hubs.
+
+The browser sends write envelopes with its registered Yjs client ID. The owner
+checks them on a copy and applies the journal's committed bytes before ACK.
+During takeover the next Hub waits for the previous SQL lease to expire. A
+controlled handoff releases that lease and closes the room with `4412`.
+
+Office verification uses the Hub management URLs in
+`vaulter-collaboration.control.http.urls` to check Yjs relative positions at the
+current journal position. Keep the management listener on the private network.
+The Office integration resolves and authorizes the caller before asking the
+Hub to check a receipt.

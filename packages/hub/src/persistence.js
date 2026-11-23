@@ -1,13 +1,16 @@
 import crypto from 'node:crypto'
 import * as Y from 'yjs'
 import { TiptapTransformer } from '@hocuspocus/transformer'
+import { getSchema } from '@tiptap/core'
+import { prosemirrorJSONToYXmlFragment } from 'y-prosemirror'
 import * as backendModule from './backend.js'
 import { config as defaultConfig } from './config.js'
 import { createLedger } from './ledger.js'
 import { createLimits, envelopeIdOf, isWriteMessage, LIMIT, readMessageHeader, readVarUint } from './limits.js'
 import { retryPolicy } from './retry.js'
-import { closeConnection, closeRoom, DOCUMENT_GONE, EPOCH_CHANGED, FORBIDDEN, TOKEN_EXPIRED } from './rooms.js'
+import { closeConnection, closeRoom, DOCUMENT_GONE, EPOCH_CHANGED, FORBIDDEN, HANDOFF, TOKEN_EXPIRED } from './rooms.js'
 import { extensionsFor, FIELD, lostAttributes } from './schema.js'
+import { createStrictRooms } from './strict-rooms.js'
 
 export { isWriteMessage }
 
@@ -93,6 +96,7 @@ const OWN = Symbol('vaulter.collab.own-origin')
 
 /** The origin the hub replays a loaded log with: never appended again. */
 export const LOAD_ORIGIN = Object.freeze({ [OWN]: true, source: 'vaulter-load' })
+export const COMMITTED_ORIGIN = Object.freeze({ [OWN]: true, source: 'vaulter-committed' })
 
 /** The Redis extension of Hocuspocus v2 marked its transactions with this string. */
 const LEGACY_REDIS_ORIGIN = '__hocuspocus__redis__origin__'
@@ -187,8 +191,13 @@ export function replayLog(document, { checkpoint = null, tail = [] } = {}, origi
  * and from every checkpoint. So a document whose JSON the schema cannot carry whole is refused with
  * the names of what would be lost, never seeded in a cut form.
  */
-export function buildSeed(loaded) {
-  const seed = TiptapTransformer.toYdoc(loaded.content, FIELD, extensionsFor(loaded.type))
+export function buildSeed(loaded, clientId = null) {
+  const extensions = extensionsFor(loaded.type)
+  const seed = clientId === null ? TiptapTransformer.toYdoc(loaded.content, FIELD, extensions) : new Y.Doc()
+  if (clientId !== null) {
+    seed.clientID = clientId
+    prosemirrorJSONToYXmlFragment(getSchema(extensions), loaded.content, seed.getXmlFragment(FIELD))
+  }
   const projection = TiptapTransformer.fromYdoc(seed, FIELD)
   const lost = lostAttributes(loaded.content, projection)
 
@@ -411,6 +420,8 @@ export function createPersistence({
   const mode = conf.mode === 'durable' ? 'durable' : 'buffered'
   const policy = retryPolicy(conf)
   const limit = limits ?? createLimits(conf, { clock })
+  const strictCapable = conf.strictProfile === true && !conf.redisUrl && redisOrigins.length === 0
+  const strictRooms = createStrictRooms({ backend, backendOptions, conf, log, enabled: strictCapable })
   /**
    * documentName → the loaded room: { generation, document, exact (its measured state bytes, null
    * before the first measure), growth (bytes of the updates since), full (at MAX_DOCUMENT_BYTES) }.
@@ -515,6 +526,9 @@ export function createPersistence({
     }
 
     hocuspocus.openDirectConnection = async function openDirectConnection(documentName, ...rest) {
+      if (rooms.get(documentName)?.strict) {
+        throw new Error('Direct connections are disabled for strict collaboration rooms')
+      }
       const connection = await open.call(hocuspocus, documentName, ...rest)
       const disconnect = connection.disconnect
       let closing = null
@@ -532,6 +546,10 @@ export function createPersistence({
         await connection.disconnect().catch(() => {})
 
         throw fencedWrite(documentName)
+      }
+      if (rooms.get(documentName)?.strict) {
+        await connection.disconnect().catch(() => {})
+        throw new Error('Direct connections are disabled for strict collaboration rooms')
       }
 
       if (!directConnections.has(documentName)) {
@@ -709,6 +727,10 @@ export function createPersistence({
 
   /** While a room takes no writes, a writer is read-only: Hocuspocus drops its sync writes. */
   function gate(connection) {
+    if (connection && contextOf(connection)?.profile === 'strict') {
+      connection.readOnly = true
+      return
+    }
     if (!connection || !isWriter(contextOf(connection))) {
       return
     }
@@ -954,23 +976,44 @@ export function createPersistence({
     let generation
 
     document.on('update', countLoaded)
+    let strict = null
 
     try {
-      const loaded = await seed(documentName, document, context, await loadLog(context, documentName))
-      generation = loaded.generation
+      const snapshot = await loadLog(context, documentName)
+      if (snapshot.profile === 'strict' || context?.profile === 'strict') {
+        if (!strictCapable || snapshot.profile !== 'strict' || context?.profile !== 'strict') {
+          throw Object.assign(new Error('Strict collaboration room requires a compatible Hub session'), HANDOFF)
+        }
+        document.flushDelay = 80
+        try {
+          strict = await strictRooms.open(snapshot, document, {
+            onFailure: (failure) => {
+              const close = ['stale_owner', 'owner_busy'].includes(failure?.code) ? HANDOFF : EPOCH_CHANGED
+              fence(documentName, close)
+              if (strict !== null) void strictRooms.close(strict)
+            },
+          })
+        } catch (error) {
+          if (['stale_owner', 'owner_busy'].includes(error?.code)) throw Object.assign(new Error(HANDOFF.reason), HANDOFF)
+          throw error
+        }
+        generation = snapshot.generation
+      } else {
+        const loaded = await seed(documentName, document, context, snapshot)
+        generation = loaded.generation
 
-      // Server changes of this room the backend has not committed yet (the room was unloaded while
-      // they were pending): the room holds them again.
-      for (const entry of ledger.entries(documentName)) {
-        if (entry.generation === generation) {
-          Y.applyUpdate(document, Buffer.from(entry.payload, 'base64'), LOAD_ORIGIN)
+        // Standard rooms restore the legacy pending ledger.
+        for (const entry of ledger.entries(documentName)) {
+          if (entry.generation === generation) {
+            Y.applyUpdate(document, Buffer.from(entry.payload, 'base64'), LOAD_ORIGIN)
+          }
         }
       }
     } finally {
       document.off('update', countLoaded)
     }
 
-    const room = { generation, document, exact: null, growth: loadedBytes, full: false }
+    const room = { generation, document, strict, exact: null, growth: loadedBytes, full: false }
     rooms.set(documentName, room)
 
     if (exceeds(room, 0)) {
@@ -979,12 +1022,12 @@ export function createPersistence({
 
     document.on('update', (update, origin) => {
       room.growth += update.length
-      capture(documentName, update, origin)
+      if (!strict) capture(documentName, update, origin)
     })
   }
 
   /** A client's envelope: check it, apply it, append it; the ack follows the commit. */
-  function handleEnvelope(connection, documentName, document, message) {
+  async function handleEnvelope(connection, documentName, document, message) {
     const id = typeof message.id === 'string' && UUID.test(message.id) ? message.id.toLowerCase() : null
     const reply = (code, retry) => send(connection, { t: 'nack', id: typeof message.id === 'string' ? message.id : null, code, retry })
 
@@ -1016,6 +1059,34 @@ export function createPersistence({
     }
 
     const sha256 = message.h.toLowerCase()
+    if (room.strict) {
+      if (!context.boundClientId || !context.clientSession) return reply('client_id_conflict', false)
+      if (writesStopped) return reply(NACK.WRITES_STOPPED, true)
+      if (!limit.admitWrite(documentName, 'envelope')) return reply(NACK.RATE_LIMITED, true)
+      const bytes = Buffer.from(message.b, 'base64')
+      if (bytes.length === 0 || sha256Hex(bytes) !== sha256) return reply(NACK.UPDATE_MISMATCH, false)
+      try {
+        const ack = await room.strict.submitUpdate({
+          token: context.token, room: documentName, updateId: id, sha256, payload: message.b, bytes,
+          boundClientId: context.boundClientId, clientSession: context.clientSession,
+        })
+        send(connection, { t: 'ack', id, g: ack.generation, seq: ack.seq, h: ack.sha256 })
+      } catch (failure) {
+        const code = failure?.code ?? 'backend_unavailable'
+        if (code === backendModule.EPOCH_MISMATCH) {
+          fence(documentName, EPOCH_CHANGED)
+        } else if (['stale_owner', 'owner_busy'].includes(code)) {
+          fence(documentName, HANDOFF)
+          void strictRooms.close(room.strict)
+        } else if (failure?.status === 401 || failure?.status === 403) {
+          closeConnection(connection, failure.status === 401 ? TOKEN_EXPIRED : FORBIDDEN)
+        } else {
+          const terminal = ['client_id_conflict', 'invalid_update', NACK.DOCUMENT_TOO_LARGE, NACK.UPDATE_TOO_LARGE, NACK.UPDATE_MISMATCH]
+          reply(code, !terminal.includes(code))
+        }
+      }
+      return
+    }
     const pending = ledger.find(documentName, id)
 
     // Repeated while still pending (a reconnect): it waits once, and both connections get the ack.
@@ -1095,7 +1166,7 @@ export function createPersistence({
     }
 
     if (message?.t === 'u') {
-      handleEnvelope(connection, documentName, document, message)
+      await handleEnvelope(connection, documentName, document, message)
     }
   }
 
@@ -1121,6 +1192,15 @@ export function createPersistence({
       return
     }
 
+    if (context?.profile === 'strict' && isWriter(context)) {
+      const result = await backend.authenticate({ token: context.token, room, strictCapable, bindSession: context.clientSession }, backendOptions)
+      const boundId = result.boundClientId
+      if (!result.allowed || !Number.isInteger(boundId) || boundId < 0x80000000 || boundId > 0xffffffff) {
+        closeConnection(connection, FORBIDDEN)
+        return
+      }
+      context.boundClientId = boundId
+    }
     if (isWriter(context)) {
       if (!writers.has(room)) {
         writers.set(room, new Map())
@@ -1130,6 +1210,9 @@ export function createPersistence({
     }
 
     gate(connection)
+    if (context?.clientSession) {
+      send(connection, { t: 'binding', profile: context.profile ?? 'standard', client_id: context.boundClientId ?? null })
+    }
     send(connection, statusMessage(room))
   }
 
@@ -1147,6 +1230,10 @@ export function createPersistence({
 
     const name = documentName ?? nameOf(connection)
     const room = rooms.get(name)
+    if (room?.strict || contextOf(connection)?.profile === 'strict') {
+      connection.readOnly = true
+      return
+    }
 
     if (room && !room.full && !writesStopped && connection.readOnly !== true && isWriter(contextOf(connection))
       && exceeds(room, update.length) && exceeds(room, missingBytes(room.document, update))) {
@@ -1193,11 +1280,13 @@ export function createPersistence({
   }
 
   async function afterUnloadDocument({ documentName }) {
+    const strict = rooms.get(documentName)?.strict
     rooms.delete(documentName)
     fenced.delete(documentName)
     writers.delete(documentName)
     directConnections.delete(documentName)
     limit.forgetRoom(documentName)
+    if (strict) await strictRooms.close(strict)
   }
 
   /** Open connections whose authority ended: their token expired (the expiry timer closes them). */
@@ -1232,6 +1321,13 @@ export function createPersistence({
       const code = writesStopped ? NACK.WRITES_STOPPED : NACK.DOCUMENT_TOO_LARGE
 
       throw Object.assign(new Error(`Collaboration writes are stopped (${stopReasonFor(documentName)}); the server change was not applied`), { code })
+    }
+
+    const strict = rooms.get(documentName)?.strict
+    if (strict) {
+      const writer = token ?? context.token ?? await writerToken(documentName)
+      if (!writer) throw Object.assign(new Error(FORBIDDEN.reason), FORBIDDEN)
+      return strict.serverWrite(change, { token: writer, room: documentName })
     }
 
     const connection = await instance.openDirectConnection(documentName, context)
@@ -1290,8 +1386,24 @@ export function createPersistence({
     demote,
     revokedStillConnected,
     attach: bind,
-    start: () => ledger.start(),
-    stop: () => ledger.stop(),
+    start() {
+      ledger.start()
+      strictRooms.start()
+    },
+    stop() {
+      ledger.stop()
+      return strictRooms.stop()
+    },
+    strictCapable,
+    stopStrict: strictRooms.stop,
+    strictControl(message) {
+      if (message.type === 'wakeup') return strictRooms.wake()
+      const strict = rooms.get(message.room)?.strict
+      if (!strict) return
+      if (message.type === 'handoff_request' && strict.fence !== message.owner_fence) return
+      fence(message.room, message.type === 'handoff_request' ? HANDOFF : EPOCH_CHANGED)
+      return strictRooms.close(strict)
+    },
     ledger,
     limits: limit,
     mode,

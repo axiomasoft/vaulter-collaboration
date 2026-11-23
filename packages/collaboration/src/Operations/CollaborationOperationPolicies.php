@@ -29,6 +29,10 @@ final class CollaborationOperationPolicies implements OperationPolicySource
                 'collaboration.hub.compaction.lease',
                 'collaboration.hub.checkpoint',
                 'collaboration.hub.recheck',
+                'collaboration.hub.ownership.acquire',
+                'collaboration.hub.ownership.renew',
+                'collaboration.hub.commands.next',
+                'collaboration.hub.commands.settle',
             ]),
         ];
     }

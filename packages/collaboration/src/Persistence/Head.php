@@ -28,6 +28,10 @@ final readonly class Head
         public ?int $leaseThroughSeq,
         public ?Carbon $drainRequestedAt,
         public ?Carbon $retiredAt,
+        public string $profile,
+        public int $ownerFence,
+        public ?string $ownerId,
+        public ?Carbon $ownerExpiresAt,
     ) {}
 
     /** Whether a compaction lease holds the generation at `$now`. */

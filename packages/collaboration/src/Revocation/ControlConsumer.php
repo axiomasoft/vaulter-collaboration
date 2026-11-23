@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Log;
 use Packman\Attributes\Internal;
 use Throwable;
 use Vaulter\Collaboration\Configuration\CollaborationOptions;
+use Vaulter\Collaboration\Persistence\CommandEventType;
 use Vaulter\Contracts\Observability\MetricsRecorder;
 use Vaulter\Drive\Enums\Events\DriveEventType;
 use Vaulter\Events\EventTypeContract;
@@ -58,11 +59,22 @@ final readonly class ControlConsumer implements OutboxConsumer
 
     public function subscribes(EventTypeContract $type): bool
     {
-        return $type === DriveEventType::EffectivePermissionsChanged;
+        return $type === DriveEventType::EffectivePermissionsChanged || $type === CommandEventType::Committed;
     }
 
     public function consume(OutboxEnvelope $envelope, DeliveryControl $control): ConsumeResult
     {
+        if ($envelope->type === CommandEventType::Committed->value) {
+            $data = $envelope->payload['data'] ?? [];
+            if (is_array($data)) {
+                $this->transport->publish(json_encode([
+                    'v' => self::VERSION, 'type' => 'wakeup', 'document_id' => $data['document_id'] ?? null,
+                    'generation' => $data['generation'] ?? null, 'position' => $data['position'] ?? null,
+                ], JSON_THROW_ON_ERROR));
+            }
+
+            return ConsumeResult::done();
+        }
         if ($envelope->type !== DriveEventType::EffectivePermissionsChanged->value) {
             return ConsumeResult::done();
         }

@@ -4,6 +4,7 @@
 
 /** Close code and reason a client sees when its room's generation is over (reopen with a new Y.Doc). */
 export const EPOCH_CHANGED = Object.freeze({ code: 4409, reason: 'epoch_changed' })
+export const HANDOFF = Object.freeze({ code: 4412, reason: 'handoff' })
 
 /** Close code for a document that was removed while its room was open. */
 export const DOCUMENT_GONE = Object.freeze({ code: 4404, reason: 'document_gone' })

@@ -1,6 +1,6 @@
 import * as Y from 'yjs'
 import { TiptapTransformer } from '@hocuspocus/transformer'
-import { replayLog } from './persistence.js'
+import { replayLog, sha256Hex } from './persistence.js'
 import { extensionsFor, FIELD, lostAttributes } from './schema.js'
 
 // The hub's compaction: PHP neither merges nor projects Yjs, so the hub
@@ -121,7 +121,13 @@ export function mergeLog(entry) {
   const document = new Y.Doc()
 
   try {
+    if (entry.profile === 'strict' && tail.some((record) => sha256Hex(Buffer.from(record.payload, 'base64')) !== record.sha256)) {
+      throw new Error('The committed update does not match its journal hash')
+    }
     replayLog(document, { checkpoint, tail }, COMPACTION_ORIGIN)
+    if (entry.profile === 'strict' && (document.store.pendingStructs !== null || document.store.pendingDs !== null)) {
+      throw new Error('The committed prefix has unresolved dependencies')
+    }
   } catch (error) {
     document.destroy()
 
@@ -179,7 +185,9 @@ export function compactLease(entry) {
 
   try {
     const content = projectionOf(document, entry.type)
-    const state = Y.encodeStateAsUpdate(document)
+    const state = entry.profile === 'strict'
+      ? Y.convertUpdateFormatV2ToV1(Y.encodeStateAsUpdateV2(document))
+      : Y.encodeStateAsUpdate(document)
 
     return {
       document: entry.document,

@@ -27,7 +27,7 @@ final class CollaborationSchemaSets implements SchemaSetProvider
                 name: 'collaboration',
                 scope: SchemaScope::Central,
                 path: dirname(__DIR__, 2).'/database/migrations',
-                version: 2,
+                version: 3,
                 drivers: ['pgsql', 'sqlite', 'mysql', 'mariadb'],
             ),
         ];

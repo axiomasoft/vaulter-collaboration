@@ -141,3 +141,17 @@ it('bounds real JWT expiry by the grant ceiling and supports only exact Yjs stat
         }
     }
 });
+
+it('supports rich-text schema 2 when block IDs are enabled', function (): void {
+    config()->set('vaulter-documents.tiptap.block_ids', true);
+    $driver = app(HocuspocusCollaborationDriver::class);
+
+    foreach ([false, true] as $checkpoint) {
+        foreach (CollaborationMode::cases() as $mode) {
+            expect($driver->supportsState('vaulter/rich-text', 'yjs-update-v1', 1, $checkpoint, $mode))->toBeTrue()
+                ->and($driver->supportsState('vaulter/rich-text', 'yjs-update-v1', 2, $checkpoint, $mode))->toBeTrue()
+                ->and($driver->supportsState('vaulter/rich-text', 'yjs-update-v1', 3, $checkpoint, $mode))->toBeFalse()
+                ->and($driver->supportsState('vaulter/markdown', 'yjs-update-v1', 2, $checkpoint, $mode))->toBeFalse();
+        }
+    }
+});

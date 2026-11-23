@@ -33,6 +33,13 @@ paths:
               properties:
                 room:
                   type: string
+                strict_capable:
+                  type: boolean
+                  description: The hub supports strict read-only sync and has no Redis document extension.
+                bind_session:
+                  type: string
+                  format: uuid
+                  description: Stable browser session identifier when asking to bind a strict writer.
       responses:
         '200':
           description: OK
@@ -61,6 +68,8 @@ paths:
           $ref: '#/components/responses/Problem404'
         '409':
           $ref: '#/components/responses/Problem409'
+        '422':
+          $ref: '#/components/responses/Problem422'
         '429':
           $ref: '#/components/responses/Problem429'
         '500':
@@ -168,6 +177,25 @@ paths:
                   enum:
                   - client
                   - server
+                owner_id:
+                  type: string
+                  format: uuid
+                owner_fence:
+                  type: integer
+                  minimum: 1
+                base_seq:
+                  type: integer
+                  minimum: 0
+                client_session_id:
+                  type: string
+                  format: uuid
+                bound_client_id:
+                  type: integer
+                  minimum: 2147483648
+                  maximum: 4294967295
+                receipt_only:
+                  type: boolean
+                  description: Look up an existing receipt without inserting an update.
                 seed_state_version:
                   type: integer
                   minimum: 0
@@ -513,13 +541,305 @@ paths:
           $ref: '#/components/responses/Problem429'
         '500':
           $ref: '#/components/responses/Problem500'
+  /collaboration/hub/ownership/acquire:
+    post:
+      operationId: collaboration.hub.ownership.acquire
+      tags: [hub]
+      summary: Acquire the room writer lease or load its fenced journal prefix
+      security:
+      - hubSecret: []
+      parameters:
+      - $ref: '#/components/parameters/XVaulterCollabProtocol'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [document_id, generation, owner_id]
+              properties:
+                document_id: {type: string}
+                generation: {type: integer, minimum: 0}
+                owner_id: {type: string, format: uuid}
+                owner_fence: {type: integer, minimum: 1}
+                include_log: {type: boolean}
+                after_seq: {type: integer, minimum: 0}
+                base_seq: {type: integer, minimum: 0}
+                historical_client_ids:
+                  type: array
+                  items: {type: integer, minimum: 1, maximum: 4294967295}
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Vaulter-Api-Version:
+              $ref: '#/components/headers/XVaulterApiVersion'
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlStore'
+            X-Vaulter-Collab-Protocol:
+              $ref: '#/components/headers/XVaulterCollabProtocol'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HubOwnerLease'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '422':
+          $ref: '#/components/responses/Problem422'
+        '429':
+          $ref: '#/components/responses/Problem429'
+        '500':
+          $ref: '#/components/responses/Problem500'
+        '503':
+          $ref: '#/components/responses/Problem503'
+  /collaboration/hub/ownership/renew:
+    post:
+      operationId: collaboration.hub.ownership.renew
+      tags: [hub]
+      summary: Renew or release the current room writer lease
+      security:
+      - hubSecret: []
+      parameters:
+      - $ref: '#/components/parameters/XVaulterCollabProtocol'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [document_id, generation, owner_id, owner_fence]
+              properties:
+                document_id: {type: string}
+                generation: {type: integer, minimum: 0}
+                owner_id: {type: string, format: uuid}
+                owner_fence: {type: integer, minimum: 1}
+                release: {type: boolean}
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Vaulter-Api-Version:
+              $ref: '#/components/headers/XVaulterApiVersion'
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlStore'
+            X-Vaulter-Collab-Protocol:
+              $ref: '#/components/headers/XVaulterCollabProtocol'
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - $ref: '#/components/schemas/HubOwnerLease'
+                - type: object
+                  required: [released]
+                  properties:
+                    released: {const: true}
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '422':
+          $ref: '#/components/responses/Problem422'
+        '429':
+          $ref: '#/components/responses/Problem429'
+        '500':
+          $ref: '#/components/responses/Problem500'
+        '503':
+          $ref: '#/components/responses/Problem503'
+  /collaboration/hub/commands/next:
+    post:
+      operationId: collaboration.hub.commands.next
+      tags: [hub]
+      summary: Discover pending rooms or fetch the next command for an owned room
+      security:
+      - hubSecret: []
+      parameters:
+      - $ref: '#/components/parameters/XVaulterCollabProtocol'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              dependentRequired:
+                document_id: [generation]
+              if:
+                required: [document_id]
+                not:
+                  required: [read_log]
+              then:
+                required: [owner_id, owner_fence]
+              properties:
+                document_id: {type: string}
+                generation: {type: integer, minimum: 0}
+                owner_id: {type: string, format: uuid}
+                owner_fence: {type: integer, minimum: 1}
+                read_log:
+                  const: true
+                  description: Read the confirmed prefix for an authorized verification without acquiring ownership.
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Vaulter-Api-Version:
+              $ref: '#/components/headers/XVaulterApiVersion'
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlStore'
+            X-Vaulter-Collab-Protocol:
+              $ref: '#/components/headers/XVaulterCollabProtocol'
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                  required: [log]
+                  properties:
+                    log:
+                      $ref: '#/components/schemas/HubOwnerLease/properties/log'
+                - type: object
+                  required: [targets]
+                  properties:
+                    targets:
+                      type: array
+                      items:
+                        type: object
+                        required: [document, generation]
+                        properties:
+                          document: {type: string}
+                          generation: {type: integer, minimum: 0}
+                - type: object
+                  required: [command]
+                  properties:
+                    command:
+                      oneOf:
+                      - type: 'null'
+                      - allOf:
+                        - $ref: '#/components/schemas/HubCommandOutcome'
+                        - type: object
+                          required: [intent]
+                          properties:
+                            intent: {type: object}
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '422':
+          $ref: '#/components/responses/Problem422'
+        '429':
+          $ref: '#/components/responses/Problem429'
+        '500':
+          $ref: '#/components/responses/Problem500'
+        '503':
+          $ref: '#/components/responses/Problem503'
+  /collaboration/hub/commands/settle:
+    post:
+      operationId: collaboration.hub.commands.settle
+      tags: [hub]
+      summary: Settle a registered command on its expected base or seed an empty strict generation
+      security:
+      - hubSecret: []
+      parameters:
+      - $ref: '#/components/parameters/XVaulterCollabProtocol'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [generation, owner_id, owner_fence, base_seq, kind]
+              properties:
+                generation: {type: integer, minimum: 0}
+                owner_id: {type: string, format: uuid}
+                owner_fence: {type: integer, minimum: 1}
+                base_seq: {type: integer, minimum: 0}
+                kind: {enum: [commit, reject, seed]}
+                id: {type: string, format: uuid}
+                fingerprint: {type: string, pattern: "^[0-9a-f]{64}$"}
+                reason: {const: precondition_failed}
+                evidence: {type: object}
+                updates:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/HubCommandUpdate'
+                document_id: {type: string}
+                seed_state_version: {type: integer, minimum: 0}
+                update:
+                  $ref: '#/components/schemas/HubCommandUpdate'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Vaulter-Api-Version:
+              $ref: '#/components/headers/XVaulterApiVersion'
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlStore'
+            X-Vaulter-Collab-Protocol:
+              $ref: '#/components/headers/XVaulterCollabProtocol'
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - $ref: '#/components/schemas/HubCommandOutcome'
+                - type: object
+                  required: [generation, update_id, seq, sha256, persisted]
+                  properties:
+                    generation: {type: integer}
+                    update_id: {type: string, format: uuid}
+                    seq: {type: integer}
+                    sha256: {type: string}
+                    persisted: {const: true}
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '413':
+          $ref: '#/components/responses/Problem413'
+        '422':
+          $ref: '#/components/responses/Problem422'
+        '429':
+          $ref: '#/components/responses/Problem429'
+        '500':
+          $ref: '#/components/responses/Problem500'
+        '503':
+          $ref: '#/components/responses/Problem503'
 components:
   securitySchemes:
     hubSecret:
       type: apiKey
       in: header
-      name: X-Vaulter-Collab-Secret
-      description: Shared secret of the collaboration hub.
+      name: X-Vaulter-Collab-Signature
+      description: Hex HMAC-SHA256 of the timestamp, a period, and the exact JSON body. The timestamp is supplied in X-Vaulter-Collab-Timestamp.
   parameters:
     XVaulterCollabProtocol:
       name: X-Vaulter-Collab-Protocol
@@ -698,6 +1018,58 @@ components:
           schema:
             $ref: '#/components/schemas/Problem'
   schemas:
+    HubOwnerLease:
+      type: object
+      required: [owner_fence, owner_expires_at, head_seq]
+      properties:
+        owner_fence: {type: integer, minimum: 1}
+        owner_expires_at: {type: string, format: date-time}
+        head_seq: {type: integer, minimum: 0}
+        server_client_id: {type: integer, minimum: 1, maximum: 2147483647}
+        log:
+          type: object
+          required: [generation, state_version, type, schema_version, profile, checkpoint_seq, head_seq, checkpoint, content, tail]
+          properties:
+            generation: {type: integer, minimum: 0}
+            state_version: {type: integer, minimum: 0}
+            type: {type: string}
+            schema_version: {type: integer, minimum: 1}
+            profile: {const: strict}
+            checkpoint_seq: {type: integer, minimum: 0}
+            head_seq: {type: integer, minimum: 0}
+            checkpoint: {type: [string, 'null']}
+            content: {type: [object, 'null']}
+            tail:
+              type: array
+              items:
+                allOf:
+                - $ref: '#/components/schemas/HubCommandUpdate'
+                - type: object
+                  required: [seq]
+                  properties:
+                    seq: {type: integer, minimum: 1}
+    HubCommandUpdate:
+      type: object
+      required: [update_id, sha256, payload]
+      properties:
+        update_id: {type: string, format: uuid}
+        sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+        payload: {type: string, contentEncoding: base64}
+    HubCommandOutcome:
+      type: object
+      required: [id, command_id, fingerprint, generation, schema_version, state, receipt_id, rejection_code, base_seq, from_seq, to_seq]
+      properties:
+        id: {type: string, format: uuid}
+        command_id: {type: string}
+        fingerprint: {type: string, pattern: '^[0-9a-f]{64}$'}
+        generation: {type: integer, minimum: 0}
+        schema_version: {type: integer, minimum: 1}
+        state: {enum: [running, committed, rejected]}
+        receipt_id: {type: [string, 'null']}
+        rejection_code: {type: [string, 'null']}
+        base_seq: {type: [integer, 'null'], minimum: 0}
+        from_seq: {type: [integer, 'null'], minimum: 1}
+        to_seq: {type: [integer, 'null'], minimum: 0}
     Problem:
       type: object
       description: RFC 9457 problem details, served as application/problem+json.
@@ -729,6 +1101,7 @@ components:
           - collaboration_epoch_mismatch
           - collaboration_protocol_contract
           - collaboration_protocol_mismatch
+          - collaboration_room_conflict
           - collaboration_seed_conflict
           - collaboration_unavailable
           - collaboration_update_mismatch
@@ -838,6 +1211,7 @@ components:
         collaboration_draining: {status: 503, retryable: with_backoff, receipt: never, module: collaboration}
         collaboration_epoch_mismatch: {status: 409, retryable: after_refetch, receipt: cacheable, module: collaboration}
         collaboration_protocol_mismatch: {status: 409, retryable: never, receipt: never, module: collaboration}
+        collaboration_room_conflict: {status: 409, retryable: after_refetch, receipt: never, module: collaboration}
         collaboration_seed_conflict: {status: 409, retryable: after_refetch, receipt: cacheable, module: collaboration}
         collaboration_protocol_contract: {status: 503, retryable: never, receipt: never, module: documents}
         collaboration_unavailable: {status: 409, retryable: never, receipt: never, module: documents}
@@ -938,6 +1312,8 @@ components:
           - 'null'
         epoch:
           type: integer
+        profile: {const: strict}
+        bound_client_id: {type: integer, minimum: 2147483648, maximum: 4294967295}
     HubAppended:
       type: object
       description: The committed receipt of an appended update (protocol 2), sent only after the commit.
@@ -1068,6 +1444,7 @@ components:
       - content
       - tail
       properties:
+        profile: {const: strict}
         document:
           type: string
           description: The node id of the document.
@@ -1115,6 +1492,7 @@ components:
                 type: integer
               update_id:
                 type: string
+              sha256: {type: string, pattern: "^[0-9a-f]{64}$"}
               payload:
                 type: string
                 description: Base64 Yjs update.
@@ -1147,6 +1525,8 @@ components:
       - content
       - tail
       properties:
+        profile: {const: strict}
+        document_id: {type: string}
         generation:
           type: integer
         protocol:
@@ -1185,6 +1565,7 @@ components:
                 type: integer
               update_id:
                 type: string
+              sha256: {type: string, pattern: "^[0-9a-f]{64}$"}
               payload:
                 type: string
                 description: Base64 Yjs update.

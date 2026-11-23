@@ -5,18 +5,23 @@ declare(strict_types=1);
 namespace Vaulter\Collaboration;
 
 use Packman\Attributes\Internal;
+use Vaulter\Collaboration\Configuration\CollaborationOptions;
 use Vaulter\Collaboration\Contracts\HostUserResolver;
 use Vaulter\Collaboration\Exceptions\CollaborationEpochMismatchException;
 use Vaulter\Collaboration\Exceptions\CollaborationSeedConflictException;
 use Vaulter\Collaboration\Persistence\AppendResult;
+use Vaulter\Collaboration\Persistence\RoomWriteConflict;
 use Vaulter\Collaboration\Persistence\UpdateEnvelope;
 use Vaulter\Collaboration\Persistence\UpdateLog;
 use Vaulter\Collaboration\Revocation\PermissionVersions;
+use Vaulter\Database\VaulterDatabase;
 use Vaulter\Documents\Access\CollaborationAccessPolicy;
 use Vaulter\Documents\Data\Collaboration\CollaborationAccessDecision;
 use Vaulter\Documents\Data\Collaboration\CollaborationMode;
 use Vaulter\Documents\Exceptions\CollaborationUnavailableException;
 use Vaulter\Documents\Exceptions\NotADocumentException;
+use Vaulter\Documents\State\CollaborativeState;
+use Vaulter\Documents\State\LockedDocumentState;
 use Vaulter\Documents\Types\DocumentTypeRegistry;
 use Vaulter\Drive\Enums\Access\Ability;
 use Vaulter\Drive\Exceptions\Access\PermissionDeniedException;
@@ -42,6 +47,10 @@ final readonly class CollaborationHub
         private HostUserResolver $users,
         private UpdateLog $log,
         private PermissionVersions $versions,
+        private VaulterDatabase $db,
+        private CollaborativeState $state,
+        private RoomOwnership $ownership,
+        private CollaborationOptions $options,
     ) {}
 
     /**
@@ -184,7 +193,7 @@ final readonly class CollaborationHub
                 ? $log->content
                 : null,
             'tail' => $log->tail,
-        ];
+        ] + ($log->profile === 'strict' ? ['profile' => 'strict', 'document_id' => $log->documentId] : []);
     }
 
     /** A subject without View learns nothing a missing document would not tell (protocol 2 calls). */
@@ -193,5 +202,64 @@ final readonly class CollaborationHub
         if ($room->ability === null) {
             throw NodeNotFoundException::forId($call->ref->nodeId);
         }
+    }
+
+    public function profile(HubRoom $room, CollaborationCall $call, bool $compatible): string
+    {
+        return $this->db->transaction(function () use ($room, $call, $compatible): string {
+            $locked = $this->state->lock($call->ref->nodeId);
+            $this->ownership->assertGeneration($locked, $call->ref->epoch);
+            $head = $this->ownership->head($locked);
+            if ($head === null && $room->writable && $this->options->strictProfile()) {
+                $this->assertWrite($call, $locked);
+                $head = $this->ownership->selectProfile($locked, strict: $compatible);
+            }
+            if ($head?->profile === 'strict' && !$compatible) {
+                throw new RoomWriteConflict('strict_hub_required');
+            }
+
+            return $head?->profile ?? 'standard';
+        });
+    }
+
+    public function bindBrowser(CollaborationCall $call, string $session): int
+    {
+        return $this->db->transaction(function () use ($call, $session): int {
+            $locked = $this->state->lock($call->ref->nodeId);
+            $this->assertWrite($call, $locked);
+
+            return $this->ownership->bindBrowser($locked, (int) $call->tenant, $this->subject($call), $session);
+        });
+    }
+
+    public function appendFenced(
+        CollaborationCall $call, UpdateEnvelope $update, string $owner, int $fence, int $base, ?string $session, ?int $clientId, bool $receiptOnly,
+    ): AppendResult {
+        if ($update->generation !== $call->ref->epoch) {
+            throw new CollaborationEpochMismatchException(expected: $update->generation, actual: $call->ref->epoch);
+        }
+
+        return $this->log->appendFenced($call->ref->nodeId, $update, $owner, $fence, $base, function (LockedDocumentState $locked) use ($call, $update, $session, $clientId): void {
+            $this->assertWrite($call, $locked);
+            if ($update->origin === 'client') {
+                if ($session === null || $clientId === null || $update->seedStateVersion !== null) {
+                    throw new RoomWriteConflict('client_id_conflict');
+                }
+                $this->ownership->assertBrowser($locked, (int) $call->tenant, $this->subject($call), $session, $clientId);
+            }
+        }, receiptOnly: $receiptOnly);
+    }
+
+    private function assertWrite(CollaborationCall $call, LockedDocumentState $locked): void
+    {
+        $this->ownership->assertGeneration($locked, $call->ref->epoch);
+        if (!$this->open($call, $call->room)->writable) {
+            throw PermissionDeniedException::forAbility(Ability::Edit->value);
+        }
+    }
+
+    private function subject(CollaborationCall $call): string
+    {
+        return hash('sha256', json_encode([$call->principal->type, Identity::stringify($call->principal->id)], JSON_THROW_ON_ERROR));
     }
 }

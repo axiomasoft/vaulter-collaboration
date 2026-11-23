@@ -13,6 +13,7 @@ export default defineConfig({
   reporter: process.env.CI ? [['list'], ['html', { open: 'never' }]] : 'list',
   use: {
     baseURL: process.env.E2E_BASE_URL ?? 'http://localhost:5273',
+    channel: process.env.PLAYWRIGHT_CHANNEL,
     trace: 'retain-on-failure',
   },
   webServer: {

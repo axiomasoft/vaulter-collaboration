@@ -1,0 +1,87 @@
+<?php
+
+declare(strict_types=1);
+
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
+use Vaulter\Collaboration\Persistence\CommandActor;
+use Vaulter\Collaboration\Persistence\CommandJournal;
+use Vaulter\Collaboration\Persistence\RoomWriteConflict;
+use Vaulter\Collaboration\Persistence\UpdateEnvelope;
+use Vaulter\Collaboration\Persistence\UpdateLog;
+use Vaulter\Collaboration\RoomOwnership;
+use Vaulter\Collaboration\Tests\Collaboration\HubTestHelpers as Hub;
+use Vaulter\Collaboration\Tests\Support\Revocation;
+use Vaulter\Configuration\DatabaseOptions;
+use Vaulter\Database\VaulterDatabase;
+use Vaulter\Documents\State\CollaborativeState;
+use Vaulter\Drive\Access\Roles\RoleRegistry;
+use Vaulter\Drive\Data\Access\GrantInput;
+use Vaulter\Drive\Exceptions\Nodes\NodeNotFoundException;
+use Vaulter\Drive\Testing\Access\AccessTestHelpers;
+use Vaulter\ValueObjects\Access\Actor;
+
+it('retains a running intent on stale base and atomically commits bytes and one receipt on retry', function (): void {
+    Hub::configure();
+    $node = Hub::document();
+    $db = app(VaulterDatabase::class);
+    $db->write(fn () => Hub::aggregate($node)->forceFill(['write_mode' => 'journal'])->save());
+    $owner = (string) Str::uuid();
+    $db->transaction(function () use ($node, $owner): void {
+        $locked = app(CollaborativeState::class)->lock($node->getKey());
+        app(RoomOwnership::class)->selectProfile($locked, strict: true);
+        app(RoomOwnership::class)->acquire($locked, $owner);
+    });
+    $aggregate = Hub::aggregate($node);
+    $update = static fn (string $payload, ?int $seed = null): UpdateEnvelope => new UpdateEnvelope($aggregate->collab_epoch, (string) Str::uuid(), $payload, hash('sha256', $payload), 'server', $seed);
+    $log = app(UpdateLog::class);
+    $log->appendFenced($node->getKey(), $update('seed', $aggregate->state_version), $owner, 1, 0, static fn () => null);
+    $scope = new CommandActor(Actor::user(AccessTestHelpers::user())->ref(), null, 'test', 'writer', (string) $node->drive_id, (string) $node->getKey());
+    $journal = app(CommandJournal::class);
+    $proposal = (string) Str::uuid();
+    $digest = hash('sha256', 'proposal');
+    $register = fn () => $journal->register($scope, 'A42', $proposal, $digest, 0, 1, 1, ['atomic_effects' => []]);
+    $running = $register();
+    expect($register())->toBe($running);
+    $log->appendFenced($node->getKey(), $update('human'), $owner, 1, 1, static fn () => null);
+
+    $prepared = $update('agent');
+    $settle = fn (int $base, int $fence) => $journal->settle($running['id'], $owner, $fence, 0, $base, $running['fingerprint'], [$prepared], ['blocks' => []]);
+    $tables = app(DatabaseOptions::class);
+    $outbox = DB::table($tables->table('outbox'))->count();
+    expect(fn () => $settle(1, 1))->toThrow(RoomWriteConflict::class, 'base_moved')
+        ->and($journal->status($scope, 'A42')['state'])->toBe('running');
+    $accepted = $settle(2, 1);
+    expect($accepted)->toMatchArray(['state' => 'committed', 'base_seq' => 2, 'from_seq' => 3, 'to_seq' => 3])
+        ->and($settle(2, 9))->toBe($accepted)
+        ->and($register())->toBe($accepted)
+        ->and($log->snapshot($node->getKey(), 0)->tail[2]['sha256'])->toBe($prepared->sha256())
+        ->and(DB::table($tables->table('outbox'))->count())->toBe($outbox + 1);
+});
+
+it('terminally rejects an intent after Edit is revoked and refuses replay after View is revoked', function (): void {
+    Hub::configure();
+    ['drive' => $drive, 'folder' => $folder, 'grant' => $grant, 'node' => $node] = Revocation::inheritedDocument();
+    $reader = $drive->access()->grant($node->getKey(), new GrantInput(subject: Revocation::subject(), role: RoleRegistry::READER));
+    $db = app(VaulterDatabase::class);
+    $db->write(fn () => Hub::aggregate($node)->forceFill(['write_mode' => 'journal'])->save());
+    $owner = (string) Str::uuid();
+    $db->transaction(function () use ($node, $owner): void {
+        $doc = app(CollaborativeState::class)->lock($node->getKey());
+        $rooms = app(RoomOwnership::class);
+        $rooms->selectProfile($doc, strict: true);
+        $rooms->acquire($doc, $owner);
+    });
+    $scope = new CommandActor(Actor::user(AccessTestHelpers::user())->ref(), null, 'test', 'writer', (string) $node->drive_id, (string) $node->getKey());
+    $journal = app(CommandJournal::class);
+    $registered = $journal->register($scope, 'A42', (string) Str::uuid(), hash('sha256', 'proposal'), 0, 1, 0, ['atomic_effects' => []]);
+    $drive->access()->revoke($folder->id, $grant->id);
+
+    $result = $journal->settle($registered['id'], $owner, 1, 0, 0, $registered['fingerprint'], [], []);
+    expect($result)->toMatchArray(['state' => 'rejected', 'rejection_code' => 'edit_revoked', 'receipt_id' => null])
+        ->and($journal->status($scope, 'A42'))->toBe($result)
+        ->and(app(UpdateLog::class)->snapshot($node->getKey(), 0)->headSeq)->toBe(0);
+
+    $drive->access()->revoke($node->getKey(), $reader->id);
+    expect(fn () => $journal->status($scope, 'A42'))->toThrow(NodeNotFoundException::class);
+});

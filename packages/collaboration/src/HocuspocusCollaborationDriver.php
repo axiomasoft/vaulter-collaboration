@@ -6,6 +6,7 @@ namespace Vaulter\Collaboration;
 
 use Packman\Attributes\Internal;
 use Vaulter\Collaboration\Configuration\CollaborationOptions;
+use Vaulter\Documents\Configuration\DocumentsOptions;
 use Vaulter\Documents\Contracts\CollaborationProtocolDriver;
 use Vaulter\Documents\Data\Collaboration\CollaborationGrant;
 use Vaulter\Documents\Data\Collaboration\CollaborationMode;
@@ -14,7 +15,7 @@ use Vaulter\Documents\Data\Collaboration\CollaborationSession;
 #[Internal]
 final readonly class HocuspocusCollaborationDriver implements CollaborationProtocolDriver
 {
-    public function __construct(private CollaborationOptions $config, private RoomTokens $tokens) {}
+    public function __construct(private CollaborationOptions $config, private RoomTokens $tokens, private DocumentsOptions $documents) {}
 
     public function protocol(): string
     {
@@ -28,7 +29,11 @@ final readonly class HocuspocusCollaborationDriver implements CollaborationProto
 
     public function supportsState(string $documentType, string $stateFormat, int $schemaVersion, bool $hasCheckpoint, CollaborationMode $mode): bool
     {
-        return in_array($documentType, ['vaulter/rich-text', 'vaulter/markdown'], true) && $stateFormat === 'yjs-update-v1' && $schemaVersion === 1;
+        return $stateFormat === 'yjs-update-v1' && match ($documentType) {
+            'vaulter/rich-text' => $schemaVersion === 1 || ($schemaVersion === 2 && $this->documents->tiptap->blockIds),
+            'vaulter/markdown' => $schemaVersion === 1,
+            default => false,
+        };
     }
 
     public function issueSession(CollaborationGrant $grant): CollaborationSession
@@ -40,6 +45,7 @@ final readonly class HocuspocusCollaborationDriver implements CollaborationProto
         return new CollaborationSession(protocol: $this->protocol(), version: $this->version(), endpoint: $this->config->hubUrl(),
             token: $minted['token'], expiresAt: $minted['exp'], mode: $grant->mode, nodeId: $grant->nodeId,
             generation: $grant->generation, schemaVersion: $grant->schemaVersion,
-            options: ['room' => $minted['room'], 'drive_id' => $grant->driveId]);
+            options: ['room' => $minted['room'], 'drive_id' => $grant->driveId]
+                + ($this->config->strictProfile() ? ['writer_binding' => true] : []));
     }
 }

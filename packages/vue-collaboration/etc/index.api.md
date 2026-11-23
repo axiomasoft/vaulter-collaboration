@@ -8,6 +8,7 @@ import { ComputedRef } from 'vue';
 import { Doc } from 'yjs';
 import { Ref } from 'vue';
 import { ShallowRef } from 'vue';
+import type { UndoManager } from 'yjs';
 
 // @public
 export interface AwarenessLike {
@@ -191,6 +192,9 @@ export const FORBIDDEN_CODE = 4403;
 
 // @public (undocumented)
 export const FORBIDDEN_REASON = "forbidden";
+
+// @public
+export function limitCollaborationUndo(manager: UndoManager): () => void;
 
 // @public
 export function openCollaborationTransport(session: CollaborationSession, options: CollaborationTransportOptions): CollaborationTransportHandle;

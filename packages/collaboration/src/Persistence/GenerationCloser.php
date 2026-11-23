@@ -26,7 +26,7 @@ use Vaulter\Events\SinkWriter;
 #[Internal]
 final readonly class GenerationCloser implements EventSink
 {
-    public function __construct(private DatabaseOptions $tables) {}
+    public function __construct(private DatabaseOptions $tables, private LogTables $log) {}
 
     public function record(DomainEvent $event, SinkWriter $writer): SinkResult
     {
@@ -36,7 +36,10 @@ final readonly class GenerationCloser implements EventSink
                 ->where('document_id', $event->documentId())
                 ->where('generation', '<', $event->epoch)
                 ->whereNull('retired_at')
-                ->update(['retired_at' => $now, 'updated_at' => $now]);
+                ->update(['retired_at' => $now, 'updated_at' => $now, 'owner_id' => null, 'owner_expires_at' => null]);
+            $writer->connection()->table($this->tables->table('collaboration_commands'))
+                ->where('document_id', $event->documentId())->where('generation', '<', $event->epoch)->where('state', 'running')
+                ->update(['state' => 'rejected', 'rejection_code' => 'generation_changed', 'finalized_at' => $this->log->timestamp($this->log->leaseClock())]);
         }
 
         return SinkResult::Skipped;

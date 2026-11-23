@@ -17,8 +17,8 @@ use Vaulter\Documents\State\CollaborationStateBinding;
 final readonly class LogSnapshot
 {
     /**
-     * @param array<string, mixed>|null                                 $content
-     * @param list<array{seq: int, update_id: string, payload: string}> $tail
+     * @param array<string, mixed>|null                                                  $content
+     * @param list<array{seq: int, update_id: string, payload: string, sha256?: string}> $tail
      */
     public function __construct(
         public string $documentId,
@@ -32,5 +32,6 @@ final readonly class LogSnapshot
         public int $headSeq,
         public array $tail,
         public CollaborationStateBinding $binding,
+        public string $profile = 'standard',
     ) {}
 }

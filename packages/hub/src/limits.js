@@ -71,7 +71,7 @@ export function envelopeLength(maxUpdateBytes) {
  */
 export function requestLimit(endpoint, conf = {}, { seed = false } = {}) {
   const request = conf.maxRequestBytes ?? LIMIT_DEFAULTS.maxRequestBytes
-  const state = endpoint === 'checkpoint' || (endpoint === 'append' && seed === true)
+  const state = endpoint === 'checkpoint' || (['append', 'commands/settle'].includes(endpoint) && seed === true)
 
   return state ? base64Length(conf.maxDocumentBytes ?? LIMIT_DEFAULTS.maxDocumentBytes) + request : request
 }

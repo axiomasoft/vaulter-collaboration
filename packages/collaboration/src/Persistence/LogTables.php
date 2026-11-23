@@ -30,6 +30,7 @@ final readonly class LogTables
     private const array HEAD_COLUMNS = [
         'document_id', 'generation', 'protocol', 'head_seq', 'checkpoint_seq', 'checkpoint_version',
         'lease_token', 'lease_owner', 'lease_expires_at', 'lease_through_seq', 'drain_requested_at', 'retired_at',
+        'profile', 'owner_fence', 'owner_id', 'owner_expires_at',
     ];
 
     public function __construct(
@@ -71,6 +72,11 @@ final readonly class LogTables
         $now = $connection->scalar("select clock_timestamp() at time zone 'UTC'", useReadPdo: false);
 
         return self::time($now, 'UTC') ?? throw new LogicException('[Vaulter] The lease clock returned no timestamp.');
+    }
+
+    public function timestamp(Carbon $utc): string
+    {
+        return $utc->format($this->database->connection()->getDriverName() === 'pgsql' ? 'Y-m-d H:i:s.uP' : 'Y-m-d H:i:s.u');
     }
 
     /**
@@ -127,6 +133,10 @@ final readonly class LogTables
             leaseThroughSeq: $row->lease_through_seq === null ? null : self::int($row->lease_through_seq),
             drainRequestedAt: self::time($row->drain_requested_at),
             retiredAt: self::time($row->retired_at),
+            profile: Identity::stringify($row->profile),
+            ownerFence: self::int($row->owner_fence),
+            ownerId: is_string($row->owner_id) ? $row->owner_id : null,
+            ownerExpiresAt: self::time($row->owner_expires_at, 'UTC'),
         );
     }
 

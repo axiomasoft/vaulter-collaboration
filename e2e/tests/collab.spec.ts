@@ -1,4 +1,10 @@
-import { execFile } from 'node:child_process'
+import { execFile, spawn, type ChildProcess } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { once } from 'node:events'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test'
@@ -15,6 +21,7 @@ const run = promisify(execFile)
 
 interface Scene {
   node_id: string
+  drive_id: string
   first_revision_id: string
   writer_grant_id: string
   owner_user: number
@@ -67,6 +74,187 @@ async function typeInto(page: Page, text: string): Promise<void> {
   const editor = editorOf(page)
   await editor.click()
   await page.keyboard.type(text)
+}
+
+// The strict stand uses its own ports and runs this scenario with a fresh PHP/PostgreSQL
+// database and VAULTER_COLLAB_STRICT_PROFILE=true in the Testbench configuration.
+if (process.env.VAULTER_E2E_STRICT === '1') {
+  test('A42 commits before apply and recovers the exact receipt on the next Hub', async ({ browser, request, baseURL }, testInfo) => {
+    test.setTimeout(90_000)
+    const directory = await mkdtemp(join(tmpdir(), 'vaulter-a42-'))
+    const hubPort = process.env.VAULTER_E2E_HUB_PORT ?? '47134'
+    const managementPort = Number(hubPort) + 1
+    const cli = fileURLToPath(new URL('../../packages/hub/src/cli.js', import.meta.url))
+    const barrier = fileURLToPath(new URL('./support/strict-hub-barriers.mjs', import.meta.url))
+    let hub: ChildProcess | undefined
+    let output = ''
+    function start(name: string, withBarrier: boolean) {
+      const args = withBarrier ? ['--import', barrier, cli, 'serve'] : [cli, 'serve']
+      const child = spawn(process.execPath, args, {
+        env: {
+          ...process.env, NODE_ENV: 'development', VAULTER_COLLAB_STRICT_PROFILE: 'true',
+          VAULTER_COLLAB_REDIS_URL: '', VAULTER_COLLAB_CONTROL_REDIS_URL: '',
+          VAULTER_COLLAB_INSTANCE_NAME: name, VAULTER_COLLAB_PORT: hubPort,
+          VAULTER_COLLAB_MANAGEMENT_PORT: String(managementPort),
+          VAULTER_LARAVEL_WEBHOOK_URL: API, VAULTER_A42_BARRIERS: directory,
+          VAULTER_COLLAB_WEBHOOK_SECRET: 'e2e-collab-webhook-secret',
+          VAULTER_COLLAB_THROTTLE: '1000',
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      child.stdout?.on('data', chunk => { output += chunk })
+      child.stderr?.on('data', chunk => { output += chunk })
+      return child
+    }
+    async function ready() {
+      await expect.poll(async () => {
+        try {
+          return (await request.get(`http://127.0.0.1:${managementPort}/livez`)).ok()
+        } catch {
+          return false
+        }
+      }).toBe(true)
+    }
+    async function stop() {
+      const child = hub
+      if (!child || child.exitCode !== null || child.signalCode !== null) return
+      const ended = once(child, 'exit')
+      child.kill('SIGKILL')
+      await ended
+    }
+    const firstCtx = await browser.newContext()
+    const secondCtx = await browser.newContext()
+    try {
+      hub = start('a42-owner-a', true)
+      await ready()
+      const setup = await request.get(`${BACKEND}/e2e/setup?scenario=A42`)
+      expect(setup.ok()).toBe(true)
+      const { node_id: node } = await setup.json() as Scene
+      const commandUrl = `${BACKEND}/e2e/document/${node}/command`
+      const first = await firstCtx.newPage()
+      const second = await secondCtx.newPage()
+      await first.goto(`${baseURL}/?node=${node}&user=1`)
+      await expect(first.getByTestId('status')).toHaveText('connected:writable')
+      await second.goto(`${baseURL}/?node=${node}&user=3`)
+      await expect(second.getByTestId('status')).toHaveText('connected:writable')
+      const bank = (page: Page) => page.locator('[data-block-id="bank"]')
+      await bank(first).click()
+      await first.keyboard.press('End')
+      await first.keyboard.type('!')
+      await expect.poll(() => existsSync(join(directory, 'append-started'))).toBe(true)
+      await expect(bank(first)).toHaveText('Банк А!')
+      await expect(bank(second)).toHaveText('Банк А')
+      await expect(first.getByTestId('save-status')).toHaveText('pending')
+      await writeFile(join(directory, 'append-released'), '')
+      await expect(bank(second)).toHaveText('Банк А!')
+      await expect(first.getByTestId('save-status')).toHaveText('saved')
+      const before = await journal(request, node)
+
+      const proposal = randomUUID()
+      const registered = await Promise.all([1, 2].map(() => request.post(commandUrl, { data: { proposal, position: before.head_seq } })))
+      expect(registered.every(reply => reply.ok())).toBe(true)
+      const [firstId, secondId] = await Promise.all(registered.map(async reply => (await reply.json()).id))
+      expect(secondId).toBe(firstId)
+      await expect.poll(() => existsSync(join(directory, 'commit-answered'))).toBe(true)
+      const accepted = JSON.parse(await readFile(join(directory, 'commit-answered'), 'utf8'))
+      expect(accepted).toMatchObject({ state: 'committed', base_seq: before.head_seq, to_seq: before.head_seq + 1 })
+      await expect(first.locator('[data-block-id="payment-terms"]')).toContainText('15')
+      const persisted = await journal(request, node)
+      const receipt = persisted.receipts.find(row => row.seq === accepted.to_seq)
+      expect(receipt?.sha256).toMatch(/^[0-9a-f]{64}$/)
+      await stop()
+
+      const status = await request.get(`${commandUrl}/A42`)
+      expect(await status.json()).toMatchObject({ state: 'committed', receipt_id: accepted.receipt_id, to_seq: accepted.to_seq })
+      hub = start('a42-owner-b', false)
+      await ready()
+      await expect(first.locator('[data-block-id="payment-terms"]')).toContainText('30', { timeout: 30_000 })
+      await expect(second.locator('[data-block-id="A42-p1"]')).toHaveCount(1)
+      await expect(bank(second)).toHaveText('Банк А!')
+      const replayed = await request.post(commandUrl, { data: { proposal, position: before.head_seq } })
+      expect(await replayed.json()).toMatchObject({ receipt_id: accepted.receipt_id })
+      const conflict = await request.post(commandUrl, { data: { proposal, position: before.head_seq, replacement: '45' } })
+      expect(conflict.status()).toBe(409)
+      expect((await journal(request, node)).receipts.find(row => row.seq === accepted.to_seq)).toEqual(receipt)
+
+      const next = await request.post(commandUrl, { data: { command: 'A43', expected: '30', replacement: '45', position: accepted.to_seq } })
+      expect(next.ok()).toBe(true)
+      await expect.poll(async () => (await (await request.get(`${commandUrl}/A43`)).json())?.base_seq).toBe(accepted.to_seq)
+      await expect(second.locator('[data-block-id="payment-terms"]')).toContainText('45')
+      const terms = first.locator('[data-block-id="payment-terms"]')
+      await terms.click()
+      await first.keyboard.press('Home')
+      await first.keyboard.press('Shift+End')
+      await first.keyboard.insertText('Аванс в течение 20 дней')
+      await expect(second.locator('[data-block-id="payment-terms"]')).toHaveText('Аванс в течение 20 дней')
+      await expect(first.getByTestId('save-status')).toHaveText('saved')
+      const edited = await journal(request, node)
+      const changed = await request.post(commandUrl, { data: { command: 'A44', expected: '45', position: edited.head_seq } })
+      expect(changed.ok()).toBe(true)
+      await expect.poll(async () => (await (await request.get(`${commandUrl}/A44`)).json())?.rejection_code).toBe('precondition_failed')
+      expect((await journal(request, node)).head_seq).toBe(edited.head_seq)
+      await testInfo.attach('a42-receipt', { body: JSON.stringify({ accepted, receipt, nextBase: accepted.to_seq }), contentType: 'application/json' })
+
+      if (process.env.VAULTER_E2E_OFFICE === '1') {
+        const cold = await (await request.get(`${BACKEND}/e2e/setup?scenario=A42`)).json() as Scene
+        const sessionReply = await request.post(`${API}/documents/${cold.node_id}/collaboration/session`, {
+          headers: { 'X-E2E-User': '1' }, data: {},
+        })
+        expect(sessionReply.ok()).toBe(true)
+        const office = async (operation: string, input: object) => {
+          const response = await request.post(`${BACKEND}/e2e/office/${cold.drive_id}/office.${operation}`, {
+            data: { resource_id: cold.node_id, ...input }, headers: { Accept: 'application/json' },
+          })
+          expect(response.ok(), await response.text()).toBe(true)
+          return response.json()
+        }
+        const selector = { kind: 'text_block', block_id: 'payment-terms' }
+        const read = await office('read', { selector })
+        expect(read).toMatchObject({ ok: true })
+        const prepared = await office('prepare', {
+          command: 'text.replace_exact@1', read_token: read.result.read_token,
+          arguments: { block_id: 'payment-terms', expected: '15', replacement: '30' },
+        })
+        expect(prepared).toMatchObject({ ok: true })
+        const committed = await office('commit', {
+          command_id: 'cold-a42', proposal_id: prepared.result.proposal_id, digest: prepared.result.digest,
+        })
+        expect(committed).toMatchObject({ ok: true, result: { state: 'running' } })
+        let after
+        await expect.poll(async () => {
+          after = await office('status', { command_id: 'cold-a42' })
+          return after.result?.state
+        }).toBe('committed')
+        const proof = { receipt_id: after.result.receipt_id }
+        for (const mode of ['at_commit', 'current']) {
+          await expect.poll(() => office('verify', { ...proof, mode })).toMatchObject({
+            ok: true, result: { outcome: 'passed', marker: after.result.marker },
+          })
+        }
+        await expect.poll(() => office('read', { selector, after_receipt: proof.receipt_id })).toMatchObject({ ok: true })
+        const newcomer = await secondCtx.newPage()
+        await newcomer.goto(`${baseURL}/?node=${cold.node_id}&user=3`)
+        const coldTerms = newcomer.locator('[data-block-id="payment-terms"]')
+        await expect(coldTerms).toContainText('30')
+        await coldTerms.click()
+        await newcomer.keyboard.press('Home')
+        await newcomer.keyboard.press('Shift+End')
+        await newcomer.keyboard.insertText('Аванс в течение 20 дней')
+        await expect(newcomer.getByTestId('save-status')).toHaveText('saved')
+        await expect.poll(() => office('verify', { ...proof, mode: 'current' })).toMatchObject({ ok: true, result: { outcome: 'failed' } })
+        await expect.poll(() => office('verify', { ...proof, mode: 'at_commit' })).toMatchObject({ ok: true, result: { outcome: 'passed' } })
+        const revoked = await request.post(`${BACKEND}/e2e/document/${cold.node_id}/revoke/${cold.writer_grant_id}`)
+        expect(revoked.ok()).toBe(true)
+        await expect.poll(() => office('status', { command_id: 'cold-a42' })).toMatchObject({ ok: false, error: { code: 'resource_unavailable' } })
+        await testInfo.attach('office-cold-receipt', { body: JSON.stringify(after.result), contentType: 'application/json' })
+      }
+    } finally {
+      await Promise.all([firstCtx.close(), secondCtx.close()])
+      await stop()
+      await testInfo.attach('hub-output', { body: output, contentType: 'text/plain' })
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
 }
 
 test('правки writer долетают до read-only viewer и снапшот персистится', async ({

@@ -167,6 +167,10 @@
                     "type": "string",
                     "default": "buffered"
                 },
+                "strict_profile": {
+                    "type": "boolean",
+                    "default": false
+                },
                 "retention": {
                     "type": "object",
                     "properties": {

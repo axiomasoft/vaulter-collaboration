@@ -9,12 +9,14 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Packman\Attributes\Internal;
+use Vaulter\Collaboration\CollaborationCall;
 use Vaulter\Collaboration\CollaborationHub;
 use Vaulter\Collaboration\Configuration\CollaborationOptions;
 use Vaulter\Collaboration\Exceptions\CollaborationUpdateTooLargeException;
 use Vaulter\Collaboration\Http\Middleware\LimitHubAppend;
 use Vaulter\Collaboration\Http\Middleware\ResolveCollaborationCall;
 use Vaulter\Collaboration\Http\Support\HubProtocol;
+use Vaulter\Collaboration\Persistence\AppendResult;
 use Vaulter\Collaboration\Persistence\UpdateEnvelope;
 
 /**
@@ -41,7 +43,28 @@ final readonly class HubAppendController
         $room = $this->hub->open($call, $request->input('room'));
 
         // The rights were checked above whatever the token's permission versions; a stale token tells the hub to renew.
-        return HubProtocol::mark(new JsonResponse([...$this->hub->append($room, $call, $update)->ack(), 'permissions_stale' => $room->permissionsStale]));
+        $strict = $request->hasAny(['owner_id', 'owner_fence', 'base_seq', 'client_session_id', 'bound_client_id', 'receipt_only']);
+        $result = $strict ? $this->appendFenced($request, $call, $update) : $this->hub->append($room, $call, $update);
+
+        return HubProtocol::mark(new JsonResponse([...$result->ack(), 'permissions_stale' => $room->permissionsStale]));
+    }
+
+    private function appendFenced(Request $request, CollaborationCall $call, UpdateEnvelope $update): AppendResult
+    {
+        $owner = $request->input('owner_id');
+        $fence = $request->input('owner_fence');
+        $base = $request->input('base_seq');
+        $session = $request->input('client_session_id');
+        $clientId = $request->input('bound_client_id');
+        $receiptOnly = $request->input('receipt_only', false);
+        if (!is_string($owner) || !Str::isUuid($owner) || !is_int($fence) || $fence < 1 || !is_int($base) || $base < 0
+            || !is_bool($receiptOnly)
+            || ($session !== null && (!is_string($session) || !Str::isUuid($session)))
+            || ($clientId !== null && (!is_int($clientId) || $clientId < 0x80000000 || $clientId > 0xFFFFFFFF))) {
+            throw ValidationException::withMessages(['owner_fence' => ['Invalid owner fence, base position or browser binding.']]);
+        }
+
+        return $this->hub->appendFenced($call, $update, strtolower($owner), $fence, $base, $session, $clientId, $receiptOnly);
     }
 
     private function envelope(Request $request): UpdateEnvelope

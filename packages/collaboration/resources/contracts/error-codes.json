@@ -60,6 +60,17 @@
         {
             "package": "axiomasoft/vaulter-collaboration",
             "enum": "Vaulter\\Collaboration\\Errors\\CollaborationErrorCode",
+            "case": "RoomConflict",
+            "code": "collaboration.room_conflict",
+            "type": "urn:packman:problem:collaboration.room_conflict",
+            "status": 409,
+            "title": "Room conflict",
+            "retryable": true,
+            "category": "conflict"
+        },
+        {
+            "package": "axiomasoft/vaulter-collaboration",
+            "enum": "Vaulter\\Collaboration\\Errors\\CollaborationErrorCode",
             "case": "SeedConflict",
             "code": "collaboration.seed_conflict",
             "type": "urn:packman:problem:collaboration.seed_conflict",

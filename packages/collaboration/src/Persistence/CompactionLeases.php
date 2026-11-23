@@ -12,7 +12,6 @@ use Packman\Attributes\Internal;
 use Packman\Attributes\Spi;
 use Packman\Attributes\SpiKind;
 use Vaulter\Collaboration\Configuration\CollaborationOptions;
-use Vaulter\Collaboration\RoomOwnership;
 use Vaulter\Database\VaulterDatabase;
 use Vaulter\Documents\Exceptions\NotADocumentException;
 use Vaulter\Documents\State\CollaborativeState;
@@ -185,21 +184,22 @@ final readonly class CompactionLeases
     /** Whether the uncheckpointed log of `$head` reached a compaction trigger at `$now`. */
     private function due(Head $head, Carbon $now): bool
     {
-        if ($head->headSeq - $head->checkpointSeq >= $this->config->compactionTriggerUpdates()) {
+        $strict = $head->profile === 'strict';
+        if ($head->headSeq - $head->checkpointSeq >= ($strict ? 200 : $this->config->compactionTriggerUpdates())) {
             return true;
         }
 
         $tail = $this->log->rows('collaboration_updates', $head->documentId, $head->generation)
             ->where('seq', '>', $head->checkpointSeq)
-            ->selectRaw('min(created_at) as oldest, sum(length(payload)) as stored_bytes')
+            ->selectRaw(($strict ? 'max' : 'min').'(created_at) as trigger_time, sum(length(payload)) as stored_bytes')
             ->first();
         $stored = $tail?->stored_bytes;
         // A payload is stored base64: four stored bytes for every three of the update.
         $bytes = is_numeric($stored) ? intdiv((int) $stored * 3, 4) : 0;
-        $oldest = LogTables::time($tail?->oldest);
+        $triggerTime = LogTables::time($tail?->trigger_time);
 
-        return $bytes >= $this->config->compactionTriggerBytes()
-            || ($oldest !== null && $oldest->lessThanOrEqualTo($now->copy()->subSeconds($this->config->compactionTriggerAge())));
+        return $bytes >= ($strict ? 256 * 1024 : $this->config->compactionTriggerBytes())
+            || ($triggerTime !== null && $triggerTime->lessThanOrEqualTo($now->copy()->subSeconds($strict ? 60 : $this->config->compactionTriggerAge())));
     }
 
     /**

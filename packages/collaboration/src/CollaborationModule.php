@@ -94,7 +94,7 @@ final class CollaborationModule implements ExtensionPlugin, GuardsRemoval, WithC
     /** @return list<string> */
     public function tableNouns(): array
     {
-        return ['collaboration_updates', 'collaboration_receipts', 'collaboration_heads', 'collaboration_permission_versions'];
+        return ['collaboration_updates', 'collaboration_receipts', 'collaboration_heads', 'collaboration_permission_versions', 'collaboration_client_ids', 'collaboration_commands'];
     }
 
     public function migrationPath(): string

@@ -23,6 +23,7 @@ final class CollaborationProblemDefinitions implements ProblemDefinitionProvider
     #[Override]
     public function definitions(): iterable
     {
+        yield new ProblemDefinition(code: CollaborationErrorCode::RoomConflict, type: self::URN_PREFIX.CollaborationErrorCode::RoomConflict->value, defaultStatus: 409, title: 'Room conflict', retryable: true, category: ErrorCategory::Conflict);
         yield new ProblemDefinition(code: CollaborationErrorCode::SeedConflict, type: self::URN_PREFIX.CollaborationErrorCode::SeedConflict->value, defaultStatus: 409, title: 'Seed conflict', retryable: true, category: ErrorCategory::Conflict);
         yield new ProblemDefinition(code: CollaborationErrorCode::Config, type: self::URN_PREFIX.CollaborationErrorCode::Config->value, defaultStatus: 500, title: 'Config', retryable: false, category: ErrorCategory::Internal);
         yield new ProblemDefinition(code: CollaborationErrorCode::UpdateMismatch, type: self::URN_PREFIX.CollaborationErrorCode::UpdateMismatch->value, defaultStatus: 422, title: 'Update mismatch', retryable: false, category: ErrorCategory::Validation);

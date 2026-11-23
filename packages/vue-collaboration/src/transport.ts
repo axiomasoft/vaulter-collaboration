@@ -3,6 +3,7 @@ import { ref, type Ref } from 'vue'
 import { HocuspocusProvider } from '@hocuspocus/provider'
 import type { Doc as YDoc } from 'yjs'
 import type { CollaborationSession, Collaborator } from '@vaulter/vue'
+import { uuidV4 } from './envelope'
 
 /**
  * Turns a backend {@link CollaborationSession} into a live Hocuspocus transport bound
@@ -33,6 +34,17 @@ export const STORE_REFUSED_CODE = 4422
 export const STORE_REFUSED_REASON = 'store_refused'
 
 export type { Collaborator }
+
+const writerSessions = new WeakMap<YDoc, { session: string, clientId: number | null, ready: Ref<boolean> }>()
+
+export function writerBinding(doc: YDoc) {
+  let binding = writerSessions.get(doc)
+  if (!binding) {
+    binding = { session: uuidV4(), clientId: null, ready: ref(false) }
+    writerSessions.set(doc, binding)
+  }
+  return binding
+}
 
 /** A minimal Yjs awareness surface (the slice of `@hocuspocus/provider`.awareness we read). */
 export interface AwarenessLike {
@@ -206,19 +218,50 @@ export function openCollaborationTransport(
   options: CollaborationTransportOptions,
 ): CollaborationTransportHandle {
   const validated = validateCollaborationSession(session)
+  const binding = session.mode === 'write' && session.options.writer_binding === true ? writerBinding(options.doc) : null
   const factory = options.createHocuspocusProvider ?? defaultHocuspocusProvider
+  let endpoint = validated.endpoint
+  if (binding) {
+    const url = new URL(endpoint)
+    url.searchParams.set('client_session_id', binding.session)
+    endpoint = url.toString()
+  }
   const handle = factory({
-    url: validated.endpoint,
+    url: endpoint,
     name: validated.room,
     token: session.token,
     document: options.doc,
   })
 
-  const connected = ref(handle.isConnected?.() ?? false)
+  let synchronized = handle.isConnected?.() ?? false
+  let negotiated = binding === null
+  const connected = ref(synchronized && negotiated)
   const collaborators = ref<Collaborator[]>(collaboratorsFrom(handle.awareness))
 
   const disposeConnection = handle.onConnectionChange?.((value) => {
-    connected.value = value
+    synchronized = value
+    if (!value && binding) negotiated = false
+    connected.value = synchronized && negotiated
+  })
+  const disposeBinding = binding && handle.onStateless?.((payload) => {
+    let message
+    try {
+      message = JSON.parse(payload)
+    } catch {
+      return
+    }
+    if (message?.t !== 'binding') return
+    const clientId = message.client_id
+    if (message.profile === 'strict' && Number.isInteger(clientId) && clientId >= 0x80000000 && clientId <= 0xffffffff
+      && (binding.clientId === clientId || (binding.clientId === null && !options.doc.store.clients.has(options.doc.clientID)))) {
+      options.doc.clientID = clientId
+      binding.clientId = clientId
+      negotiated = true
+    } else {
+      negotiated = message.profile === 'standard' && binding.clientId === null
+    }
+    binding.ready.value = negotiated
+    connected.value = synchronized && negotiated
   })
 
   const awareness = handle.awareness ?? null
@@ -247,6 +290,7 @@ export function openCollaborationTransport(
 
   function destroy(): void {
     disposeConnection?.()
+    disposeBinding?.()
     for (const dispose of disposers.splice(0)) {
       dispose()
     }

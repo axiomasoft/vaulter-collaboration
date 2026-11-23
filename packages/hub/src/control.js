@@ -88,6 +88,23 @@ export function parseControlMessage(raw) {
     return { ok: false, reason: 'version' }
   }
 
+  if (message.type === 'wakeup') {
+    if (typeof message.document_id !== 'string' || message.document_id.length > 64 || message.document_id === ''
+      || !Number.isSafeInteger(message.generation) || message.generation < 0
+      || !Number.isSafeInteger(message.position) || message.position < 0) {
+      return { ok: false, reason: 'wakeup' }
+    }
+    return { ok: true, message: { type: 'wakeup', document_id: message.document_id, generation: message.generation, position: message.position } }
+  }
+  if (message.type === 'epoch_bump_4409' || message.type === 'handoff_request') {
+    if (typeof message.room !== 'string' || message.room.length > 255 || message.room === ''
+      || (message.type === 'handoff_request' && (!Number.isSafeInteger(message.owner_fence) || message.owner_fence < 1))) {
+      return { ok: false, reason: 'room_control' }
+    }
+    return { ok: true, message: { type: message.type, room: message.room, owner_fence: message.owner_fence } }
+  }
+  if (message.type !== undefined && message.type !== 'revoke_subject') return { ok: false, reason: 'type' }
+
   const driveId = message.drive_id
 
   if (driveId !== null && driveId !== undefined && !(typeof driveId === 'string' && driveId !== '' && driveId.length <= 191)
@@ -122,7 +139,7 @@ export function parseControlMessage(raw) {
  * subscriber client (ioredis by default); `clock` is injectable. Signatures already seen are kept
  * for the tolerance window, so a replayed request changes nothing.
  */
-export function createControlChannel({ revocation, conf = {}, log = console, clock = Date.now, redisFactory = null, maxSeen = 10_000 } = {}) {
+export function createControlChannel({ revocation, rooms, verifyCommand, conf = {}, log = console, clock = Date.now, redisFactory = null, maxSeen = 10_000 } = {}) {
   const toleranceSeconds = Number.isInteger(conf.controlToleranceSeconds) && conf.controlToleranceSeconds > 0
     ? conf.controlToleranceSeconds
     : CONTROL_TOLERANCE_SECONDS
@@ -144,7 +161,7 @@ export function createControlChannel({ revocation, conf = {}, log = console, clo
   function dispatch(message, source) {
     stats.accepted += 1
     Promise.resolve()
-      .then(() => revocation.control(message, source))
+      .then(() => message.type === undefined ? revocation.control(message, source) : rooms?.(message))
       .catch((error) => log.error?.(`Vaulter collab hub: a control message could not be applied: ${error?.message ?? error}`))
   }
 
@@ -193,6 +210,36 @@ export function createControlChannel({ revocation, conf = {}, log = console, clo
     dispatch(parsed.message, 'http')
 
     return { status: 202, body: { status: 'accepted' } }
+  }
+
+  async function receiveVerification({ headers, rawBody }) {
+    if (!verifyCommand) return { status: 404, body: { status: 'not_found' } }
+    const verified = verifyControlSignature({
+      rawBody,
+      timestamp: header(headers, TIMESTAMP_HEADER),
+      signature: header(headers, SIGNATURE_HEADER),
+      secret: conf.webhookSecret,
+      nowSeconds: Math.floor(clock() / 1000),
+      toleranceSeconds,
+    })
+    if (!verified.ok) return { status: 401, body: { status: 'unauthorized' } }
+    let message
+    try {
+      message = JSON.parse(rawBody)
+    } catch {
+      return { status: 422, body: { status: 'invalid' } }
+    }
+    if (message?.operation !== 'verify-command' || typeof message.document_id !== 'string'
+      || !Number.isSafeInteger(message.generation) || !message.range || typeof message.range.relative_start !== 'string'
+      || typeof message.range.relative_end !== 'string' || typeof message.range.replacement !== 'string') {
+      return { status: 422, body: { status: 'invalid' } }
+    }
+    try {
+      return { status: 200, body: await verifyCommand(message) }
+    } catch (error) {
+      if (error?.code === 'collaboration_epoch_mismatch') return { status: 409, body: { status: 'generation_changed' } }
+      return { status: 503, body: { status: 'projection_pending' } }
+    }
   }
 
   /** A message from the Redis channel; true when it was applied. */
@@ -250,6 +297,7 @@ export function createControlChannel({ revocation, conf = {}, log = console, clo
   return {
     maxBytes: MAX_CONTROL_BYTES,
     receiveHttp,
+    receiveVerification,
     receiveRedis,
     subscribe,
     close,

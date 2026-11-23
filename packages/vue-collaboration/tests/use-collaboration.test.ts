@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import { watch } from 'vue'
-import { Doc as YDoc, applyUpdate, encodeStateAsUpdate } from 'yjs'
+import { Doc as YDoc, UndoManager, applyUpdate, encodeStateAsUpdate, decodeUpdate } from 'yjs'
 import type { CollaborationSession } from '@vaulter/vue'
 import { CollaborationCancelledError, useCollaboration, type UseCollaborationOptions } from '../src/useCollaboration'
 import { openCollaborationTransport, sessionEnd } from '../src/transport'
+import { limitCollaborationUndo } from '../src/adapter'
 import { REMOTE, clientFor, fakeProvider, flush, hocuspocusSession } from './support/fakes'
 
 /** useCollaboration over a fake client whose session request is `token`. */
@@ -65,6 +66,52 @@ describe('openCollaborationTransport', () => {
 // ─── useCollaboration ─────────────────────────────────────────────────────
 
 describe('useCollaboration', () => {
+  it('keeps a strict writer read-only until its allocated Yjs id is bound and reuses the writer session', async () => {
+    const provider = fakeProvider()
+    const factory = vi.fn().mockReturnValue(provider.handle)
+    const session = hocuspocusSession({ options: { room: 'vaulter.documents.7.42.0', drive_id: '7', writer_binding: true } })
+    const collab = collaboration(vi.fn().mockResolvedValue(session), { providers: { createHocuspocusProvider: factory } })
+    await collab.connect()
+    provider.setConnected(true)
+    expect(collab.readOnly.value).toBe(true)
+    expect(collab.connected.value).toBe(false)
+
+    provider.say({ t: 'binding', profile: 'strict', client_id: 100 })
+    expect(collab.readOnly.value).toBe(true)
+    const id = 0x80000034
+    provider.say({ t: 'binding', profile: 'strict', client_id: id })
+    expect(collab.readOnly.value).toBe(false)
+    expect(collab.connected.value).toBe(true)
+    collab.doc.value.getText('default').insert(0, 'bound')
+    expect(decodeUpdate(encodeStateAsUpdate(collab.doc.value)).structs[0].id.client).toBe(id)
+
+    const socketUrl = new URL(factory.mock.calls[0][0].url)
+    expect(socketUrl.searchParams.get('client_session_id')).toMatch(/^[0-9a-f-]{36}$/)
+    provider.setConnected(false)
+    provider.setConnected(true)
+    expect(collab.readOnly.value).toBe(false)
+    expect(collab.connected.value).toBe(false)
+    provider.say({ t: 'binding', profile: 'strict', client_id: id })
+    expect(collab.connected.value).toBe(true)
+    collab.dispose()
+  })
+
+  it('caps the client undo stack at 100 and limits the capture window', () => {
+    const doc = new YDoc()
+    const text = doc.getText('default')
+    const manager = new UndoManager(text, { captureTimeout: 1000 })
+    const stop = limitCollaborationUndo(manager)
+    for (let i = 0; i < 130; i += 1) {
+      text.insert(0, 'x')
+      manager.stopCapturing()
+    }
+    expect(manager.undoStack).toHaveLength(100)
+    expect(manager.captureTimeout).toBe(500)
+    stop()
+    manager.destroy()
+    doc.destroy()
+  })
+
   it('fetches the session and opens the provider on its Y.Doc', async () => {
     const token = vi.fn().mockResolvedValue(hocuspocusSession())
     const destroy = vi.fn()

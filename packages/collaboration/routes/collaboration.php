@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\Route;
 use Vaulter\Collaboration\Http\Controllers\Collaboration\HubAppendController;
 use Vaulter\Collaboration\Http\Controllers\Collaboration\HubAuthenticateController;
 use Vaulter\Collaboration\Http\Controllers\Collaboration\HubCheckpointController;
+use Vaulter\Collaboration\Http\Controllers\Collaboration\HubCommandController;
 use Vaulter\Collaboration\Http\Controllers\Collaboration\HubCompactionLeaseController;
 use Vaulter\Collaboration\Http\Controllers\Collaboration\HubLoadController;
 use Vaulter\Collaboration\Http\Controllers\Collaboration\HubRecheckController;
@@ -54,6 +55,18 @@ Route::prefix($routes->versionedPrefix())
     ->name('vaulter.v1.')
     ->middleware([...$routes->hubMiddleware(), 'throttle:vaulter-public'])
     ->group(static function (): void {
+        Route::post('collaboration/hub/ownership/acquire', HubCommandController::class)
+            ->middleware([LimitHubAppend::class, VerifyHubSignature::class])
+            ->name('collaboration.hub.ownership.acquire');
+        Route::post('collaboration/hub/ownership/renew', HubCommandController::class)
+            ->middleware([LimitHubAppend::class, VerifyHubSignature::class])
+            ->name('collaboration.hub.ownership.renew');
+        Route::post('collaboration/hub/commands/next', HubCommandController::class)
+            ->middleware([LimitHubAppend::class, VerifyHubSignature::class])
+            ->name('collaboration.hub.commands.next');
+        Route::post('collaboration/hub/commands/settle', HubCommandController::class)
+            ->middleware([LimitHubAppend::class.':'.LimitHubAppend::APPEND, VerifyHubSignature::class])
+            ->name('collaboration.hub.commands.settle');
         Route::post('collaboration/hub/compaction/lease', HubCompactionLeaseController::class)
             ->middleware([LimitHubAppend::class, VerifyHubSignature::class])
             ->name('collaboration.hub.compaction.lease');

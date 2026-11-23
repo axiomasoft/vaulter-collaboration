@@ -22,6 +22,7 @@ enum CollaborationErrorCode: string implements ErrorCode
     case EpochMismatch = 'collaboration.epoch_mismatch';
     case ProtocolMismatch = 'collaboration.protocol_mismatch';
     case Draining = 'collaboration.draining';
+    case RoomConflict = 'collaboration.room_conflict';
 
     #[Override]
     public function value(): string

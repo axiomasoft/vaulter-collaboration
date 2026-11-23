@@ -2,6 +2,7 @@ import { computed } from 'vue'
 import type { CollaborationAdapter, CollaborationHandle, VaulterClient } from '@vaulter/vue'
 import type { CollaborationTransportOptions } from './transport'
 import { useCollaboration, type EnvelopeSettings } from './useCollaboration'
+import type { UndoManager } from 'yjs'
 
 export interface CreateCollaborationAdapterOptions {
   /** The API client; by default the one `VaulterDocumentNode` passes to `open()`. */
@@ -10,6 +11,18 @@ export interface CreateCollaborationAdapterOptions {
   providers?: Partial<Omit<CollaborationTransportOptions, 'doc'>>
   /** The update queue settings (1000 updates / 8 MiB by default). */
   envelope?: EnvelopeSettings
+}
+
+/** Set the capture window and bound the undo and redo stacks of the editor's Yjs manager. */
+export function limitCollaborationUndo(manager: UndoManager): () => void {
+  manager.captureTimeout = 500
+  const limit = () => {
+    if (manager.undoStack.length > 100) manager.undoStack.splice(0, manager.undoStack.length - 100)
+    if (manager.redoStack.length > 100) manager.redoStack.splice(0, manager.redoStack.length - 100)
+  }
+  limit()
+  manager.on('stack-item-added', limit)
+  return () => manager.off('stack-item-added', limit)
 }
 
 /**

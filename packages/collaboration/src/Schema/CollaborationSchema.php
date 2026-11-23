@@ -33,6 +33,8 @@ final class CollaborationSchema implements ModuleSchema
             'collaboration_updates',
             'collaboration_receipts',
             'collaboration_permission_versions',
+            'collaboration_client_ids',
+            'collaboration_commands',
         ];
     }
 
@@ -43,6 +45,8 @@ final class CollaborationSchema implements ModuleSchema
             new KeyColumnExpectation('collaboration_heads', 'document_id', 'REF'),
             new KeyColumnExpectation('collaboration_updates', 'document_id', 'REF'),
             new KeyColumnExpectation('collaboration_receipts', 'document_id', 'REF'),
+            new KeyColumnExpectation('collaboration_client_ids', 'document_id', 'REF'),
+            new KeyColumnExpectation('collaboration_commands', 'document_id', 'REF'),
         ];
     }
 
@@ -56,6 +60,8 @@ final class CollaborationSchema implements ModuleSchema
                 'collaboration_updates' => $this->defineUpdates(table: $table, ids: $ids),
                 'collaboration_receipts' => $this->defineReceipts(table: $table, ids: $ids),
                 'collaboration_permission_versions' => $this->definePermissionVersions(table: $table),
+                'collaboration_client_ids' => (new StrictRoomSchema($this->helpers))->clientIds($table, $ids),
+                'collaboration_commands' => (new StrictRoomSchema($this->helpers))->commands($table, $ids),
                 default => throw new InvalidArgumentException(sprintf('Unknown collaboration entity [%s].', $entity)),
             };
         });

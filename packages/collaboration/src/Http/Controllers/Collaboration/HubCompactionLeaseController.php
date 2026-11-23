@@ -90,7 +90,7 @@ final readonly class HubCompactionLeaseController
                 ? $log->content
                 : null,
             'tail' => $log->tail,
-        ];
+        ] + ($log->profile === 'strict' ? ['profile' => 'strict'] : []);
     }
 
     /** The lease expiry as it has always been on the wire: UTC with microseconds and a trailing Z. */

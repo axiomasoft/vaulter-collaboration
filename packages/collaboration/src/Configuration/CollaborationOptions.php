@@ -7,6 +7,7 @@ namespace Vaulter\Collaboration\Configuration;
 use Illuminate\Support\Arr;
 use Override;
 use Packman\Attributes\Api;
+use Packman\Attributes\Internal;
 use Packman\Config\Contracts\OptionsFactory;
 use Packman\Config\Data\SecretRef;
 use Packman\Config\Exceptions\InvalidConfiguration;
@@ -45,7 +46,7 @@ final readonly class CollaborationOptions implements OptionsFactory
     public static function fromArray(array $config, string $path = 'vaulter-collaboration'): self
     {
         $validator = new ConfigurationValidator;
-        $validator->rejectUnknownKeys($config, ['hub', 'control', 'max_state_bytes', 'mode', 'limits', 'compaction', 'drain', 'retention', 'schedule'], $path);
+        $validator->rejectUnknownKeys($config, ['hub', 'control', 'max_state_bytes', 'mode', 'strict_profile', 'limits', 'compaction', 'drain', 'retention', 'schedule'], $path);
         $section = Arr::get($config, 'hub', []);
         if (!is_array($section)) {
             $validator->add($path.'.hub', 'must be an array');
@@ -172,6 +173,12 @@ final readonly class CollaborationOptions implements OptionsFactory
         }
 
         return $value;
+    }
+
+    #[Internal]
+    public function strictProfile(): bool
+    {
+        return $this->value('vaulter-collaboration.strict_profile', false) === true;
     }
 
     /** The largest decoded Yjs update one append may carry. */

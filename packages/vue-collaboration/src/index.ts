@@ -1,5 +1,5 @@
 // Adapter for @vaulter/vue
-export { createCollaborationAdapter } from './adapter'
+export { createCollaborationAdapter, limitCollaborationUndo } from './adapter'
 export type { CreateCollaborationAdapterOptions } from './adapter'
 
 // Update envelopes, the bounded queue and acks (protocol 2, client side)

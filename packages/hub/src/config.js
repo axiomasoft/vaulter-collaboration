@@ -218,6 +218,7 @@ export function buildConfig(env = process.env) {
 
     // Persistence (protocol 2)
     mode: str('VAULTER_COLLAB_MODE', 'buffered', env).trim().toLowerCase(),
+    strictProfile: bool('VAULTER_COLLAB_STRICT_PROFILE', false, env),
     pendingBudgetBytes: int('VAULTER_COLLAB_PENDING_BUDGET_BYTES', 64 * 1024 * 1024, env),
     pendingRoomBudgetBytes: int('VAULTER_COLLAB_PENDING_ROOM_BUDGET_BYTES', 8 * 1024 * 1024, env),
     flushIntervalMs: int('VAULTER_COLLAB_FLUSH_INTERVAL_MS', 1000, env),
@@ -396,6 +397,9 @@ export function validateConfig(conf = config) {
   }
   if (!PERSISTENCE_MODES.includes(conf.mode)) {
     problems.push(`VAULTER_COLLAB_MODE must be one of ${PERSISTENCE_MODES.join(', ')}.`)
+  }
+  if (conf.strictProfile && conf.redisUrl) {
+    problems.push('VAULTER_COLLAB_STRICT_PROFILE requires control-only Redis (VAULTER_COLLAB_CONTROL_REDIS_URL).')
   }
 
   return [...backendProblems(conf), ...problems]

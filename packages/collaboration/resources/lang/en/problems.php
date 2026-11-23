@@ -3,6 +3,10 @@
 declare(strict_types=1);
 
 return [
+    'collaboration_room_conflict' => [
+        'title' => 'Collaboration room conflict',
+        'detail' => 'The operation does not match the current journal position or room owner.',
+    ],
     'collaboration_checkpoint_conflict' => [
         'title' => 'Collaboration checkpoint conflict',
         'detail' => 'The document log changed since the compaction lease was granted.',

@@ -215,7 +215,7 @@ const CONTROL_BODY_BYTES = 16 * 1024
  * POST /control: the declared length first, then the body up to the channel's `maxBytes`, then
  * the channel's verdict (`control.receiveHttp({headers, rawBody})` → {status, body}).
  */
-async function handleControl(request, response, control, log) {
+async function handleControl(request, response, control, log, verify = false) {
   if (request.method !== 'POST') {
     response.setHeader('Allow', 'POST')
     json(response, 405, { status: 'method_not_allowed' }, false)
@@ -223,7 +223,7 @@ async function handleControl(request, response, control, log) {
     return
   }
 
-  if (control === null) {
+  if (control === null || (verify && typeof control.receiveVerification !== 'function')) {
     json(response, 404, { status: 'not_found' }, false)
 
     return
@@ -247,7 +247,8 @@ async function handleControl(request, response, control, log) {
       return
     }
 
-    const verdict = control.receiveHttp({ headers: request.headers, rawBody })
+    const input = { headers: request.headers, rawBody }
+    const verdict = verify ? await control.receiveVerification(input) : control.receiveHttp(input)
     json(response, verdict.status, verdict.body, false)
   } catch (error) {
     log.error?.(`Vaulter collab hub: the control request failed: ${error?.message ?? error}`)
@@ -267,6 +268,9 @@ export function createManagement({ host = '127.0.0.1', port = 0, readiness, metr
 
     if (path === '/control') {
       return handleControl(request, response, control, log)
+    }
+    if (path === '/verify-command') {
+      return handleControl(request, response, control, log, true)
     }
 
     if (request.method !== 'GET' && !head) {

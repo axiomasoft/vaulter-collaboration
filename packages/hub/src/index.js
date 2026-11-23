@@ -18,6 +18,7 @@ import {
   DRAINING,
   EPOCH_CHANGED,
   FORBIDDEN,
+  HANDOFF,
   RATE_LIMITED,
   TOKEN_EXPIRED,
   TOO_MANY_CONNECTIONS,
@@ -27,6 +28,7 @@ import {
 import { createShutdown } from './shutdown.js'
 import { decodeTokenClaims, decodeTokenExpiry, roomTokenClaims } from './tokens.js'
 import { createWorker } from './worker.js'
+import { verifyCurrentRange } from './room-sequencer.js'
 
 // Vaulter collaboration hub — the external, env-configured Hocuspocus process.
 //
@@ -281,7 +283,10 @@ export function createHooks({ backend = backendModule, log = console, persistenc
     // Taken before the backend checks the rights: a control message for the room's drive that comes
     // after it has the connection rechecked once it is registered (src/registry.js).
     const controlMark = revoke.registry.mark()
-    const result = await backend.authenticate({ token, room: documentName }, options.backendOptions ?? {})
+    const sessions = requestParameters?.getAll?.('client_session_id') ?? []
+    const clientSession = sessions.length === 1 && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(sessions[0]) ? sessions[0].toLowerCase() : null
+    const offered = store.strictCapable ? { strictCapable: true } : {}
+    const result = await backend.authenticate({ token, room: documentName, ...offered }, options.backendOptions ?? {})
 
     if (!result.allowed) {
       if (result.conflict === backendModule.EPOCH_MISMATCH) {
@@ -303,18 +308,20 @@ export function createHooks({ backend = backendModule, log = console, persistenc
     }
 
     const protocol = readClientProtocol(requestParameters)
-    const readOnly = claims.scope !== 'write' || result.mode !== 'rw' || protocol !== CLIENT_PROTOCOL
+    const strict = result.profile === 'strict'
+    if (strict && !store.strictCapable) throw Object.assign(new Error(HANDOFF.reason), HANDOFF)
+    const readOnly = claims.scope !== 'write' || result.mode !== 'rw' || protocol !== CLIENT_PROTOCOL || (strict && clientSession === null)
 
     // v4 hands the per-connection settings as connectionConfig; older payloads as connection. Set
     // whichever is there.
     for (const target of [connectionConfig, connection]) {
       if (target && typeof target === 'object') {
-        target.readOnly = readOnly
+        target.readOnly = readOnly || strict
       }
     }
 
     // The expiry timer and the renewal are armed once the live connection is known (connected).
-    return { token, room: documentName, mode: claims.scope === 'read' ? 'ro' : result.mode, readOnly, protocol, userId: claims.sub, principal: { type: claims.sub_type, id: claims.sub }, binding: { protocol: claims.protocol, stateFormat: claims.state_format, schemaVersion: claims.schema_version, generation: claims.generation }, exp, tenant, controlMark }
+    return { token, room: documentName, mode: readOnly && strict ? 'ro' : claims.scope === 'read' ? 'ro' : result.mode, readOnly, protocol, userId: claims.sub, principal: { type: claims.sub_type, id: claims.sub }, binding: { protocol: claims.protocol, stateFormat: claims.state_format, schemaVersion: claims.schema_version, generation: claims.generation }, exp, tenant, controlMark, ...(strict ? { profile: 'strict' } : {}), ...(clientSession ? { clientSession } : {}) }
   }
 
   /**
@@ -556,6 +563,11 @@ async function boot({ processRef = process, exit = (code) => process.exit(code) 
   // The control subscriber is a Redis client like the extension's: /readyz requires it ready.
   const control = createControlChannel({
     revocation,
+    rooms: persistence.strictControl,
+    verifyCommand: persistence.strictCapable ? async ({ document_id, generation, range }) => {
+      const { log } = await backend.nextCommand({ document_id, generation, read_log: true })
+      return { generation: log.generation, position: log.head_seq, ...await verifyCurrentRange(log, range) }
+    } : undefined,
     conf: config,
     redisFactory: async (url) => {
       const { default: IORedis } = await import('ioredis')
@@ -586,7 +598,7 @@ async function boot({ processRef = process, exit = (code) => process.exit(code) 
     persistence,
     closeConnections: () => closeEveryRoom(server.hocuspocus, DRAINING),
     destroy: () => server.destroy(),
-    stopWorker: () => worker.stop(),
+    stopWorker: () => Promise.all([worker.stop(), persistence.stopStrict()]),
     closeManagement: async () => {
       revocation.stop()
       await Promise.all([management.close(), control.close()])
