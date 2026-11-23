@@ -7,6 +7,7 @@ namespace Vaulter\Collaboration\Persistence;
 use Illuminate\Contracts\Container\Container;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Str;
+use LogicException;
 use Packman\Attributes\Internal;
 use Packman\Attributes\Spi;
 use Packman\Attributes\SpiKind;
@@ -50,7 +51,10 @@ final readonly class CommandJournal
         private HubEvidenceReader $verifier,
     ) {}
 
-    /** @param array<string, mixed> $intent @return array<string, mixed> */
+    /**
+     * @param  array<string, mixed> $intent
+     * @return array<string, mixed>
+     */
     public function register(CommandActor $scope, string $key, string $proposal, string $digest, int $generation, int $schema, int $readPosition, array $intent): array
     {
         if ($key === '' || strlen($key) > 255 || !Str::isUuid($proposal) || !preg_match('/\A[0-9a-f]{64}\z/', $digest)
@@ -127,7 +131,7 @@ final readonly class CommandJournal
         });
     }
 
-    /** @return array<string, mixed> */
+    /** @return array{document_id: string, evidence: array<array-key, mixed>, generation: int, to_seq: int|null, ...} */
     public function evidence(CommandActor $scope, string $receipt): array
     {
         if (!Str::isUuid($receipt)) {
@@ -153,11 +157,13 @@ final readonly class CommandJournal
     public function verifyCurrent(CommandActor $scope, string $receipt): ?array
     {
         $proof = $this->evidence($scope, $receipt);
-        $range = $proof['evidence']['ranges'][0] ?? null;
-        if (!is_array($range)) {
+        $ranges = $proof['evidence']['ranges'] ?? null;
+        $range = is_array($ranges) ? ($ranges[0] ?? null) : null;
+        if (!is_array($range) || $proof['to_seq'] === null) {
             throw new RoomWriteConflict('evidence_unavailable');
         }
-        $result = $this->verifier->verify($proof['document_id'], $proof['generation'], $proof['to_seq'], $range);
+        $namedRange = array_filter($range, is_string(...), ARRAY_FILTER_USE_KEY);
+        $result = $this->verifier->verify($proof['document_id'], $proof['generation'], $proof['to_seq'], $namedRange);
         if ($result !== null) {
             $this->db->transaction(function () use ($scope, $result): void {
                 $doc = $this->state->lock($scope->resourceId);
@@ -212,7 +218,7 @@ final readonly class CommandJournal
                 throw new RoomWriteConflict('projection_behind');
             }
 
-            return ['generation' => $generation, 'position' => $head?->checkpointSeq ?? 0];
+            return ['generation' => $generation, 'position' => $head->checkpointSeq ?? 0];
         });
     }
 
@@ -293,7 +299,7 @@ final readonly class CommandJournal
 
     /**
      * @param  list<UpdateEnvelope> $updates
-     * @param  array<string, mixed> $evidence
+     * @param  array<array-key, mixed> $evidence
      * @return array<string, mixed>
      */
     #[Internal]
@@ -378,9 +384,6 @@ final readonly class CommandJournal
             throw NodeNotFoundException::forId($scope->resourceId);
         }
         $result = $this->policy->evaluateReference($actor, $scope->driveId, $scope->resourceId, $scope->tenant, $scope->project);
-        if ($result->ability === null) {
-            throw NodeNotFoundException::forId($scope->resourceId);
-        }
 
         return $result->grant->mode === CollaborationMode::Write;
     }
@@ -388,11 +391,18 @@ final readonly class CommandJournal
     private function storedScope(stdClass $row): CommandActor
     {
         $intent = self::json($row->intent);
+        $type = $intent['principal_type'] ?? null;
+        $id = Identity::key($intent['principal_id'] ?? null);
+        $tenant = $intent['tenant'] ?? null;
+        $drive = $intent['drive_id'] ?? null;
+        $project = $row->project_scope;
+        $subject = $row->effective_subject;
+        if (!is_string($type) || $id === null || !array_key_exists('tenant', $intent)
+            || ($tenant !== null && !is_string($tenant)) || !is_string($drive) || !is_string($project) || !is_string($subject)) {
+            throw new LogicException('Invalid stored collaboration command scope.');
+        }
 
-        return new CommandActor(
-            new ActorRef($intent['principal_type'], $intent['principal_id']), $intent['tenant'],
-            $row->project_scope, $row->effective_subject, $intent['drive_id'], Identity::stringify($row->resource_id),
-        );
+        return new CommandActor(new ActorRef($type, $id), $tenant, $project, $subject, $drive, Identity::stringify($row->resource_id));
     }
 
     private static function redactOperation(stdClass $row): string
@@ -433,7 +443,7 @@ final readonly class CommandJournal
         return $this->result($row);
     }
 
-    /** @return array<string, mixed> */
+    /** @return array{generation: int, to_seq: int|null, ...} */
     private function result(stdClass $row): array
     {
         return [
@@ -448,7 +458,12 @@ final readonly class CommandJournal
 
     private function binary(string $hex): string
     {
-        return $this->db->connection()->getDriverName() === 'pgsql' ? '\\x'.$hex : hex2bin($hex);
+        if ($this->db->connection()->getDriverName() === 'pgsql') {
+            return '\\x'.$hex;
+        }
+        $binary = hex2bin($hex);
+
+        return $binary !== false ? $binary : throw new LogicException('Invalid collaboration command digest.');
     }
 
     private function fingerprint(stdClass $row): string
@@ -460,10 +475,12 @@ final readonly class CommandJournal
         return bin2hex(Identity::stringify($row->fingerprint));
     }
 
-    /** @return array<string, mixed> */
+    /** @return array<array-key, mixed> */
     private static function json(mixed $json): array
     {
-        return json_decode(Identity::stringify($json), true, flags: JSON_THROW_ON_ERROR);
+        $decoded = json_decode(Identity::stringify($json), true, flags: JSON_THROW_ON_ERROR);
+
+        return is_array($decoded) ? $decoded : throw new LogicException('Invalid stored collaboration command JSON.');
     }
 
     private static function canonical(mixed $value): mixed

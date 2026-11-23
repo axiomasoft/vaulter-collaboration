@@ -139,7 +139,7 @@ final readonly class RoomOwnership
         $this->strictHead($document);
         $row = $this->clientIds($document)->where('session_id', $session)->first(['client_id', 'tenant_id', 'effective_subject', 'writer_kind']);
         if ($row !== null) {
-            if ($row->writer_kind !== 'browser' || (int) $row->tenant_id !== $tenant || $row->effective_subject !== $subject) {
+            if ($row->writer_kind !== 'browser' || LogTables::int($row->tenant_id) !== $tenant || $row->effective_subject !== $subject) {
                 throw new RoomWriteConflict('client_id_conflict');
             }
 
@@ -174,7 +174,7 @@ final readonly class RoomOwnership
         if ($existing !== null) {
             return LogTables::int($existing);
         }
-        $id = (int) $this->clientIds($document)->where('writer_kind', 'server')->max('client_id');
+        $id = LogTables::int($this->clientIds($document)->where('writer_kind', 'server')->max('client_id') ?? 0);
         do {
             if (++$id >= 0x80000000) {
                 throw new RoomWriteConflict('client_ids_exhausted');

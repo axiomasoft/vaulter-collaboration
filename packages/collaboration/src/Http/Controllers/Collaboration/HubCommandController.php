@@ -145,14 +145,18 @@ final readonly class HubCommandController
             throw $this->invalid('evidence');
         }
         $evidence = is_array($signed) ? ($signed['evidence'] ?? []) : [];
-        if ($kind === 'reject' ? ($updates !== [] || $reason !== 'precondition_failed')
-            : ($reason !== null || !is_array($evidence) || $evidence === [] || array_is_list($evidence))) {
+        if ($kind === 'reject') {
+            if ($updates !== [] || $reason !== 'precondition_failed') {
+                throw $this->invalid('evidence');
+            }
+            $evidence = [];
+        } elseif ($reason !== null || !is_array($evidence) || $evidence === [] || array_is_list($evidence)) {
             throw $this->invalid('evidence');
         }
         $envelopes = array_map(fn (mixed $row): UpdateEnvelope => $this->envelope($row, $generation), $updates);
 
         return HubProtocol::mark(new JsonResponse(
-            $this->journal->settle($id, $owner, $fence, $generation, $base, $fingerprint, $envelopes, $kind === 'reject' ? [] : $evidence, $reason, protocol: 'yjs/2'),
+            $this->journal->settle($id, $owner, $fence, $generation, $base, $fingerprint, $envelopes, $evidence, $reason, protocol: 'yjs/2'),
         ));
     }
 

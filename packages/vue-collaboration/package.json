@@ -45,9 +45,7 @@
   "scripts": {
     "build": "vue-tsc --noEmit && vite build",
     "test": "vitest run",
-    "typecheck": "vue-tsc --noEmit",
-    "api:surface:check": "node ../../scripts/release/npm-surface.mjs vue-collaboration",
-    "api:surface:update": "node ../../scripts/release/npm-surface.mjs vue-collaboration --update"
+    "typecheck": "vue-tsc --noEmit"
   },
   "peerDependencies": {
     "@vaulter/vue": "^1.0",

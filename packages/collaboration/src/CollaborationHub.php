@@ -218,7 +218,7 @@ final readonly class CollaborationHub
                 throw new RoomWriteConflict('strict_hub_required');
             }
 
-            return $head?->profile ?? 'standard';
+            return $head->profile ?? 'standard';
         });
     }
 

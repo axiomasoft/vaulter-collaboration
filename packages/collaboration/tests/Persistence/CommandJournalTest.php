@@ -52,10 +52,18 @@ it('retains a running intent on stale base and atomically commits bytes and one 
     $outbox = DB::table($tables->table('outbox'))->count();
     expect(fn () => $settle(1, 1))->toThrow(RoomWriteConflict::class, 'base_moved')
         ->and($journal->status($scope, 'A42')['state'])->toBe('running');
-    $accepted = $settle(2, 1);
+    $request = [
+        'kind' => 'commit', 'id' => $running['id'], 'fingerprint' => $running['fingerprint'],
+        'generation' => 0, 'owner_id' => $owner, 'owner_fence' => 1, 'base_seq' => 2,
+        'updates' => [['update_id' => $prepared->updateId, 'payload' => base64_encode($prepared->payload), 'sha256' => $prepared->sha256()]],
+    ];
+    Hub::call('commands/settle', $request + ['evidence' => ['invalid']], null)->assertUnprocessable();
+    $evidence = ['ranges' => [['window' => ' exact text ']]];
+    $accepted = Hub::call('commands/settle', $request + ['evidence' => $evidence], null)->assertOk()->json();
     expect($accepted)->toMatchArray(['state' => 'committed', 'base_seq' => 2, 'from_seq' => 3, 'to_seq' => 3])
         ->and($settle(2, 9))->toBe($accepted)
         ->and($register())->toBe($accepted)
+        ->and($journal->evidence($scope, $accepted['receipt_id'])['evidence'])->toBe($evidence)
         ->and($log->snapshot($node->getKey(), 0)->tail[2]['sha256'])->toBe($prepared->sha256())
         ->and(DB::table($tables->table('outbox'))->count())->toBe($outbox + 1);
 });
@@ -85,6 +93,32 @@ it('terminally rejects an intent after Edit is revoked and refuses replay after 
 
     $drive->access()->revoke($node->getKey(), $reader->id);
     expect(fn () => $journal->status($scope, 'A42'))->toThrow(NodeNotFoundException::class);
+});
+
+it('leaves a command running when its stored authority is malformed', function (): void {
+    Hub::configure();
+    $node = Hub::document();
+    $db = app(VaulterDatabase::class);
+    $db->write(fn () => Hub::aggregate($node)->forceFill(['write_mode' => 'journal'])->save());
+    $owner = (string) Str::uuid();
+    $db->transaction(function () use ($node, $owner): void {
+        $doc = app(CollaborativeState::class)->lock($node->getKey());
+        $rooms = app(RoomOwnership::class);
+        $rooms->selectProfile($doc, strict: true);
+        $rooms->acquire($doc, $owner);
+    });
+    $scope = new CommandActor(Actor::user(AccessTestHelpers::user())->ref(), null, 'test', 'writer', (string) $node->drive_id, (string) $node->getKey());
+    $journal = app(CommandJournal::class);
+    $command = $journal->register($scope, 'A42', (string) Str::uuid(), hash('sha256', 'proposal'), 0, 1, 0, ['atomic_effects' => []]);
+    $commands = DB::table(app(DatabaseOptions::class)->table('collaboration_commands'));
+    $commands->where('id', $command['id'])->update(['intent' => json_encode([
+        'principal_type' => ['invalid'], 'principal_id' => $scope->principal->id,
+        'tenant' => $scope->tenant, 'drive_id' => $scope->driveId, 'operation' => ['atomic_effects' => []],
+    ], JSON_THROW_ON_ERROR)]);
+
+    expect(fn () => $journal->settle($command['id'], $owner, 1, 0, 0, $command['fingerprint'], [], []))
+        ->toThrow(LogicException::class, 'Invalid stored collaboration command scope.')
+        ->and($journal->status($scope, 'A42'))->toBe($command);
 });
 
 it('rejects a full discovery batch of trashed documents and finds the next healthy target', function (): void {

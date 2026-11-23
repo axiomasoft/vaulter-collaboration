@@ -94,7 +94,7 @@
     "repositories": [
         {
             "type": "path",
-            "url": "../core",
+            "url": "../../../vaulter/packages/core",
             "options": {
                 "symlink": true,
                 "versions": {
@@ -104,7 +104,7 @@
         },
         {
             "type": "path",
-            "url": "../media",
+            "url": "../../../vaulter/packages/media",
             "options": {
                 "symlink": true,
                 "versions": {
@@ -114,7 +114,7 @@
         },
         {
             "type": "path",
-            "url": "../drive",
+            "url": "../../../vaulter/packages/drive",
             "options": {
                 "symlink": true,
                 "versions": {
@@ -124,7 +124,7 @@
         },
         {
             "type": "path",
-            "url": "../documents",
+            "url": "../../../vaulter/packages/documents",
             "options": {
                 "symlink": true,
                 "versions": {
@@ -141,7 +141,7 @@
         }
     },
     "scripts": {
-        "test": "../../scripts/t sqlite -p collaboration",
+        "test": "@composer --working-dir=../.. test",
         "test:types": "vendor/bin/pest --type-coverage --min=100",
         "lint": "vendor/bin/pint",
         "lint:check": "vendor/bin/pint --test",

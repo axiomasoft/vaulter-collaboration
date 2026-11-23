@@ -195,8 +195,8 @@ final readonly class UpdateLog
     {
         $this->rooms->protocol($locked);
         $head = $this->rooms->head($locked);
-        $checkpointSeq = $head?->checkpointSeq ?? 0;
-        $headSeq = $head?->headSeq ?? 0;
+        $checkpointSeq = $head->checkpointSeq ?? 0;
+        $headSeq = $head->headSeq ?? 0;
         // The transaction began with a plain read (the node, in lock()): on MySQL (REPEATABLE READ) a plain read here
         // would answer from that older snapshot and miss an append committed since, while the head FOR UPDATE sees
         // it. A locking read sees the committed rows, as every read after the lock does on PostgreSQL
@@ -229,7 +229,7 @@ final readonly class UpdateLog
             headSeq: $headSeq,
             tail: $tail,
             binding: $locked->binding ?? throw new LogicException('Missing stored binding.'),
-            profile: $head?->profile ?? 'standard',
+            profile: $head->profile ?? 'standard',
         );
     }
 
