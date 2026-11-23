@@ -42,12 +42,17 @@ final readonly class RoomTokens
         return $this->resolver->verifyToken($token, $protocol);
     }
 
+    public function isCurrent(CollaborationCall $call): bool
+    {
+        return !$call->permissionsVersion->olderThan($this->versions->current($call->ref->driveId));
+    }
+
     /**
      * @throws CollaborationConfigException without a usable key set or issuer
      *
      * @return array{token: string, room: string, exp: int, jti: string, scope: string, permissions_version: array{drive: int, global: int}}
      */
-    public function mint(ActorRef $principal, string $documentId, string $driveId, ?string $tenant, int $generation, int $schemaVersion, bool $writable, string $protocol, string $stateFormat, int $notAfter): array
+    public function mint(ActorRef $principal, string $documentId, string $driveId, ?string $tenant, int $generation, int $schemaVersion, bool $writable, string $protocol, string $stateFormat, int $notAfter, ?string $profile = null): array
     {
         $violation = $this->config->hubJwtKeysViolation();
         $kid = $this->config->hubJwtActiveKid();
@@ -88,7 +93,7 @@ final readonly class RoomTokens
                 'nbf' => $issuedAt,
                 'exp' => $exp,
                 'jti' => $jti,
-            ],
+            ] + ($profile === null ? [] : ['profile' => $profile]),
             key: $secret->reveal(),
             alg: 'HS256',
             keyId: $kid,

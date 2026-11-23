@@ -199,6 +199,7 @@ final readonly class CollaborationCallResolver
         $tenant = $claims['tenant'] ?? null;
         $jti = $claims['jti'] ?? null;
         $exp = $claims['exp'] ?? null;
+        $profile = $claims['profile'] ?? null;
         $version = PermissionVersion::fromClaim($claims['permissions_version'] ?? null);
 
         if (!is_string($room) || !is_string($subject) || $subject === ''
@@ -207,7 +208,8 @@ final readonly class CollaborationCallResolver
             || !array_key_exists('tenant', $claims)
             || !in_array($scope, [CollaborationCall::SCOPE_READ, CollaborationCall::SCOPE_WRITE], true)
             || !is_int($generation) || $generation < 0 || !is_int($schemaVersion) || $schemaVersion < 1 || ($tenant !== null && !is_string($tenant))
-            || !is_string($jti) || $jti === '' || !is_int($exp) || !$version instanceof PermissionVersion) {
+            || !is_string($jti) || $jti === '' || !is_int($exp) || !$version instanceof PermissionVersion
+            || ($profile !== null && (!is_string($profile) || preg_match('/^[a-z][a-z0-9_-]{0,31}$/D', $profile) !== 1))) {
             return null;
         }
 
@@ -230,6 +232,7 @@ final readonly class CollaborationCallResolver
             permissionsVersion: $version,
             jti: $jti,
             expiresAt: $exp,
+            profile: $profile,
         );
     }
 

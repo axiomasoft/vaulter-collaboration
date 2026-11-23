@@ -32,7 +32,7 @@ final readonly class RoomOwnership
 
     /** Select a profile when the new generation first obtains a head under the document lock. */
     #[Internal]
-    public function selectProfile(LockedDocumentState $document, bool $strict): Head
+    public function selectProfile(LockedDocumentState $document, bool $strict, ?string $nativeProtocol = null): Head
     {
         $head = $this->head($document);
         if ($head !== null) {
@@ -40,7 +40,8 @@ final readonly class RoomOwnership
         }
         $protocol = $this->protocol($document);
         $supportsTenant = $document->tenantId === null || (string) (int) $document->tenantId === $document->tenantId;
-        $profile = $strict && $supportsTenant && $protocol === 'yjs/2' && $document->writeMode === 'journal' ? 'strict' : 'standard';
+        $profile = $strict && (($supportsTenant && $protocol === 'yjs/2') || $protocol === $nativeProtocol)
+            && $document->writeMode === 'journal' ? 'strict' : 'standard';
         $now = $this->log->leaseClock();
         $this->log->table('collaboration_heads')->insert([
             'document_id' => Identity::key($document->documentId),

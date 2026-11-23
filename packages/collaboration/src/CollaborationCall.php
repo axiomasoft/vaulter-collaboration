@@ -45,6 +45,7 @@ final readonly class CollaborationCall
         public PermissionVersion $permissionsVersion,
         public string $jti,
         public int $expiresAt,
+        public ?string $profile = null,
     ) {}
 
     /** A read-only token never drives a write, whatever the live rights are. */

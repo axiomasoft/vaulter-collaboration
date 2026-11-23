@@ -297,13 +297,16 @@ final readonly class CommandJournal
      * @return array<string, mixed>
      */
     #[Internal]
-    public function settle(string $id, string $owner, int $fence, int $generation, int $base, string $fingerprint, array $updates, array $evidence, ?string $reject = null): array
+    public function settle(string $id, string $owner, int $fence, int $generation, int $base, string $fingerprint, array $updates, array $evidence, ?string $reject = null, ?string $protocol = null): array
     {
         $this->draining->assertAccepting();
 
-        return $this->db->transaction(function () use ($id, $owner, $fence, $generation, $base, $fingerprint, $updates, $evidence, $reject): array {
+        return $this->db->transaction(function () use ($id, $owner, $fence, $generation, $base, $fingerprint, $updates, $evidence, $reject, $protocol): array {
             $address = $this->row($id);
             $doc = $this->state->lock(Identity::stringify($address->resource_id));
+            if ($protocol !== null && $this->rooms->protocol($doc) !== $protocol) {
+                throw new RoomWriteConflict('unsupported_protocol');
+            }
             $head = $this->rooms->head($doc);
             $row = $this->row($id, lock: true);
             if (!hash_equals($this->fingerprint($row), $fingerprint)

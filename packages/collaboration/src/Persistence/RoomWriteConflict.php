@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Vaulter\Collaboration\Persistence;
 
-use Packman\Attributes\Internal;
+use Packman\Attributes\Api;
 use Packman\Errors\Data\ErrorDescriptor;
 use Packman\Errors\Enums\ErrorCategory;
 use Vaulter\Collaboration\Errors\CollaborationErrorCode;
@@ -12,7 +12,7 @@ use Vaulter\Exceptions\Concerns\ProvidesProblemDetails;
 use Vaulter\Exceptions\Contracts\ProblemException;
 use Vaulter\Exceptions\VaulterException;
 
-#[Internal]
+#[Api]
 final class RoomWriteConflict extends VaulterException implements ProblemException
 {
     use ProvidesProblemDetails;

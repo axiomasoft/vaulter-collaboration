@@ -152,7 +152,7 @@ final readonly class HubCommandController
         $envelopes = array_map(fn (mixed $row): UpdateEnvelope => $this->envelope($row, $generation), $updates);
 
         return HubProtocol::mark(new JsonResponse(
-            $this->journal->settle($id, $owner, $fence, $generation, $base, $fingerprint, $envelopes, $kind === 'reject' ? [] : $evidence, $reason),
+            $this->journal->settle($id, $owner, $fence, $generation, $base, $fingerprint, $envelopes, $kind === 'reject' ? [] : $evidence, $reason, protocol: 'yjs/2'),
         ));
     }
 
@@ -168,6 +168,9 @@ final readonly class HubCommandController
         $result = $this->db->transaction(function () use ($document, $generation, $operation): array {
             $locked = $this->state->lockByDocumentId($document) ?? throw new RoomWriteConflict('resource_unavailable');
             $this->rooms->assertGeneration($locked, $generation);
+            if ($this->rooms->protocol($locked) !== 'yjs/2') {
+                throw new RoomWriteConflict('unsupported_protocol');
+            }
 
             return $operation($locked);
         });
