@@ -21,6 +21,7 @@ use Vaulter\Documents\Data\Collaboration\CollaborationMode;
 use Vaulter\Documents\State\CollaborativeState;
 use Vaulter\Documents\State\LockedDocumentState;
 use Vaulter\Drive\Enums\Access\Ability;
+use Vaulter\Drive\Enums\DriveStatus;
 use Vaulter\Drive\Exceptions\Access\PermissionDeniedException;
 use Vaulter\Drive\Exceptions\Nodes\NodeNotFoundException;
 use Vaulter\Events\EventRecorder;
@@ -32,6 +33,8 @@ use Vaulter\ValueObjects\Access\ActorRef;
 #[Spi(SpiKind::Call)]
 final readonly class CommandJournal
 {
+    private const int TARGET_LIMIT = 16;
+
     #[Internal]
     public function __construct(
         private VaulterDatabase $db,
@@ -217,7 +220,7 @@ final readonly class CommandJournal
     #[Internal]
     public function targets(): array
     {
-        return $this->db->transaction(function (): array {
+        $this->db->transaction(function (): void {
             $now = $this->tables->timestamp($this->tables->leaseClock());
             // Tombstones retain their fingerprint and receipt identity; expired evidence and finished intents can be cleared.
             $expired = $this->table()->where('evidence_expires_at', '<=', $now)->whereNull('redacted_at')
@@ -228,13 +231,52 @@ final readonly class CommandJournal
             $this->table()->where('state', 'running')->whereNull('document_id')->update([
                 'state' => 'rejected', 'rejection_code' => 'resource_unavailable', 'finalized_at' => $now, 'intent' => null,
             ]);
+        });
 
-            return array_values($this->table()->where('state', 'running')->whereNotNull('document_id')
-                ->selectRaw('document_id, generation, min(registered_at) as first_registered')
-                ->groupBy('document_id', 'generation')->orderBy('first_registered')->orderBy('document_id')
-                ->limit(16)->get()->map(static fn (stdClass $row): array => [
-                    'document' => Identity::stringify($row->document_id), 'generation' => LogTables::int($row->generation),
-                ])->all());
+        $targets = [];
+        do {
+            $remaining = self::TARGET_LIMIT - count($targets);
+            $query = $this->table()->useWritePdo()->where('state', 'running')->whereNotNull('document_id');
+            foreach ($targets as $target) {
+                $query->whereNot(static fn (Builder $query): Builder => $query
+                    ->where('document_id', Identity::key($target['document']))->where('generation', $target['generation']));
+            }
+            $page = $query->selectRaw('document_id, generation, min(registered_at) as first_registered')
+                ->groupBy('document_id', 'generation')->orderBy('first_registered')->orderBy('document_id')->orderBy('generation')
+                ->limit($remaining)->get();
+            foreach ($page as $row) {
+                $document = Identity::stringify($row->document_id);
+                $generation = LogTables::int($row->generation);
+                if ($this->availableTarget($document, $generation)) {
+                    $targets[] = ['document' => $document, 'generation' => $generation];
+                }
+            }
+            // Rejected groups leave the pending set, so another page can fill any slots they occupied.
+        } while (count($targets) < self::TARGET_LIMIT && $page->count() === $remaining);
+
+        return $targets;
+    }
+
+    private function availableTarget(string $document, int $generation): bool
+    {
+        // Each target gets its own transaction so discovery never holds locks from multiple documents.
+        return $this->db->transaction(function () use ($document, $generation): bool {
+            $doc = $this->state->lockByDocumentId($document);
+            if ($doc !== null && !$doc->trashed && $doc->driveStatus === DriveStatus::Active) {
+                return true;
+            }
+
+            $commands = $this->tables->rows('collaboration_commands', $document, $generation)->where('state', 'running');
+            $rows = (clone $commands)->orderBy('id')->lockForUpdate()->get(['id', 'intent']);
+            $now = $this->tables->timestamp($this->tables->leaseClock());
+            foreach ($rows as $row) {
+                (clone $commands)->where('id', $row->id)->update([
+                    'state' => 'rejected', 'rejection_code' => 'resource_unavailable', 'finalized_at' => $now,
+                    'intent' => self::redactOperation($row),
+                ]);
+            }
+
+            return false;
         });
     }
 
@@ -294,11 +336,9 @@ final readonly class CommandJournal
             }
             $this->rooms->assertOwner($doc, $owner, $fence);
             $now = $this->tables->leaseClock();
-            $identity = self::json($row->intent);
-            unset($identity['operation']);
             $terminal = [
                 'owner_fence' => $fence, 'base_seq' => $base, 'finalized_at' => $this->tables->timestamp($now),
-                'intent' => json_encode($identity, JSON_THROW_ON_ERROR),
+                'intent' => self::redactOperation($row),
             ];
             if ($reject !== null) {
                 $terminal += ['state' => 'rejected', 'rejection_code' => $reject];
@@ -350,6 +390,14 @@ final readonly class CommandJournal
             new ActorRef($intent['principal_type'], $intent['principal_id']), $intent['tenant'],
             $row->project_scope, $row->effective_subject, $intent['drive_id'], Identity::stringify($row->resource_id),
         );
+    }
+
+    private static function redactOperation(stdClass $row): string
+    {
+        $identity = self::json($row->intent);
+        unset($identity['operation']);
+
+        return json_encode($identity, JSON_THROW_ON_ERROR);
     }
 
     private function table(): Builder

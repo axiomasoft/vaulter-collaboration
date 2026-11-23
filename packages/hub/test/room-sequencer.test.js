@@ -83,6 +83,90 @@ test('a partial command failure leaves the base untouched and a valid replacemen
   base.destroy()
 })
 
+test('an oversized command leaves the room unchanged without calling settlement', async (t) => {
+  const base = fixture()
+  const room = new Y.Doc()
+  const checkpoint = Buffer.from(Y.encodeStateAsUpdate(base)).toString('base64')
+  const sequence = createRoomSequencer({
+    room, generation: 3,
+    load: async () => ({ generation: 3, checkpoint, checkpoint_seq: 40, head_seq: 40, tail: [] }),
+    maxBytes: Y.encodeStateAsUpdateV2(base).length + 1,
+  })
+  t.after(() => {
+    sequence.close()
+    room.destroy()
+    base.destroy()
+  })
+  const settle = t.mock.fn(async () => ({ state: 'committed', to_seq: 40 }))
+  const command = {
+    id: 'command', command_id: 'A42', fingerprint: 'fingerprint',
+    intent: {
+      atomic_effects: [
+        { effect: 'replace_exact', block_id: 'terms', expected: '15', replacement: 'x'.repeat(1000) },
+      ],
+    },
+  }
+
+  await assert.rejects(sequence.runCommand(command, 2, 'vaulter/rich-text', settle), { code: 'document_too_large' })
+  assert.equal(settle.mock.callCount(), 0)
+  assert.equal(sequence.appliedSeq, 40)
+  assert.deepEqual(textOf(room).toDelta(), textOf(base).toDelta())
+})
+
+test('replaces a unique text run on either side of a hard break and verifies its evidence', async (t) => {
+  const base = fixture()
+  t.after(() => base.destroy())
+  const paragraph = base.getXmlFragment(field).get(0)
+  const hardBreak = new Y.XmlElement('hardBreak')
+  const second = new Y.XmlText('Then pay 🚀 25.')
+  paragraph.insert(1, [hardBreak, second])
+  const expectedBlock = {
+    type: 'paragraph', attrs: { blockId: 'terms' }, content: [
+      { type: 'text', text: 'Pay in 15 days', marks: [
+        { type: 'link', attrs: { href: 'https://example.com/' } },
+        { type: 'bold' },
+      ] },
+      { type: 'hardBreak' },
+      { type: 'text', text: 'Then pay 🚀 25.' },
+    ],
+  }
+  const effect = { effect: 'replace_exact', block_id: 'terms', expected: '15', replacement: '30' }
+  const prepared = prepareOnCopy(base, {
+    preconditions: [{ block_id: 'terms', expected_block: expectedBlock }],
+    atomic_effects: [effect, { ...effect, expected: '25', replacement: '50' }],
+  }, 2, 'A42')
+  Y.applyUpdate(base, prepared.bytes)
+
+  assert.deepEqual(paragraph.toArray(), [textOf(base), hardBreak, second])
+  assert.deepEqual(textOf(base).toDelta(), [
+    { insert: 'Pay in 30 days', attributes: { link: { href: 'https://example.com/' }, bold: {} } },
+  ])
+  assert.deepEqual(second.toDelta(), [{ insert: 'Then pay 🚀 50.' }])
+  const [firstRange, secondRange] = prepared.evidence.ranges
+  assert.equal(firstRange.start_utf16, 7)
+  assert.equal(secondRange.start_utf16, 'Pay in 30 days\uFFFCThen pay 🚀 '.length)
+  const log = {
+    generation: 3, head_seq: 42, checkpoint_seq: 42,
+    checkpoint: Buffer.from(Y.encodeStateAsUpdate(base)).toString('base64'), tail: [],
+  }
+  assert.deepEqual(await verifyCurrentRange(log, firstRange), {
+    text: '30', textPassed: true, marks: ['bold', 'link'], marksPassed: true,
+  })
+  assert.deepEqual(await verifyCurrentRange(log, secondRange), {
+    text: '50', textPassed: true, marks: [], marksPassed: true,
+  })
+
+  for (const expected of ['daysThen', 'days\uFFFCThen']) {
+    assert.throws(() => prepareOnCopy(base, { atomic_effects: [{ ...effect, expected }] }, 3, 'A43'), {
+      code: 'precondition_failed',
+    })
+  }
+  second.insert(second.length, ' 30')
+  assert.throws(() => prepareOnCopy(base, { atomic_effects: [{ ...effect, expected: '30' }] }, 3, 'A43'), {
+    code: 'precondition_failed',
+  })
+})
+
 test('a missing dependency cannot advance the room, and delete-only bytes do advance the position', async () => {
   const base = fixture()
   const client = new Y.Doc()

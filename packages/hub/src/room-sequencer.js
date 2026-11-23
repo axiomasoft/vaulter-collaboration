@@ -37,15 +37,26 @@ function blockOf(doc, id) {
   return matches[0]
 }
 
-function onlyText(block) {
-  const children = block.toArray()
-  if (children.length !== 1 || !(children[0] instanceof Y.XmlText)) {
-    throw refusal('precondition_failed')
-  }
-  const text = children[0]
+function textContent(text) {
   const runs = text.toDelta()
   if (runs.some((run) => typeof run.insert !== 'string')) throw refusal('precondition_failed')
-  return { text, runs, plain: runs.map((run) => run.insert).join('') }
+  return { runs, plain: runs.map((run) => run.insert).join('') }
+}
+
+function blockText(block) {
+  let plain = ''
+  const segments = []
+  for (const child of block.toArray()) {
+    if (child instanceof Y.XmlText) {
+      const content = textContent(child)
+      segments.push({ text: child, offset: plain.length, ...content })
+      plain += content.plain
+    } else {
+      // Office's block offsets count each inline leaf as one UTF-16 code unit.
+      plain += '\uFFFC'
+    }
+  }
+  return { plain, segments }
 }
 
 function findNode(root, blockId) {
@@ -76,13 +87,18 @@ function canonicalBlock(value) {
 }
 
 function exactReplacement(block, effect, textEvidence) {
-  const { text, runs, plain } = onlyText(block)
   const { expected, replacement } = effect
   if (typeof expected !== 'string' || expected === '' || typeof replacement !== 'string') {
     throw refusal('invalid_intent')
   }
-  const start = plain.indexOf(expected)
-  if (start < 0 || plain.indexOf(expected, start + 1) >= 0) throw refusal('precondition_failed')
+  const { plain: blockPlain, segments } = blockText(block)
+  const blockStart = blockPlain.indexOf(expected)
+  if (blockStart < 0 || blockPlain.indexOf(expected, blockStart + 1) >= 0) throw refusal('precondition_failed')
+  const blockEnd = blockStart + expected.length
+  const segment = segments.find(({ offset, plain }) => offset <= blockStart && blockEnd <= offset + plain.length)
+  if (!segment) throw refusal('precondition_failed')
+  const { text, runs, plain } = segment
+  const start = blockStart - segment.offset
   const end = start + expected.length
   let offset = 0
   const run = runs.find(({ insert }) => {
@@ -100,14 +116,14 @@ function exactReplacement(block, effect, textEvidence) {
   const trailing = [...plain.slice(end)][0] ?? ''
   const windowStart = start - leading.length
   const windowEnd = start + replacement.length + trailing.length
-  const after = onlyText(block).plain
+  const after = textContent(text).plain
   if (after !== plain.slice(0, start) + replacement + plain.slice(end)) {
     throw refusal('postcondition_failed')
   }
   const relative = (at, assoc) => Buffer.from(Y.encodeRelativePosition(Y.createRelativePositionFromTypeIndex(text, at, assoc))).toString('base64')
   textEvidence.push({
     block_id: effect.block_id,
-    start_utf16: start,
+    start_utf16: blockStart,
     length_utf16: replacement.length,
     replacement,
     attributes: replacement === '' ? {} : attrs,
@@ -130,8 +146,9 @@ export async function verifyCurrentRange(log, range) {
     const start = absolute(range.relative_start)
     const end = absolute(range.relative_end)
     if (!start || !end || start.type !== end.type || !(start.type instanceof Y.XmlText)
-      || start.type.parent?.getAttribute('blockId') !== range.block_id || start.index > end.index) return failed
-    const { plain, runs } = onlyText(start.type.parent)
+      || !(start.type.parent instanceof Y.XmlElement) || start.type.parent.getAttribute('blockId') !== range.block_id
+      || start.index > end.index) return failed
+    const { plain, runs } = textContent(start.type)
     const window = plain.slice(start.index, end.index)
     const from = start.index + range.window_leading_utf16
     const to = from + range.replacement.length
@@ -165,8 +182,12 @@ function appendParagraph(block, effect, id) {
   parent.insert(parent.toArray().indexOf(block) + 1, [paragraph])
 }
 
-/** Prepare on a disposable copy. Confirm the emitted bytes reproduce the entire checked tree. */
 export function prepareOnCopy(base, intent, clientId, commandId, type = 'vaulter/rich-text') {
+  return prepareCommand(base, intent, clientId, commandId, type, Infinity)
+}
+
+/** Prepare on a disposable copy. Confirm the emitted bytes reproduce the entire checked tree. */
+function prepareCommand(base, intent, clientId, commandId, type, maxBytes) {
   if (!Number.isInteger(clientId) || clientId < 1 || clientId >= 0x80000000 ||
       !Array.isArray(intent?.atomic_effects) || intent.atomic_effects.length === 0) {
     throw refusal('invalid_intent')
@@ -188,7 +209,9 @@ export function prepareOnCopy(base, intent, clientId, commandId, type = 'vaulter
           throw refusal('precondition_failed')
         }
       } else {
-        const { plain, runs } = onlyText(block)
+        const children = block.toArray()
+        if (children.length !== 1 || !(children[0] instanceof Y.XmlText)) throw refusal('precondition_failed')
+        const { plain, runs } = textContent(children[0])
         const marks = [...new Set(runs.flatMap((run) => Object.keys(run.attributes ?? {}).map((name) => name.split('--')[0])))].sort()
         if (plain !== condition.expected_text || !isDeepStrictEqual(marks, [...condition.expected_marks].sort())) {
           throw refusal('precondition_failed')
@@ -220,6 +243,7 @@ export function prepareOnCopy(base, intent, clientId, commandId, type = 'vaulter
     }
     const bytes = isDeepStrictEqual(before, after) ? null : Buffer.from(Y.encodeStateAsUpdate(copy, vector))
     if (bytes !== null) {
+      if (Y.encodeStateAsUpdateV2(copy).length > maxBytes) throw refusal('document_too_large')
       const replay = cloneRoom(base)
       try {
         Y.applyUpdate(replay, bytes)
@@ -386,7 +410,7 @@ export function createRoomSequencer({ room, generation, load, append, onBypass =
         await catchUp()
         let prepared
         try {
-          prepared = prepareOnCopy(room, command.intent, clientId, command.command_id, type)
+          prepared = prepareCommand(room, command.intent, clientId, command.command_id, type, maxBytes)
         } catch (error) {
           if (error?.code !== 'precondition_failed') throw error
           prepared = { reason: 'precondition_failed' }

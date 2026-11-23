@@ -18,6 +18,7 @@ use Vaulter\Documents\State\CollaborativeState;
 use Vaulter\Drive\Access\Roles\RoleRegistry;
 use Vaulter\Drive\Data\Access\GrantInput;
 use Vaulter\Drive\Exceptions\Nodes\NodeNotFoundException;
+use Vaulter\Drive\Facades\Vaulter;
 use Vaulter\Drive\Testing\Access\AccessTestHelpers;
 use Vaulter\ValueObjects\Access\Actor;
 
@@ -84,4 +85,48 @@ it('terminally rejects an intent after Edit is revoked and refuses replay after 
 
     $drive->access()->revoke($node->getKey(), $reader->id);
     expect(fn () => $journal->status($scope, 'A42'))->toThrow(NodeNotFoundException::class);
+});
+
+it('rejects a full discovery batch of trashed documents and finds the next healthy target', function (): void {
+    Hub::configure();
+    $db = app(VaulterDatabase::class);
+    $journal = app(CommandJournal::class);
+    $actor = Actor::user(AccessTestHelpers::user())->ref();
+    $proposal = (string) Str::uuid();
+    $digest = hash('sha256', 'proposal');
+    $trashedCommands = [];
+
+    $this->freezeTime();
+    for ($index = 0; $index <= 16; $index++) {
+        $node = Hub::document();
+        $aggregate = Hub::aggregate($node);
+        $db->write(fn () => $aggregate->forceFill(['write_mode' => 'journal'])->save());
+        $db->transaction(function () use ($node): void {
+            $doc = app(CollaborativeState::class)->lock($node->getKey());
+            app(RoomOwnership::class)->selectProfile($doc, strict: true);
+        });
+        $scope = new CommandActor($actor, null, 'test', 'writer', (string) $node->drive_id, (string) $node->getKey());
+        $command = $journal->register($scope, 'A42', $proposal, $digest, 0, 1, 0, ['atomic_effects' => []]);
+        if ($index < 16) {
+            $trashedDrive = Vaulter::drive($node->storage()->firstOrFail())->asSystem('journal test');
+            $trashedDrive->nodes()->trash($node->id);
+            $trashedNode = $node->id;
+            $trashedCommand = $command;
+            $trashedCommands[] = $command['id'];
+        }
+        $this->travel(1)->seconds();
+    }
+
+    $target = ['document' => (string) $aggregate->getKey(), 'generation' => 0];
+    expect($journal->targets())->toBe([$target])
+        ->and($journal->targets())->toBe([$target]);
+
+    $commands = DB::table(app(DatabaseOptions::class)->table('collaboration_commands'));
+    expect($commands->whereIn('id', $trashedCommands)->whereNotNull('document_id')->whereNotNull('finalized_at')
+        ->where('state', 'rejected')->where('rejection_code', 'resource_unavailable')->count())->toBe(16);
+
+    $trashedDrive->trash()->restore($trashedNode);
+    $replay = $journal->settle($trashedCommand['id'], (string) Str::uuid(), 1, 0, 0, $trashedCommand['fingerprint'], [], []);
+    expect($replay)->toMatchArray(['state' => 'rejected', 'rejection_code' => 'resource_unavailable', 'receipt_id' => null])
+        ->and($journal->targets())->toBe([$target]);
 });
