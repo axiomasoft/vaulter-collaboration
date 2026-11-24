@@ -2,7 +2,6 @@
   "name": "@vaulter/vue-collaboration",
   "version": "0.0.0",
   "description": "Realtime collaboration (Yjs over Hocuspocus) for @vaulter/vue: update envelopes, a bounded queue with acks, and save statuses.",
-  "license": "UNLICENSED",
   "vaulter": {
     "api": "1"
   },

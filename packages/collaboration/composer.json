@@ -39,12 +39,13 @@
         "opis/json-schema": "^2.4",
         "symfony/yaml": "^8.0",
         "axiomasoft/vaulter-media": "^1.0",
-        "larastan/larastan": "^3.12",
+        "larastan/larastan": "^3.15.0",
         "laravel/pint": "^1.32",
         "orchestra/testbench": "^11.3",
         "pestphp/pest": "^5.2",
         "pestphp/pest-plugin-type-coverage": "^5.1",
-        "phpstan/phpstan": "^2.2.16 <2.3.6",
+        "phpstan/phpstan": "^2.3.6",
+        "spaze/phpstan-disallowed-calls": "^4.15.1",
         "laravel/sanctum": "^4.0"
     },
     "autoload": {

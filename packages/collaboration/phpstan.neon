@@ -1,5 +1,6 @@
 includes:
     - vendor/larastan/larastan/extension.neon
+    - vendor/spaze/phpstan-disallowed-calls/extension.neon
 
 parameters:
     level: max
@@ -9,6 +10,49 @@ parameters:
 
     inferPrivatePropertyTypeFromConstructor: true
     reportUnmatchedIgnoredErrors: false
+
+    disallowedFunctionCalls:
+        -
+            function: 'parse_url()'
+            message: 'Use Uri\WhatWg\Url (PHP 8.5) or strict host/IDNA validation instead of parse_url().'
+        -
+            function: 'env()'
+            message: 'Read environment variables from configuration files.'
+            allowIn:
+                - '*/config/*.php'
+                - 'config/*.php'
+        -
+            function: 'set_config()'
+            message: 'Set PostgreSQL context only for the current transaction.'
+        -
+            function: 'hashtext()'
+            message: 'Use 64-bit hashtextextended(..., 0) instead of 32-bit hashtext().'
+        -
+            function:
+                - 'pg_advisory_lock()'
+                - 'pg_try_advisory_lock()'
+                - 'pg_advisory_unlock()'
+                - 'pg_advisory_unlock_all()'
+            message: 'Use transaction-scoped pg_advisory_xact_lock() instead of session advisory locks.'
+    disallowedStaticCalls:
+        -
+            method: 'Illuminate\Support\Facades\DB::transaction()'
+            message: 'Use VaulterDatabase::transaction() instead of DB::transaction().'
+    disallowedMethodCalls:
+        -
+            method: 'Illuminate\Database\ConnectionInterface::transaction()'
+            message: 'Use VaulterDatabase::transaction() instead of ConnectionInterface::transaction().'
+        -
+            method: 'ZipArchive::extractTo()'
+            message: 'ZipArchive::extractTo() is forbidden; use ZipCentralDirectoryGuard.'
+    disallowedNamespaces:
+        -
+            class: 'Illuminate\Foundation\Http\Middleware\VerifyCsrfToken'
+            message: 'Use Laravel 13 PreventRequestForgery.'
+    disallowedConstants:
+        -
+            constant: 'CURLOPT_RESOLVE'
+            message: 'Pin webhook connections with CURLOPT_CONNECT_TO.'
 
     ignoreErrors:
         # Eloquent dynamic builder/property magic that Larastan cannot fully model

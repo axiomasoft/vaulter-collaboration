@@ -91,7 +91,7 @@ async function buildExtensions({ redisClients = [] } = {}) {
     // Multi-instance document + awareness sync. ioredis parses the full URL (auth, db, rediss://
     // TLS); pub and sub need SEPARATE connections, so createClient mints one each.
     const { default: IORedis } = await import('ioredis')
-    const { Redis } = await import('@hocuspocus/extension-redis')
+    const { Redis } = await import('./redis.js')
     extensions.push(new Redis({
       identifier: config.instanceName,
       createClient: () => {
