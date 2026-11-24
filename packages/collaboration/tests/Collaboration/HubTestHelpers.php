@@ -29,7 +29,7 @@ use Vaulter\Testing\Fixtures\TestUser;
 /**
  * The hub's side of the protocol for tests: room tokens shaped exactly like
  * HocuspocusCollaborationDriver mints them, and requests signed the way
- * packages/collaboration/hub/src/backend.js signs them, with `X-Vaulter-Collab-Protocol: 2`. An unsigned or
+ * packages/hub/src/backend.js signs them, with `X-Vaulter-Collab-Protocol: 2`. An unsigned or
  * token-less request never reaches the controller.
  */
 final class HubTestHelpers

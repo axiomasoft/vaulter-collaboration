@@ -22,9 +22,6 @@
         "issues": "https://github.com/axiomasoft/vaulter-collaboration/issues",
         "source": "https://github.com/axiomasoft/vaulter-collaboration"
     },
-    "replace": {
-        "axioma-studio/vaulter-collaboration": "self.version"
-    },
     "require": {
         "axiomasoft/packman": "^0.1",
         "axiomasoft/packman-plugins": "^0.1",

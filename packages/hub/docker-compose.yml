@@ -8,7 +8,7 @@
 # The tag is REQUIRED (no floating `:latest` default) — set
 # VAULTER_COLLAB_IMAGE_TAG to a released vaulter-collaboration-hub version (semver, e.g. `1.2.3`;
 # in production prefer the immutable `@sha256:…` digest published alongside each release —
-# see .github/workflows/collaboration-hub-image.yml) before bringing this stack up.
+# see `release/packages.json` and `.github/workflows/ci.yml`) before bringing this stack up.
 #
 # Full env contract + security guidance (wss/TLS, Origin allowlist, scaling): see
 # docs/guides/hub.md.
@@ -57,8 +57,12 @@ services:
       VAULTER_COLLAB_DEBOUNCE_MS: ${VAULTER_COLLAB_DEBOUNCE_MS:-5000}
       VAULTER_COLLAB_MAX_DEBOUNCE_MS: ${VAULTER_COLLAB_MAX_DEBOUNCE_MS:-30000}
 
-      # — Scaling (multi-instance) — set a Redis URL + a unique instance name —
+      # — Scaling (multi-instance) / Strict profile —
+      # In strict profile (`VAULTER_COLLAB_STRICT_PROFILE=true`), leave VAULTER_COLLAB_REDIS_URL
+      # empty, set VAULTER_COLLAB_MODE=durable, and use VAULTER_COLLAB_CONTROL_REDIS_URL for control only.
+      VAULTER_COLLAB_STRICT_PROFILE: ${VAULTER_COLLAB_STRICT_PROFILE:-false}
       VAULTER_COLLAB_REDIS_URL: ${VAULTER_COLLAB_REDIS_URL:-}
+      VAULTER_COLLAB_CONTROL_REDIS_URL: ${VAULTER_COLLAB_CONTROL_REDIS_URL:-}
       VAULTER_COLLAB_INSTANCE_NAME: ${VAULTER_COLLAB_INSTANCE_NAME:-vaulter-hocuspocus}
 
       # — Shutdown — SIGTERM drains: writes stop, pending updates flush, then destroy() —

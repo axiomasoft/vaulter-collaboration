@@ -136,9 +136,14 @@ export function journalWriter(content, type) {
 export async function connect(hub, descriptor, registry = []) {
   const doc = new Y.Doc()
   const room = descriptor.options.room
+  const strictBinding = descriptor.mode === 'write' && descriptor.options?.writer_binding === true
+  const clientSession = strictBinding ? crypto.randomUUID() : null
+  let bindingReady = !strictBinding
   const client = {
     doc,
     descriptor,
+    clientSession,
+    boundClientId: null,
     provider: null,
     closes: [],
     refusals: [],
@@ -146,6 +151,15 @@ export async function connect(hub, descriptor, registry = []) {
     nacks: [],
     statuses: [],
     sent: [],
+    sendRawEnvelope(bytes, id = crypto.randomUUID()) {
+      const entry = { id, words: null }
+      client.sent.push(entry)
+      client.provider.sendStateless(JSON.stringify({
+        t: 'u', v: 2, g: descriptor.generation, id, h: sha256Hex(bytes), b: Buffer.from(bytes).toString('base64'),
+      }))
+
+      return entry
+    },
     edit(words) {
       let update = null
       const capture = (changed) => { update = changed }
@@ -171,7 +185,11 @@ export async function connect(hub, descriptor, registry = []) {
     },
   }
 
-  client.provider = new HocuspocusProvider({ url: hubUrl(hub), name: room, token: descriptor.token, document: doc })
+  const wsUrl = new URL(hubUrl(hub))
+  if (clientSession) {
+    wsUrl.searchParams.set('client_session_id', clientSession)
+  }
+  client.provider = new HocuspocusProvider({ url: wsUrl.href, name: room, token: descriptor.token, document: doc })
   client.provider.on('close', ({ event }) => client.closes.push({ code: event?.code, reason: event?.reason }))
   client.provider.on('authenticationFailed', ({ reason }) => client.refusals.push(reason))
   client.provider.on('stateless', ({ payload }) => {
@@ -182,7 +200,13 @@ export async function connect(hub, descriptor, registry = []) {
     } catch {
       return
     }
-    if (message?.t === 'ack') {
+    if (message?.t === 'binding') {
+      if (Number.isInteger(message.client_id)) {
+        doc.clientID = message.client_id
+        client.boundClientId = message.client_id
+      }
+      bindingReady = true
+    } else if (message?.t === 'ack') {
       client.acks.set(message.id, message.seq)
     } else if (message?.t === 'nack') {
       client.nacks.push({ id: message.id, code: message.code, retry: message.retry })
@@ -192,7 +216,7 @@ export async function connect(hub, descriptor, registry = []) {
   })
   registry.push(client)
 
-  await eventually(() => client.provider.isSynced, `sync of ${room} on ${hub}`)
+  await eventually(() => client.provider.isSynced && bindingReady, `sync of ${room} on ${hub}`)
 
   return client
 }

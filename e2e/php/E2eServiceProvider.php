@@ -4,8 +4,13 @@ declare(strict_types=1);
 
 namespace Vaulter\Collaboration\Tests\E2E;
 
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Http\Events\RequestHandled;
 use Illuminate\Http\Request;
+use Illuminate\Routing\Events\RouteMatched;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Str;
@@ -47,6 +52,7 @@ final class E2eServiceProvider extends ServiceProvider
 
         config([
             'vaulter.modules.collaboration' => true,
+            'vaulter-collaboration.strict_profile' => filter_var($_SERVER['VAULTER_COLLAB_STRICT_PROFILE'] ?? $_ENV['VAULTER_COLLAB_STRICT_PROFILE'] ?? false, FILTER_VALIDATE_BOOL),
             'vaulter-drive.access.permission_driver' => 'database',
             'vaulter.ids.strategy' => 'bigint',
             'vaulter.routes.middleware.authenticated' => ['api', E2eActingAs::class],
@@ -54,6 +60,12 @@ final class E2eServiceProvider extends ServiceProvider
             'vaulter.routes.rate_limits.public' => 6000,
             'vaulter-documents.revisions.checkpoint_interval_seconds' => 0,
         ]);
+        if (config('database.default') === 'sqlite') {
+            config([
+                'database.connections.sqlite.busy_timeout' => 5000,
+                'database.connections.sqlite.journal_mode' => 'WAL',
+            ]);
+        }
         // The strict stand can load the sibling Office packages to exercise the real SDK.
         $office = $_SERVER['VAULTER_E2E_OFFICE_PATH'] ?? $_ENV['VAULTER_E2E_OFFICE_PATH'] ?? null;
         if (is_string($office) && is_dir($office.'/packages/core/src')) {
@@ -77,10 +89,118 @@ final class E2eServiceProvider extends ServiceProvider
                 userType: AccessTestHelpers::user()->getMorphClass(),
             ));
             // A seed and a writer update suffice for the checkpoint tests.
-            config(['vaulter-collaboration.compaction.trigger_updates' => 2]);
+            config([
+                'vaulter-collaboration.compaction.trigger_updates' => 2,
+                'vaulter-collaboration.strict_profile' => filter_var($_SERVER['VAULTER_COLLAB_STRICT_PROFILE'] ?? $_ENV['VAULTER_COLLAB_STRICT_PROFILE'] ?? false, FILTER_VALIDATE_BOOL),
+            ]);
         });
 
+        if (filter_var($_SERVER['VAULTER_COLLAB_STRICT_PROFILE'] ?? $_ENV['VAULTER_COLLAB_STRICT_PROFILE'] ?? getenv('VAULTER_COLLAB_STRICT_PROFILE') ?: false, FILTER_VALIDATE_BOOL)) {
+            config(['vaulter-collaboration.strict_profile' => true]);
+        }
+
         Route::get('/e2e/health', static fn () => response()->json(['status' => 'ok']));
+
+        $reqQueries = 0;
+        $reqSqlMs = 0.0;
+        $reqLockWaits = [];
+
+        Event::listen(RouteMatched::class, static function () use (&$reqQueries, &$reqSqlMs, &$reqLockWaits): void {
+            $reqQueries = 0;
+            $reqSqlMs = 0.0;
+            $reqLockWaits = [];
+        });
+
+        DB::listen(static function (QueryExecuted $query) use (&$reqQueries, &$reqSqlMs, &$reqLockWaits): void {
+            $reqQueries++;
+            $reqSqlMs += (float) $query->time;
+            if (preg_match('/\b(?:for\s+update|lock\s+in\s+share\s+mode|pg_advisory_xact_lock)\b/i', $query->sql) === 1) {
+                $reqLockWaits[] = round((float) $query->time, 3);
+            }
+        });
+
+        $statsFile = storage_path('framework/cache/e2e_sql_stats.jsonl');
+
+        Event::listen(RequestHandled::class, static function (RequestHandled $event) use (&$reqQueries, &$reqSqlMs, &$reqLockWaits, $statsFile): void {
+            $path = ltrim($event->request->path(), '/');
+            if ($path === 'e2e/sql-stats' || (!str_contains($path, 'collaboration/hub/') && !str_starts_with($path, 'e2e/document/'))) {
+                return;
+            }
+            $cache = app('cache')->store();
+            $entry = [
+                'queries' => $reqQueries,
+                'totalSqlMs' => round($reqSqlMs, 3),
+                'lockWaitSamples' => $reqLockWaits,
+                'prepareSamples' => [],
+                'casAttempts' => 0,
+                'casRetries' => 0,
+            ];
+
+            $body = json_decode((string) $event->response->getContent(), true);
+            $status = $event->response->getStatusCode();
+            if (str_ends_with($path, 'collaboration/hub/commands/next') && is_array($body) && is_array($body['command'] ?? null)) {
+                $cmdId = $body['command']['command_id'] ?? null;
+                if (is_string($cmdId) && $cmdId !== '') {
+                    $cache->put('e2e:cmd_started:'.$cmdId, microtime(true), 120);
+                }
+            } elseif (str_ends_with($path, 'collaboration/hub/commands/settle') && $event->request->input('kind') !== 'seed') {
+                $entry['casAttempts'] = 1;
+                if ($status === 409 && is_array($body) && ($body['code'] ?? null) === 'base_moved') {
+                    $entry['casRetries'] = 1;
+                }
+                $cmdId = $event->request->input('id');
+                if (is_string($cmdId) && $cmdId !== '') {
+                    $startedAt = $cache->pull('e2e:cmd_started:'.$cmdId);
+                    if (is_float($startedAt) || is_int($startedAt)) {
+                        $entry['prepareSamples'][] = round((microtime(true) - (float) $startedAt) * 1000.0, 2);
+                    }
+                }
+            } elseif (str_ends_with($path, 'collaboration/hub/append') && $event->request->has('owner_fence') && $status === 409 && is_array($body) && ($body['code'] ?? null) === 'base_moved') {
+                $entry['casAttempts'] = 1;
+                $entry['casRetries'] = 1;
+            }
+
+            @file_put_contents($statsFile, json_encode($entry)."\n", FILE_APPEND | LOCK_EX);
+        });
+
+        Route::get('/e2e/sql-stats', static function (Request $request) use ($statsFile) {
+            $stats = [
+                'queries' => 0,
+                'totalSqlMs' => 0.0,
+                'lockWaitSamples' => [],
+                'prepareSamples' => [],
+                'casAttempts' => 0,
+                'casRetries' => 0,
+            ];
+            if (is_file($statsFile)) {
+                $lines = @file($statsFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [];
+                foreach ($lines as $line) {
+                    $row = json_decode($line, true);
+                    if (!is_array($row)) {
+                        continue;
+                    }
+                    $stats['queries'] += (int) ($row['queries'] ?? 0);
+                    $stats['totalSqlMs'] = round($stats['totalSqlMs'] + (float) ($row['totalSqlMs'] ?? 0.0), 3);
+                    $stats['casAttempts'] += (int) ($row['casAttempts'] ?? 0);
+                    $stats['casRetries'] += (int) ($row['casRetries'] ?? 0);
+                    foreach ($row['lockWaitSamples'] ?? [] as $w) {
+                        $stats['lockWaitSamples'][] = (float) $w;
+                    }
+                    foreach ($row['prepareSamples'] ?? [] as $p) {
+                        $stats['prepareSamples'][] = (float) $p;
+                    }
+                }
+                $stats['lockWaitSamples'] = array_slice($stats['lockWaitSamples'], -2000);
+                $stats['prepareSamples'] = array_slice($stats['prepareSamples'], -2000);
+            }
+            $waits = $stats['lockWaitSamples'];
+            $stats['lockWaitMs'] = $waits === [] ? 0.0 : round(max($waits), 3);
+            if ($request->query('reset') === '1' && is_file($statsFile)) {
+                @unlink($statsFile);
+            }
+
+            return response()->json($stats);
+        });
 
         if ($this->app->bound(Office::class)) {
             Route::post('/e2e/office/{drive}/{operation}', static function (Request $request, string $drive, string $operation) {
@@ -125,7 +245,7 @@ final class E2eServiceProvider extends ServiceProvider
             ));
             $writer = AccessTestHelpers::grant($node, RoleRegistry::WRITER, subjectId: 1);
             AccessTestHelpers::grant($node, RoleRegistry::READER, subjectId: 2);
-            AccessTestHelpers::grant($node, RoleRegistry::WRITER, subjectId: 3);
+            $secondWriter = AccessTestHelpers::grant($node, RoleRegistry::WRITER, subjectId: 3);
             DriveTestHelpers::actor($drive, 4);
             $document = DocumentTestHelpers::document($node);
 
@@ -138,6 +258,7 @@ final class E2eServiceProvider extends ServiceProvider
                 'second_writer_user' => 3,
                 'owner_user' => 4,
                 'writer_grant_id' => (string) $writer->getKey(),
+                'second_writer_grant_id' => (string) $secondWriter->getKey(),
             ]);
         });
 
@@ -148,17 +269,22 @@ final class E2eServiceProvider extends ServiceProvider
             $commandId = $request->input('command', 'A42');
             $replacement = $request->input('replacement', '30');
             $expected = $request->input('expected', '15');
-            $scope = new CommandActor(Actor::user(AccessTestHelpers::user())->ref(), null, 'A42', 'user-1',
+            $actorId = (int) $request->input('actor_user', 1);
+            $scope = new CommandActor(Actor::user(AccessTestHelpers::user($actorId))->ref(), null, 'A42', 'user-'.$actorId,
                 (string) $nodeModel->drive_id, $node);
+            $preconditions = $request->input('preconditions', [
+                ['block_id' => 'payment-terms', 'expected_text' => 'Аванс в течение '.$expected.' дней', 'expected_marks' => []],
+            ]);
+            $atomicEffects = $request->input('atomic_effects', [
+                ['effect' => 'replace_exact', 'block_id' => 'payment-terms', 'expected' => $expected, 'replacement' => $replacement],
+                ['effect' => 'insert_paragraph_after', 'block_id' => 'payment-terms', 'text' => 'Основание: решение финансового директора'],
+            ]);
             try {
                 $registered = app(CommandJournal::class)->register(
                     $scope, $commandId, $request->input('proposal', (string) Str::uuid()), hash('sha256', $expected.':'.$replacement),
-                    $document->collab_epoch, $document->schema_version, $request->input('position', 0), [
-                        'preconditions' => [['block_id' => 'payment-terms', 'expected_text' => 'Аванс в течение '.$expected.' дней', 'expected_marks' => []]],
-                        'atomic_effects' => [
-                            ['effect' => 'replace_exact', 'block_id' => 'payment-terms', 'expected' => $expected, 'replacement' => $replacement],
-                            ['effect' => 'insert_paragraph_after', 'block_id' => 'payment-terms', 'text' => 'Основание: решение финансового директора'],
-                        ],
+                    $document->collab_epoch, $document->schema_version, (int) $request->input('position', 0), [
+                        'preconditions' => $preconditions,
+                        'atomic_effects' => $atomicEffects,
                     ],
                 );
             } catch (ProblemException $failure) {
@@ -168,13 +294,49 @@ final class E2eServiceProvider extends ServiceProvider
             return response()->json($registered);
         });
 
-        Route::get('/e2e/document/{node}/command/{command}', static function (string $node, string $command) {
+        Route::get('/e2e/document/{node}/command/{command}', static function (Request $request, string $node, string $command) {
             abort_unless(config('vaulter-collaboration.strict_profile') === true, 404);
             $nodeModel = DriveTestHelpers::model($node);
-            $scope = new CommandActor(Actor::user(AccessTestHelpers::user())->ref(), null, 'A42', 'user-1',
+            $actorId = (int) $request->query('actor_user', 1);
+            $scope = new CommandActor(Actor::user(AccessTestHelpers::user($actorId))->ref(), null, 'A42', 'user-'.$actorId,
                 (string) $nodeModel->drive_id, $node);
+            try {
+                return response()->json(app(CommandJournal::class)->status($scope, $command));
+            } catch (ProblemException $failure) {
+                return response()->json(['code' => $failure->problemCode()], $failure->httpStatus());
+            }
+        });
 
-            return response()->json(app(CommandJournal::class)->status($scope, $command));
+        Route::post('/e2e/document/{node}/verify/{receipt}', static function (Request $request, string $node, string $receipt) {
+            abort_unless(config('vaulter-collaboration.strict_profile') === true, 404);
+            $nodeModel = DriveTestHelpers::model($node);
+            $actorId = (int) $request->input('actor_user', 1);
+            $mode = (string) $request->input('mode', 'at_commit');
+            $hubManagementUrl = $request->input('hub_url');
+            if (is_string($hubManagementUrl) && $hubManagementUrl !== '') {
+                config(['vaulter-collaboration.control.http.urls' => [$hubManagementUrl]]);
+            }
+            $scope = new CommandActor(Actor::user(AccessTestHelpers::user($actorId))->ref(), null, 'A42', 'user-'.$actorId,
+                (string) $nodeModel->drive_id, $node);
+            $journal = app(CommandJournal::class);
+            try {
+                if ($mode === 'current') {
+                    $result = $journal->verifyCurrent($scope, $receipt);
+
+                    return response()->json(['ok' => true, 'mode' => 'current', 'result' => $result]);
+                }
+                if ($mode === 'projection') {
+                    $document = Document::query()->where('node_id', $node)->firstOrFail();
+                    $projected = $journal->projected($scope, $document->collab_epoch, $document->state_version);
+
+                    return response()->json(['ok' => true, 'mode' => 'projection', 'result' => $projected]);
+                }
+                $evidence = $journal->evidence($scope, $receipt);
+
+                return response()->json(['ok' => true, 'mode' => 'at_commit', 'result' => $evidence]);
+            } catch (ProblemException $failure) {
+                return response()->json(['ok' => false, 'code' => $failure->problemCode()], $failure->httpStatus());
+            }
         });
 
         Route::post('/e2e/document/{node}/revoke/{grant}', static function (string $node, string $grant) {

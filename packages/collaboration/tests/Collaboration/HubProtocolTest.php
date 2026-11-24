@@ -30,7 +30,7 @@ use Vaulter\Drive\Testing\Access\AccessTestHelpers;
  * The hub protocol 2 end to end at the HTTP boundary: load → seed → append behind the
  * epoch fence, read-only enforced by the backend, and every call re-checking the live
  * document (trash, drive status, tenant, rights). The hub process itself is covered by
- * packages/collaboration/hub/test.
+ * packages/hub/test.
  */
 beforeEach(function (): void {
     Hub::configure();
@@ -244,7 +244,7 @@ it('replaces the snapshot and fences its old Yjs room when a writer reserves the
 
     $document = Hub::aggregate($node);
     expect($document->collab_epoch)->toBe(0)
-        ->and($document->payload?->content)->toBe(Hub::tiptap('Replaced by API'))
+        ->and($document->payload?->content)->toEqual(Hub::tiptap('Replaced by API'))
         ->and($document->syncState?->collab_state)->toBeNull();
     Hub::session($node)->assertCreated()->assertJsonPath('data.generation', 1);
     Hub::call('append', Hub::appendBody($node, 'stale', generation: 0), Hub::token($node, epoch: 0))

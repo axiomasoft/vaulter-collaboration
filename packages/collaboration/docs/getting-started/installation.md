@@ -2,7 +2,7 @@
 
 ## 3. Collaboration (optional)
 
-Realtime editing is three pieces: the Laravel module `axioma-studio/vaulter-collaboration`, the Node hub
+Realtime editing is three pieces: the Laravel module `axiomasoft/vaulter-collaboration`, the Node hub
 (`@vaulter/collaboration-hub`, the image `ghcr.io/axiomasoft/vaulter-collaboration-hub`) and the browser package
 `@vaulter/vue-collaboration`. The module is **opt-in**: enable it in `config/vaulter.php` and give it the hub URL and
 two different secrets, or the application refuses to boot with it active:
@@ -23,7 +23,7 @@ VAULTER_COLLAB_JWT_ACTIVE_KID=k1                       # the signing kid
 VAULTER_COLLAB_WEBHOOK_SECRET=<another random>     # shared with the hub
 ```
 
-Run the hub from the published image (the compose file is `packages/collaboration/hub/docker-compose.yml`) and install the
+Run the hub from the published image (the compose file is `packages/hub/docker-compose.yml`) and install the
 browser package:
 
 <!-- snippet: shell -->

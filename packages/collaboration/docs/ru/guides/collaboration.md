@@ -12,7 +12,7 @@ Vaulter редактирует **узлы-документы** (`kind = document
 
 | Часть | Что это |
 |---|---|
-| `axioma-studio/vaulter-collaboration` | Laravel-модуль (`Vaulter\Collaboration\`): драйвер Yjs, room-токен, протокол хаба, журнал обновлений, команды drain и prune. Opt-in. |
+| `axiomasoft/vaulter-collaboration` | Laravel-модуль (`Vaulter\Collaboration\`): драйвер Yjs, room-токен, протокол хаба, журнал обновлений, команды drain и prune. Opt-in. |
 | `@vaulter/collaboration-hub` | Node-хаб (Hocuspocus + Yjs), поставляется образом `ghcr.io/axiomasoft/vaulter-collaboration-hub` — см. [Хаб коллаборации](./hub). |
 | `@vaulter/vue-collaboration` | Браузерная часть: конверты обновлений, очередь повторов, статус сохранения — [ниже](#обвязка-фронтенда-vaulter-vue-collaboration). |
 
@@ -30,7 +30,7 @@ Vaulter редактирует **узлы-документы** (`kind = document
 <!-- snippet: shell -->
 
 ```bash
-composer require axioma-studio/vaulter-collaboration
+composer require axiomasoft/vaulter-collaboration
 ```
 
 Модуль **opt-in** (он открывает сетевой канал и требует секреты). Включите его и задайте URL хаба и оба секрета; активный
@@ -277,7 +277,7 @@ query-параметры. Хост, который подменяет `createHoc
 
 `onLoadDocument` хаба проигрывает чекпоинт и зафиксированный хвост. Поколение без чекпоинта и журнала (новое или только
 что восстановленное до ревизии без состояния) строится из JSON **один раз** на сервере через `@hocuspocus/transformer` и
-схему TipTap хаба (`packages/collaboration/hub/src/schema.js`) и добавляется первой записью журнала до того, как его увидит
+схему TipTap хаба (`packages/hub/src/schema.js`) и добавляется первой записью журнала до того, как его увидит
 клиент. Seed fail-closed:
 
 - **Ничего не режется молча.** ProseMirror отбрасывает атрибуты, которых нет в схеме. Документ, чей JSON схема хаба не

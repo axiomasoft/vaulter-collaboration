@@ -175,10 +175,12 @@ final readonly class CompactionLeases
      */
     private function scan(Closure $filter, Carbon $now, string $protocol): Generator
     {
+        $cutoff = $this->log->timestamp($now->copy()->utc());
+
         return $this->log->scan(static fn (Builder $query): Builder => $filter($query)
             ->whereNull('retired_at')
             ->where('protocol', $protocol)
-            ->where(static fn (Builder $query): Builder => $query->whereNull('lease_expires_at')->orWhere('lease_expires_at', '<=', $now)));
+            ->where(static fn (Builder $query): Builder => $query->whereNull('lease_expires_at')->orWhere('lease_expires_at', '<=', $cutoff)));
     }
 
     /** Whether the uncheckpointed log of `$head` reached a compaction trigger at `$now`. */
@@ -240,7 +242,7 @@ final readonly class CompactionLeases
             $this->log->rows('collaboration_heads', $locked->documentId, $locked->generation)->update([
                 'lease_token' => $token,
                 'lease_owner' => $hubId,
-                'lease_expires_at' => $expiresAt,
+                'lease_expires_at' => $this->log->timestamp($expiresAt),
                 'lease_through_seq' => $head->headSeq,
                 'updated_at' => $now,
             ]);

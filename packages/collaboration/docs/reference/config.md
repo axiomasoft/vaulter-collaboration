@@ -2,7 +2,7 @@
 
 ## Collaboration — `vaulter-collaboration.*`
 
-The `axioma-studio/vaulter-collaboration` package has a config file of its own (publish tag `vaulter-collaboration-config`)
+The `axiomasoft/vaulter-collaboration` package has a config file of its own (publish tag `vaulter-collaboration-config`)
 and is an opt-in module: it is active only when `vaulter.modules.collaboration` is `true` and then needs the hub URL and
 both secrets. Yjs updates are the source of truth; TipTap JSON is the projection of a checkpoint.
 

@@ -1,9 +1,9 @@
 # Хаб коллаборации (Docker)
 
 Node-сервис, на котором работает **совместное редактирование документов** Vaulter в реальном времени (Yjs/TipTap),
-`@vaulter/collaboration-hub` (`packages/collaboration/hub`). Это Hocuspocus плюс протокол 2 Vaulter: он загружает комнату
+`@vaulter/collaboration-hub` (`packages/hub`). Это Hocuspocus плюс протокол 2 Vaulter: он загружает комнату
 из журнала обновлений бэкенда, добавляет каждое обновление через бэкенд и подтверждает только зафиксированную квитанцию.
-Laravel-сторона — модуль `axioma-studio/vaulter-collaboration`; установка, конфиг `vaulter-collaboration` и модель
+Laravel-сторона — модуль `axiomasoft/vaulter-collaboration`; установка, конфиг `vaulter-collaboration` и модель
 сохранности описаны в [Совместном редактировании](./collaboration).
 
 > **Reverb — не транспорт коллаборации.** Laravel Reverb — общая шина вещания (уведомления, присутствие, активность).
@@ -28,7 +28,7 @@ services:
 
 Образ **не привязан к бэкенду**: он аутентифицирует и сохраняет, обращаясь обратно в *ваше* Laravel-приложение, поэтому один
 образ работает во всех проектах, встраивающих Vaulter. Git-тег образа — `vaulter-collaboration-hub-v*`, workflow —
-`.github/workflows/collaboration-hub-image.yml`.
+`.github/workflows/ci.yml`.
 
 ## Как это устроено
 
@@ -310,8 +310,8 @@ origin; один и тот же тег `ghcr.io/axiomasoft/vaulter-collaboration
 
 ## Локальная разработка и стенды
 
-Репозиторий поставляет исходники в `packages/collaboration/hub/` и `docker-compose.yml`, который может либо брать
-опубликованный образ, либо собирать `build: .` из исходников. В `packages/collaboration/hub`: `npm run check`
+Репозиторий поставляет исходники в `packages/hub/` и `docker-compose.yml`, который может либо брать
+опубликованный образ, либо собирать `build: .` из исходников. В `packages/hub`: `npm run check`
 (синтаксис), `npm test` (unit-набор `node:test` против заглушки бэкенда; работающий стенд не нужен). Два скрипта требуют
 настоящий стек:
 

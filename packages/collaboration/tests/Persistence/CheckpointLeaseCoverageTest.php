@@ -75,4 +75,12 @@ it('rejects a lease at its deadline even when the PHP clock on PostgreSQL is beh
     expect(fn () => Compaction::publish($lease))
         ->toThrow(CollaborationCheckpointConflictException::class, CollaborationCheckpointConflictException::LEASE);
     expect(Compaction::seqs($node))->toBe([1]);
+
+    if ($postgres) {
+        $column = app(VaulterDatabase::class)->connection()->selectOne(
+            "select data_type, datetime_precision from information_schema.columns where table_schema = 'public' and table_name = 'v_collaboration_heads' and column_name = 'lease_expires_at'",
+        );
+        expect($column?->data_type)->toBe('timestamp with time zone')
+            ->and((int) $column?->datetime_precision)->toBe(6);
+    }
 });

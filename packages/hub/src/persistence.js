@@ -205,7 +205,7 @@ export function buildSeed(loaded, clientId = null) {
     seed.destroy()
     throw new Error(
       `Collaboration seed refused: the hub's TipTap schema would drop ${lost.join(', ')} from the document. `
-      + 'Add the extension that declares them to packages/collaboration/hub/src/schema.js (see the README).',
+      + 'Add the extension that declares them to packages/hub/src/schema.js (see the README).',
     )
   }
 

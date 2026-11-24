@@ -168,7 +168,7 @@ export function projectionOf(document, type) {
     throw new CompactionError(
       REFUSAL.PROJECTION_LOSS,
       `The hub's TipTap schema for ${type} would drop ${lost.join(', ')} from the projection. `
-      + 'Add the extension that declares them to packages/collaboration/hub/src/schema.js (see the README).',
+      + 'Add the extension that declares them to packages/hub/src/schema.js (see the README).',
     )
   }
 

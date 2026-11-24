@@ -1,5 +1,5 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { createHmac, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { once } from 'node:events'
@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import * as Y from 'yjs'
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test'
 import { append, leaseCompaction, load, publishCheckpoint } from '../../packages/hub/src/backend.js'
 import { compactLease } from '../../packages/hub/src/compaction.js'
@@ -45,17 +46,69 @@ async function journal(request: APIRequestContext, node: string): Promise<{
   return res.json()
 }
 
+let localHub: ChildProcess | undefined
+
 async function killHub() {
+  if (process.env.VAULTER_E2E_SPAWN_HUB === '1') {
+    const child = localHub
+    if (child && child.exitCode === null && child.signalCode === null) {
+      const ended = once(child, 'exit')
+      child.kill('SIGKILL')
+      await ended
+    }
+    localHub = undefined
+    return
+  }
   await run('docker', ['compose', '-f', composeFile, 'kill', '-s', 'SIGKILL', 'hub'])
 }
 
 async function startHub() {
+  if (process.env.VAULTER_E2E_SPAWN_HUB === '1') {
+    const hubPort = process.env.VAULTER_E2E_HUB_PORT ?? '18234'
+    const managementPort = String(Number(hubPort) + 1)
+    const cli = fileURLToPath(new URL('../../packages/hub/src/cli.js', import.meta.url))
+    localHub = spawn(process.execPath, [cli, 'serve'], {
+      env: {
+        ...process.env,
+        NODE_ENV: 'development',
+        VAULTER_COLLAB_PORT: hubPort,
+        VAULTER_COLLAB_MANAGEMENT_PORT: managementPort,
+        VAULTER_LARAVEL_WEBHOOK_URL: API,
+        VAULTER_COLLAB_WEBHOOK_SECRET: process.env.VAULTER_COLLAB_WEBHOOK_SECRET ?? 'e2e-collab-webhook-secret',
+        VAULTER_COLLAB_DEBOUNCE_MS: '200',
+        VAULTER_COLLAB_MAX_DEBOUNCE_MS: '1000',
+        VAULTER_COLLAB_FLUSH_INTERVAL_MS: '200',
+        VAULTER_COLLAB_COMPACTION_INTERVAL_MS: '500',
+        VAULTER_COLLAB_THROTTLE: '1000',
+      },
+      stdio: 'ignore',
+    })
+    for (let i = 0; i < 100; i++) {
+      try {
+        const res = await fetch(`http://127.0.0.1:${managementPort}/livez`)
+        if (res.ok) return
+      } catch {
+        // wait
+      }
+      await new Promise(r => setTimeout(r, 100))
+    }
+    throw new Error(`Local hub did not become ready on :${managementPort}`)
+  }
   await run('docker', ['compose', '-f', composeFile, 'up', '-d', '--wait', '--no-deps', 'hub'])
 }
 
 async function restartHub() {
   await killHub()
   await startHub()
+}
+
+if (process.env.VAULTER_E2E_SPAWN_HUB === '1' && process.env.VAULTER_E2E_STRICT !== '1') {
+  test.beforeAll(async () => {
+    await startHub()
+  })
+  test.afterAll(async () => {
+    await killHub()
+  })
 }
 
 /** Поднять свежую сцену: storage + документ-узел + гранты (writer=1, viewer=2). */
@@ -92,12 +145,12 @@ if (process.env.VAULTER_E2E_STRICT === '1') {
       const args = withBarrier ? ['--import', barrier, cli, 'serve'] : [cli, 'serve']
       const child = spawn(process.execPath, args, {
         env: {
-          ...process.env, NODE_ENV: 'development', VAULTER_COLLAB_STRICT_PROFILE: 'true',
+          ...process.env, NODE_ENV: 'development', VAULTER_COLLAB_MODE: 'durable', VAULTER_COLLAB_STRICT_PROFILE: 'true',
           VAULTER_COLLAB_REDIS_URL: '', VAULTER_COLLAB_CONTROL_REDIS_URL: '',
           VAULTER_COLLAB_INSTANCE_NAME: name, VAULTER_COLLAB_PORT: hubPort,
           VAULTER_COLLAB_MANAGEMENT_PORT: String(managementPort),
           VAULTER_LARAVEL_WEBHOOK_URL: API, VAULTER_A42_BARRIERS: directory,
-          VAULTER_COLLAB_WEBHOOK_SECRET: 'e2e-collab-webhook-secret',
+          VAULTER_COLLAB_WEBHOOK_SECRET: process.env.VAULTER_COLLAB_WEBHOOK_SECRET ?? 'e2e-collab-webhook-secret',
           VAULTER_COLLAB_THROTTLE: '1000',
         },
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -253,6 +306,355 @@ if (process.env.VAULTER_E2E_STRICT === '1') {
       await stop()
       await testInfo.attach('hub-output', { body: output, contentType: 'text/plain' })
       await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  test('strict 11 variants: 4412 two-hub handoff, clientID=100, partial failure, revocations, projection, restore & offline merge', async ({ browser, request, baseURL }) => {
+    test.setTimeout(120_000)
+    const hubPortA = process.env.VAULTER_E2E_HUB_PORT ?? '47134'
+    const hubPortB = String(Number(hubPortA) + 10)
+    const mgmtA = Number(hubPortA) + 1
+    const mgmtB = Number(hubPortB) + 1
+    const secret = process.env.VAULTER_COLLAB_WEBHOOK_SECRET ?? 'e2e-collab-webhook-secret'
+    const cli = fileURLToPath(new URL('../../packages/hub/src/cli.js', import.meta.url))
+    const hubs: ChildProcess[] = []
+    function spawnStrict(name: string, port: string, mgmt: number) {
+      const child = spawn(process.execPath, [cli, 'serve'], {
+        env: {
+          ...process.env, NODE_ENV: 'development', VAULTER_COLLAB_STRICT_PROFILE: 'true',
+          VAULTER_COLLAB_MODE: 'durable', VAULTER_COLLAB_REDIS_URL: '', VAULTER_COLLAB_CONTROL_REDIS_URL: '',
+          VAULTER_COLLAB_INSTANCE_NAME: name, VAULTER_COLLAB_PORT: port, VAULTER_COLLAB_MANAGEMENT_PORT: String(mgmt),
+          VAULTER_LARAVEL_WEBHOOK_URL: API, VAULTER_COLLAB_WEBHOOK_SECRET: secret, VAULTER_COLLAB_THROTTLE: '1000',
+          VAULTER_COLLAB_COMPACTION_INTERVAL_MS: '600000', VAULTER_COLLAB_READY_BACKEND_TTL_MS: '610000',
+        },
+        stdio: 'ignore',
+      })
+      hubs.push(child)
+      return child
+    }
+    async function waitLive(mgmt: number) {
+      await expect.poll(async () => {
+        try { return (await request.get(`http://127.0.0.1:${mgmt}/livez`)).ok() } catch { return false }
+      }).toBe(true)
+    }
+    function signedControl(body: object) {
+      const raw = JSON.stringify(body)
+      const ts = String(Math.floor(Date.now() / 1000))
+      const sig = createHmac('sha256', secret).update(`${ts}.${raw}`).digest('hex')
+      return { raw, headers: { 'Content-Type': 'application/json', 'X-Vaulter-Collab-Timestamp': ts, 'X-Vaulter-Collab-Signature': sig } }
+    }
+
+    const ctxA = await browser.newContext()
+    const ctxB = await browser.newContext()
+    try {
+      spawnStrict('strict-a', hubPortA, mgmtA)
+      spawnStrict('strict-b', hubPortB, mgmtB)
+      await Promise.all([waitLive(mgmtA), waitLive(mgmtB)])
+
+      // 1. Browser 4412 two-hub handoff + clientID=100 rejection
+      const handoffScene = await (await request.get(`${BACKEND}/e2e/setup?scenario=A42`)).json() as Scene & { second_writer_grant_id: string }
+      const pageA = await ctxA.newPage()
+      let wsTarget = `ws://127.0.0.1:${hubPortA}`
+      const closeCodes: number[] = []
+      await pageA.routeWebSocket((url) => url.searchParams.get('protocol') === '2', (ws) => {
+        const upstream = new WebSocket(`${wsTarget}${new URL(ws.url()).search}`)
+        upstream.binaryType = 'arraybuffer'
+        const pending: (string | Buffer)[] = []
+        upstream.addEventListener('open', () => {
+          for (const msg of pending.splice(0)) upstream.send(msg)
+        })
+        upstream.addEventListener('message', (ev) => ws.send(typeof ev.data === 'string' ? ev.data : Buffer.from(ev.data)))
+        upstream.addEventListener('close', (ev) => {
+          closeCodes.push(ev.code)
+          ws.close({ code: ev.code, reason: ev.reason })
+        })
+        ws.onMessage((msg) => {
+          if (upstream.readyState === 1) upstream.send(msg)
+          else if (upstream.readyState === 0) pending.push(msg)
+        })
+        ws.onClose(() => upstream.close())
+      })
+      await pageA.goto(`${baseURL}/?node=${handoffScene.node_id}&user=1`)
+      await expect(pageA.getByTestId('status')).toHaveText('connected:writable')
+      const j0 = await journal(request, handoffScene.node_id)
+      expect(j0.owner_fence).toBeGreaterThanOrEqual(1)
+
+      // Trigger 4412 handoff on Hub A -> route next WS connect to Hub B
+      const sess = await session(BACKEND, handoffScene.node_id, 1)
+      wsTarget = `ws://127.0.0.1:${hubPortB}`
+      const ctrl = signedControl({ v: 1, type: 'handoff_request', room: sess.options.room, owner_fence: j0.owner_fence })
+      const ctrlReply = await request.post(`http://127.0.0.1:${mgmtA}/control`, { data: ctrl.raw, headers: ctrl.headers })
+      expect(ctrlReply.ok()).toBe(true)
+      await expect.poll(() => closeCodes.includes(4412)).toBe(true)
+      await expect(pageA.getByTestId('status')).toHaveText('connected:writable', { timeout: 15_000 })
+      await pageA.locator('[data-block-id="bank"]').click()
+      await pageA.keyboard.press('End')
+      await pageA.keyboard.type('!')
+      await expect(pageA.getByTestId('save-status')).toHaveText('saved')
+
+      // stale_owner: old fence 1 rejected after Hub B acquired fence >= 2
+      const staleSettle = signedControl({
+        document_id: handoffScene.node_id,
+        generation: j0.generation,
+        owner_id: randomUUID(),
+        owner_fence: j0.owner_fence,
+        base_seq: j0.head_seq,
+        kind: 'reject',
+        id: randomUUID(),
+        fingerprint: '0'.repeat(64),
+        reason: 'precondition_failed',
+        updates: [],
+      })
+      const staleRes = await request.post(`${API}/collaboration/hub/commands/settle`, {
+        data: staleSettle.raw,
+        headers: { ...staleSettle.headers, 'X-Vaulter-Collab-Protocol': '2' },
+      })
+      expect(staleRes.status()).toBe(409)
+
+      // clientID=100 forgery rejection
+      const forgedDoc = new Y.Doc()
+      forgedDoc.clientID = 100
+      const p = new Y.XmlElement('paragraph')
+      p.insert(0, [new Y.XmlText('FORGED-100')])
+      let forgedBytes: Uint8Array = new Uint8Array()
+      forgedDoc.on('update', (bytes: Uint8Array) => { forgedBytes = bytes })
+      forgedDoc.getXmlFragment('default').push([p])
+      forgedDoc.destroy()
+      const beforeForge = await journal(request, handoffScene.node_id)
+      const client = await (await import('../../packages/hub/test/support/live.js')).connect(`ws://127.0.0.1:${hubPortB}`, sess)
+      const forged = client.sendRawEnvelope(forgedBytes)
+      await expect.poll(() => client.nacks.some((n: { id: string, code: string }) => n.id === forged.id && n.code === 'client_id_conflict')).toBe(true)
+      client.destroy()
+      expect((await journal(request, handoffScene.node_id)).head_seq).toBe(beforeForge.head_seq)
+
+      // 2. partial_patch_failure (2nd effect fails on copy -> 0 live writes)
+      const partialRes = await request.post(`${BACKEND}/e2e/document/${handoffScene.node_id}/command`, {
+        data: {
+          command: 'A42-partial',
+          position: beforeForge.head_seq,
+          atomic_effects: [
+            { effect: 'replace_exact', block_id: 'payment-terms', expected: '15', replacement: '30' },
+            { effect: 'replace_exact', block_id: 'missing-block', expected: 'x', replacement: 'y' },
+          ],
+        },
+      })
+      expect(partialRes.ok()).toBe(true)
+      await expect.poll(async () => (await (await request.get(`${BACKEND}/e2e/document/${handoffScene.node_id}/command/A42-partial`)).json())?.state).toBe('rejected')
+      await expect(pageA.locator('[data-block-id="payment-terms"]')).toContainText('15')
+      await expect(pageA.locator('[data-block-id="A42-p1"]')).toHaveCount(0)
+      expect((await journal(request, handoffScene.node_id)).head_seq).toBe(beforeForge.head_seq)
+
+      // 3. edit_revoked, read_revoked, projection_behind
+      // Temporarily stop hubs so A42-edit-rev cannot be settled before revoke completes.
+      await Promise.all(hubs.splice(0).map(async (child) => {
+        if (child.exitCode === null && child.signalCode === null) {
+          const ended = once(child, 'exit')
+          child.kill('SIGKILL')
+          await ended
+        }
+      }))
+      const revScene = await (await request.get(`${BACKEND}/e2e/setup?scenario=A42`)).json() as Scene & { second_writer_grant_id: string }
+      await session(BACKEND, revScene.node_id, 3)
+      const editRevoked = await request.post(`${BACKEND}/e2e/document/${revScene.node_id}/command`, {
+        data: { command: 'A42-edit-rev', actor_user: 3, position: 0 },
+      })
+      expect(editRevoked.ok()).toBe(true)
+      expect((await request.post(`${BACKEND}/e2e/document/${revScene.node_id}/revoke/${revScene.second_writer_grant_id}`)).status()).toBe(204)
+      spawnStrict('strict-b', hubPortB, mgmtB)
+      await waitLive(mgmtB)
+      await expect.poll(async () => {
+        const r = await request.get(`${BACKEND}/e2e/document/${revScene.node_id}/command/A42-edit-rev?actor_user=3`, { headers: { Accept: 'application/json' } })
+        return r.ok() ? (await r.json())?.rejection_code : (r.status() === 403 || r.status() === 404 ? 'edit_revoked' : null)
+      }).toBe('edit_revoked')
+      expect((await journal(request, revScene.node_id)).head_seq).toBe(0)
+
+      const cmdCommit = await request.post(`${BACKEND}/e2e/document/${revScene.node_id}/command`, {
+        data: { command: 'A42-read-rev', actor_user: 1, position: 0 },
+      })
+      expect(cmdCommit.ok()).toBe(true)
+      let committedStatus: { state: string, receipt_id: string, to_seq: number } | undefined
+      await expect.poll(async () => {
+        committedStatus = await (await request.get(`${BACKEND}/e2e/document/${revScene.node_id}/command/A42-read-rev?actor_user=1`)).json()
+        return committedStatus?.state
+      }).toBe('committed')
+      const projBehind = await request.post(`${BACKEND}/e2e/document/${revScene.node_id}/verify/${committedStatus!.receipt_id}`, {
+        data: { mode: 'projection', actor_user: 1 },
+      })
+      expect(projBehind.status()).toBe(409)
+      expect((await request.post(`${BACKEND}/e2e/document/${revScene.node_id}/revoke/${revScene.writer_grant_id}`)).status()).toBe(204)
+      const afterReadRevoke = await request.post(`${BACKEND}/e2e/document/${revScene.node_id}/verify/${committedStatus!.receipt_id}`, {
+        data: { mode: 'at_commit', actor_user: 1 },
+      })
+      expect(afterReadRevoke.status()).toBe(404)
+
+      // 4. generation_restored (restore before final settle -> 0 writes in new gen) & late_delivery_after_restore
+      const genRestScene = await (await request.get(`${BACKEND}/e2e/setup?scenario=A42`)).json() as Scene
+      await session(BACKEND, genRestScene.node_id, 1)
+      const genRestCmd = await request.post(`${BACKEND}/e2e/document/${genRestScene.node_id}/command`, {
+        data: { command: 'A42-gen-rest', position: 0 },
+      })
+      expect(genRestCmd.ok()).toBe(true)
+      const genRestHeaders = { 'X-E2E-User': String(genRestScene.owner_user), Accept: 'application/json' }
+      const genRestContent = await request.get(`${API}/documents/${genRestScene.node_id}/content`, { headers: genRestHeaders })
+      const genRestEtag = genRestContent.headers().etag!
+      const genRestored = await request.post(`${API}/documents/${genRestScene.node_id}/revisions/${genRestScene.first_revision_id}/restore`, {
+        headers: { ...genRestHeaders, 'If-Match': genRestEtag },
+      })
+      expect(genRestored.ok()).toBe(true)
+      const genRestJournal = await journal(request, genRestScene.node_id)
+      expect(genRestJournal.generation).toBeGreaterThanOrEqual(1)
+      expect(genRestJournal.head_seq ?? 0).toBe(0)
+
+      const restScene = await (await request.get(`${BACKEND}/e2e/setup?scenario=A42`)).json() as Scene
+      const restPage = await ctxB.newPage()
+      let heldFrame: string | Buffer | null = null
+      let upstreamSocket: WebSocket | null = null
+      const restCloseCodes: number[] = []
+      await restPage.routeWebSocket((url) => url.searchParams.get('protocol') === '2', (ws) => {
+        const upstream = new WebSocket(`ws://127.0.0.1:${hubPortB}${new URL(ws.url()).search}`)
+        upstream.binaryType = 'arraybuffer'
+        const pending: (string | Buffer)[] = []
+        upstreamSocket = upstream
+        upstream.addEventListener('open', () => {
+          for (const msg of pending.splice(0)) upstream.send(msg)
+        })
+        upstream.addEventListener('message', (ev) => ws.send(typeof ev.data === 'string' ? ev.data : Buffer.from(ev.data)))
+        upstream.addEventListener('close', (ev) => {
+          restCloseCodes.push(ev.code)
+          ws.close({ code: ev.code, reason: ev.reason })
+        })
+        ws.onMessage((msg) => {
+          if (msg.toString().includes('"t":"u"') && heldFrame === null) {
+            heldFrame = Buffer.isBuffer(msg) ? Buffer.from(msg) : msg
+            return
+          }
+          if (upstream.readyState === 1) upstream.send(msg)
+          else if (upstream.readyState === 0) pending.push(msg)
+        })
+        ws.onClose(() => upstream.close())
+      })
+      await restPage.goto(`${baseURL}/?node=${restScene.node_id}&user=1`)
+      await expect(restPage.getByTestId('status')).toHaveText('connected:writable')
+      await restPage.locator('[data-block-id="bank"]').click()
+      await restPage.keyboard.press('End')
+      await restPage.keyboard.type('!')
+      await expect.poll(() => heldFrame !== null).toBe(true)
+      const restCmd = await request.post(`${BACKEND}/e2e/document/${restScene.node_id}/command`, {
+        data: { command: 'A42-late', position: 0 },
+      })
+      expect(restCmd.ok()).toBe(true)
+      let lateReceipt = ''
+      let lateSeq = 0
+      await expect.poll(async () => {
+        const s = await (await request.get(`${BACKEND}/e2e/document/${restScene.node_id}/command/A42-late`)).json()
+        lateReceipt = s?.receipt_id ?? ''
+        lateSeq = s?.to_seq ?? 0
+        return s?.state
+      }).toBe('committed')
+      expect((await request.post(`${BACKEND}/e2e/document/${restScene.node_id}/drain`)).status()).toBe(204)
+      const { execFileSync } = await import('node:child_process')
+      execFileSync(process.execPath, [cli, 'compact', '--pending'], {
+        env: {
+          ...process.env, NODE_ENV: 'development',
+          VAULTER_LARAVEL_WEBHOOK_URL: API, VAULTER_COLLAB_WEBHOOK_SECRET: secret,
+        },
+      })
+      const headers = { 'X-E2E-User': String(restScene.owner_user), Accept: 'application/json' }
+      const content = await request.get(`${API}/documents/${restScene.node_id}/content`, { headers })
+      const etag = content.headers().etag!
+      const restored = await request.post(`${API}/documents/${restScene.node_id}/revisions/${restScene.first_revision_id}/restore`, {
+        headers: { ...headers, 'If-Match': etag },
+      })
+      expect(restored.ok(), await restored.text()).toBe(true)
+      // Release delayed generation-0 outbox wakeup and generation-0 envelope into generation-1: must produce 0 writes in gen 1.
+      const staleWakeup = signedControl({ v: 1, type: 'wakeup', document_id: restScene.node_id, generation: 0, position: lateSeq })
+      const staleWakeupRes = await request.post(`http://127.0.0.1:${mgmtB}/control`, { data: staleWakeup.raw, headers: staleWakeup.headers })
+      expect(staleWakeupRes.ok()).toBe(true)
+      expect(upstreamSocket !== null && (upstreamSocket as WebSocket).readyState === 1).toBe(true)
+      ;(upstreamSocket as WebSocket).send(heldFrame!)
+      await expect.poll(() => restCloseCodes.includes(4409)).toBe(true)
+      await expect(restPage.getByTestId('status')).toHaveText('connected:writable', { timeout: 15_000 })
+      await expect(restPage.locator('[data-block-id="payment-terms"]')).toContainText('15')
+      await expect(restPage.locator('[data-block-id="bank"]')).not.toContainText('!')
+      expect((await journal(request, restScene.node_id)).head_seq).toBe(1)
+      const histStatus = await (await request.get(`${BACKEND}/e2e/document/${restScene.node_id}/command/A42-late`)).json()
+      expect(histStatus).toMatchObject({ state: 'committed', receipt_id: lateReceipt, to_seq: lateSeq })
+      const staleVerify = await request.post(`${BACKEND}/e2e/document/${restScene.node_id}/verify/${lateReceipt}`, {
+        data: { mode: 'current', hub_url: `http://127.0.0.1:${mgmtB}` },
+      })
+      expect(staleVerify.status()).toBe(409)
+
+      // 5. offline_target_edit_arrives_later: verify(at_commit) passes, verify(current) fails after offline merge
+      const offScene = await (await request.get(`${BACKEND}/e2e/setup?scenario=A42`)).json() as Scene
+      const offPage = await ctxA.newPage()
+      let offOffline = false
+      let offUpstream: WebSocket | null = null
+      const offQueue: (string | Buffer)[] = []
+      await offPage.routeWebSocket((url) => url.searchParams.get('protocol') === '2', (ws) => {
+        const upstream = new WebSocket(`ws://127.0.0.1:${hubPortB}${new URL(ws.url()).search}`)
+        upstream.binaryType = 'arraybuffer'
+        const pending: (string | Buffer)[] = []
+        offUpstream = upstream
+        upstream.addEventListener('open', () => {
+          for (const msg of pending.splice(0)) upstream.send(msg)
+        })
+        upstream.addEventListener('message', (ev) => ws.send(typeof ev.data === 'string' ? ev.data : Buffer.from(ev.data)))
+        upstream.addEventListener('close', (ev) => ws.close({ code: ev.code, reason: ev.reason }))
+        ws.onMessage((msg) => {
+          if (offOffline) {
+            offQueue.push(Buffer.isBuffer(msg) ? Buffer.from(msg) : msg)
+            return
+          }
+          if (upstream.readyState === 1) upstream.send(msg)
+          else if (upstream.readyState === 0) pending.push(msg)
+        })
+        ws.onClose(() => upstream.close())
+      })
+      await offPage.goto(`${baseURL}/?node=${offScene.node_id}&user=1`)
+      await expect(offPage.getByTestId('status')).toHaveText('connected:writable')
+      offOffline = true
+      await ctxA.setOffline(true)
+      const offTerms = offPage.locator('[data-block-id="payment-terms"]')
+      await offTerms.click()
+      await offPage.keyboard.press('Home')
+      await offPage.keyboard.press('Shift+End')
+      await offPage.keyboard.insertText('Аванс в течение 20 дней')
+      const offCmd = await request.post(`${BACKEND}/e2e/document/${offScene.node_id}/command`, {
+        data: { command: 'A42-off', position: 0 },
+      })
+      expect(offCmd.ok()).toBe(true)
+      let offReceipt = ''
+      await expect.poll(async () => {
+        const s = await (await request.get(`${BACKEND}/e2e/document/${offScene.node_id}/command/A42-off`)).json()
+        offReceipt = s?.receipt_id ?? ''
+        return s?.state
+      }).toBe('committed')
+      const atCommitBefore = await request.post(`${BACKEND}/e2e/document/${offScene.node_id}/verify/${offReceipt}`, {
+        data: { mode: 'at_commit', hub_url: `http://127.0.0.1:${mgmtB}` },
+      })
+      expect(atCommitBefore.ok()).toBe(true)
+      offOffline = false
+      await ctxA.setOffline(false)
+      if (offUpstream && (offUpstream as WebSocket).readyState === 1) {
+        for (const msg of offQueue.splice(0)) (offUpstream as WebSocket).send(msg)
+      }
+      await expect(offPage.getByTestId('save-status')).toHaveText('saved', { timeout: 20_000 })
+      await expect(offTerms).toContainText('30')
+      await expect(offTerms).toContainText('20')
+      const currentAfter = await (await request.post(`${BACKEND}/e2e/document/${offScene.node_id}/verify/${offReceipt}`, {
+        data: { mode: 'current', hub_url: `http://127.0.0.1:${mgmtB}` },
+      })).json()
+      expect(currentAfter.ok).toBe(true)
+      expect(currentAfter.result.textPassed).toBe(false)
+    } finally {
+      await Promise.all([ctxA.close(), ctxB.close()])
+      await Promise.all(hubs.map(async (child) => {
+        if (child.exitCode === null && child.signalCode === null) {
+          const ended = once(child, 'exit')
+          child.kill('SIGKILL')
+          await ended
+        }
+      }))
     }
   })
 }
@@ -432,6 +834,9 @@ test('restores with the old tab open and rebinds it to the restored generation',
   await typeInto(page, 'BEFORE-RESTORE')
   await expect(page.getByTestId('save-status')).toHaveText('saved')
   const before = await journal(request, node)
+  if (before.checkpoint_seq < before.head_seq) {
+    await request.post(`${BACKEND}/e2e/document/${node}/drain`)
+  }
   await expect.poll(async () => (await journal(request, node)).checkpoint_seq).toBe(before.head_seq)
   const url = `${API}/documents/${node}`
   const headers = { 'X-E2E-User': String(owner), Accept: 'application/json' }

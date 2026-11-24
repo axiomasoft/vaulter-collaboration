@@ -79,7 +79,7 @@ The package lives in `packages/collaboration` and is split to the `axiomasoft/va
 
 ```bash
 scripts/t sqlite -p collaboration
-(cd packages/collaboration/hub && npm run check && npm test)   # the hub's unit suite (node:test)
+(cd packages/hub && npm run check && npm test)   # the hub's unit suite (node:test)
 scripts/release/consumer-check.sh collaboration      # builds it in an empty directory with only its dependencies
 ```
 

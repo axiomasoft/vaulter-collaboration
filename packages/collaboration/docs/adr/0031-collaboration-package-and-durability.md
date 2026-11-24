@@ -28,8 +28,8 @@ Nothing is installed yet (1.0 is the starting point), so every identity could ch
 
 ### 1. A package of its own (D1, D6)
 
-Collaboration is the package `axioma-studio/vaulter-collaboration` (`Vaulter\Collaboration\`), the Node hub
-`@vaulter/collaboration-hub` (`packages/collaboration/hub`, image `ghcr.io/axiomasoft/vaulter-collaboration-hub`) and the
+Collaboration is the package `axiomasoft/vaulter-collaboration` (`Vaulter\Collaboration\`), the Node hub
+`@vaulter/collaboration-hub` (`packages/hub`, image `ghcr.io/axiomasoft/vaulter-collaboration-hub`) and the
 npm package `@vaulter/vue-collaboration`. The Composer graph is
 `core ← media ← drive ← documents ← collaboration`. Documents keeps the aggregate and the SPI
 (`CollaborationDriver`, `SupportsCollaboration`, `CollaborationSession`); it never learns that a hub exists.

@@ -2,7 +2,7 @@
 
 ## 3. Совместное редактирование (опционально)
 
-Редактирование в реальном времени состоит из трёх частей: Laravel-модуля `axioma-studio/vaulter-collaboration`, Node-хаба
+Редактирование в реальном времени состоит из трёх частей: Laravel-модуля `axiomasoft/vaulter-collaboration`, Node-хаба
 (`@vaulter/collaboration-hub`, образ `ghcr.io/axiomasoft/vaulter-collaboration-hub`) и браузерного пакета
 `@vaulter/vue-collaboration`. Модуль **opt-in**: включите его в `config/vaulter.php` и задайте URL хаба и два разных
 секрета, иначе приложение с активным модулем не загрузится:
@@ -23,7 +23,7 @@ VAULTER_COLLAB_JWT_ACTIVE_KID=k1                       # kid ключа подп
 VAULTER_COLLAB_WEBHOOK_SECRET=<другое случайное>       # общий с хабом
 ```
 
-Запустите хаб из опубликованного образа (compose-файл — `packages/collaboration/hub/docker-compose.yml`) и установите
+Запустите хаб из опубликованного образа (compose-файл — `packages/hub/docker-compose.yml`) и установите
 браузерный пакет:
 
 <!-- snippet: shell -->

@@ -1,10 +1,9 @@
 # syntax=docker/dockerfile:1
-# W0 Node image template (collaboration hub).
+# Node 26.13.1 base image template.
 # Debian/Ubuntu (bookworm/trixie): package libatomic1, which provides libatomic.
 # RHEL/AL2023: package libatomic.
 # Alpine: apk add --no-cache libatomic libstdc++.
 # This base is bookworm-slim, so the install below is libatomic1.
-# No application sources are copied yet. Later waves replace CMD with the service entrypoint.
 
 ARG NODE_VERSION=26.13.1
 FROM node:${NODE_VERSION}-bookworm-slim

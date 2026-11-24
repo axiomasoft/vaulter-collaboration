@@ -157,6 +157,64 @@ final class CollaborationSchema implements ModuleSchema
         $this->helpers->schemaConnection()->table($name, static fn (Blueprint $table) => $table->dropColumn(['lease_through_seq', 'protocol']));
     }
 
+    public function alignLeaseExpiresAt(): void
+    {
+        $db = $this->helpers->dbConnection();
+        $driver = $db->getDriverName();
+        if ($driver === 'sqlite') {
+            return;
+        }
+        $name = $this->helpers->table('collaboration_heads');
+        $table = $db->getQueryGrammar()->wrapTable($name);
+        if ($driver === 'pgsql') {
+            $lease = $db->getQueryGrammar()->wrap($name.'_compaction_lease');
+            $leaseCheck = 'CHECK (
+                (lease_token IS NULL AND lease_owner IS NULL AND lease_expires_at IS NULL AND lease_through_seq IS NULL)
+                OR (lease_token IS NOT NULL AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL
+                    AND lease_through_seq IS NOT NULL AND lease_through_seq BETWEEN checkpoint_seq AND head_seq)
+            )';
+            $db->statement("SET LOCAL lock_timeout = '2s'");
+            $db->statement("SET LOCAL statement_timeout = '15s'");
+            $db->statement("LOCK TABLE {$table} IN SHARE ROW EXCLUSIVE MODE");
+            $db->statement("ALTER TABLE {$table} DROP CONSTRAINT IF EXISTS {$lease}");
+            $db->statement("ALTER TABLE {$table} ALTER COLUMN lease_expires_at TYPE TIMESTAMPTZ(6) USING lease_expires_at AT TIME ZONE 'UTC'");
+            $db->statement("ALTER TABLE {$table} ADD CONSTRAINT {$lease} {$leaseCheck} NOT VALID");
+            $db->statement("ALTER TABLE {$table} VALIDATE CONSTRAINT {$lease}");
+
+            return;
+        }
+        $db->statement("ALTER TABLE {$table} MODIFY COLUMN lease_expires_at TIMESTAMP(6) NULL");
+    }
+
+    public function revertLeaseExpiresAt(): void
+    {
+        $db = $this->helpers->dbConnection();
+        $driver = $db->getDriverName();
+        if ($driver === 'sqlite') {
+            return;
+        }
+        $name = $this->helpers->table('collaboration_heads');
+        $table = $db->getQueryGrammar()->wrapTable($name);
+        if ($driver === 'pgsql') {
+            $lease = $db->getQueryGrammar()->wrap($name.'_compaction_lease');
+            $leaseCheck = 'CHECK (
+                (lease_token IS NULL AND lease_owner IS NULL AND lease_expires_at IS NULL AND lease_through_seq IS NULL)
+                OR (lease_token IS NOT NULL AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL
+                    AND lease_through_seq IS NOT NULL AND lease_through_seq BETWEEN checkpoint_seq AND head_seq)
+            )';
+            $db->statement("SET LOCAL lock_timeout = '2s'");
+            $db->statement("SET LOCAL statement_timeout = '15s'");
+            $db->statement("LOCK TABLE {$table} IN SHARE ROW EXCLUSIVE MODE");
+            $db->statement("ALTER TABLE {$table} DROP CONSTRAINT IF EXISTS {$lease}");
+            $db->statement("ALTER TABLE {$table} ALTER COLUMN lease_expires_at TYPE TIMESTAMP(0) WITHOUT TIME ZONE USING lease_expires_at AT TIME ZONE 'UTC'");
+            $db->statement("ALTER TABLE {$table} ADD CONSTRAINT {$lease} {$leaseCheck} NOT VALID");
+            $db->statement("ALTER TABLE {$table} VALIDATE CONSTRAINT {$lease}");
+
+            return;
+        }
+        $db->statement("ALTER TABLE {$table} MODIFY COLUMN lease_expires_at TIMESTAMP NULL");
+    }
+
     /**
      * v_collaboration_heads — one row per document generation: the last committed log sequence (head_seq), the sequence
      * and state version the last published checkpoint covers, the compaction lease and the drain request. A row is
@@ -171,7 +229,7 @@ final class CollaborationSchema implements ModuleSchema
         $this->helpers->counterColumn(table: $table, column: 'checkpoint_version');
         $table->string('lease_token', 64)->nullable();
         $table->string('lease_owner', 191)->nullable();
-        $table->timestamp('lease_expires_at')->nullable();
+        $table->timestampTz('lease_expires_at', precision: 6)->nullable();
         $table->timestamp('drain_requested_at')->nullable();
         $table->timestamp('retired_at')->nullable();
         $table->timestamps();

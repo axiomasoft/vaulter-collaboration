@@ -1,9 +1,9 @@
 # Collaboration hub (Docker)
 
 The Node service that powers Vaulter's realtime **document collaboration** (Yjs/TipTap), `@vaulter/collaboration-hub`
-(`packages/collaboration/hub`). It is Hocuspocus plus the Vaulter protocol 2: it loads a room from the backend's update
+(`packages/hub`). It is Hocuspocus plus the Vaulter protocol 2: it loads a room from the backend's update
 log, appends every update through the backend and acknowledges only the committed receipt. The Laravel side is the
-module `axioma-studio/vaulter-collaboration` — see [Realtime Collaboration](./collaboration) for installation, the
+module `axiomasoft/vaulter-collaboration` — see [Realtime Collaboration](./collaboration) for installation, the
 `vaulter-collaboration` config and the durability model.
 
 > **Reverb is not a collaboration transport.** Laravel Reverb is a general broadcast bus (notifications, presence,
@@ -27,7 +27,7 @@ services:
 
 The image is **backend-agnostic**: it authenticates and persists by calling back into *your* Laravel app, so the same
 image works across every project that embeds Vaulter. The image tag is `vaulter-collaboration-hub-v*` in git; the
-workflow is `.github/workflows/collaboration-hub-image.yml`.
+workflow is `.github/workflows/ci.yml`.
 
 ## How it fits
 
@@ -306,8 +306,8 @@ origins; the same `ghcr.io/axiomasoft/vaulter-collaboration-hub` tag serves them
 
 ## Local development and the stands
 
-This repo ships the source under `packages/collaboration/hub/` and a `docker-compose.yml` that can either pull the published
-image or `build: .` from source. In `packages/collaboration/hub`: `npm run check` (syntax), `npm test` (the `node:test` unit
+This repo ships the source under `packages/hub/` and a `docker-compose.yml` that can either pull the published
+image or `build: .` from source. In `packages/hub`: `npm run check` (syntax), `npm test` (the `node:test` unit
 suite against a stub backend; no running stack). Two scripts need a real stack:
 
 - `scripts/collab-e2e.sh` — `testbench serve` plus one hub: a restore during a live session, protocol 2 acks, read-only and

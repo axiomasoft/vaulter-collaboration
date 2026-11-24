@@ -77,7 +77,7 @@ services:
       laravel:
         condition: service_healthy
     # Symmetric with the reference deployment's own healthcheck
-    # (packages/collaboration/hub/docker-compose.yml) — /livez of the management listener on
+    # (packages/hub/docker-compose.yml) — /livez of the management listener on
     # VAULTER_COLLAB_MANAGEMENT_PORT (loopback inside the container).
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:1235/livez').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]

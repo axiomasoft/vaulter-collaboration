@@ -12,7 +12,7 @@ is a projection of a checkpoint. Collaboration is a package of its own, three pi
 
 | Piece | What it is |
 |---|---|
-| `axioma-studio/vaulter-collaboration` | The Laravel module (`Vaulter\Collaboration\`): the Yjs driver, the room token, the hub protocol, the update log, the drain and prune commands. Opt-in. |
+| `axiomasoft/vaulter-collaboration` | The Laravel module (`Vaulter\Collaboration\`): the Yjs driver, the room token, the hub protocol, the update log, the drain and prune commands. Opt-in. |
 | `@vaulter/collaboration-hub` | The Node hub (Hocuspocus + Yjs), shipped as the image `ghcr.io/axiomasoft/vaulter-collaboration-hub` — see [Collaboration hub](./hub). |
 | `@vaulter/vue-collaboration` | The browser side: update envelopes, the retry queue, the save status — [below](#frontend-wiring-vaulter-vue-collaboration). |
 
@@ -29,7 +29,7 @@ Laravel broadcast channels still carry comment events with their existing access
 <!-- snippet: shell -->
 
 ```bash
-composer require axioma-studio/vaulter-collaboration
+composer require axiomasoft/vaulter-collaboration
 ```
 
 The module is **opt-in** (it opens a network channel and needs secrets). Switch it on and give it the hub URL and
@@ -282,7 +282,7 @@ A `nack {id, code, retry}` is sent for an envelope the hub could not take; `retr
 
 The hub's `onLoadDocument` replays the checkpoint and the committed tail. A generation without checkpoint and log (new,
 or just restored to a revision without state) is built from its JSON **once**, on the server, with
-`@hocuspocus/transformer` and the hub's TipTap schema (`packages/collaboration/hub/src/schema.js`), and appended as the first
+`@hocuspocus/transformer` and the hub's TipTap schema (`packages/hub/src/schema.js`), and appended as the first
 record of the log before any client sees it. The seed is fail-closed:
 
 - **Nothing is cut silently.** ProseMirror drops attributes the schema does not declare. A document whose JSON the hub

@@ -2,7 +2,7 @@
 
 ## Совместное редактирование — `vaulter-collaboration.*`
 
-У пакета `axioma-studio/vaulter-collaboration` собственный файл конфигурации (тег публикации
+У пакета `axiomasoft/vaulter-collaboration` собственный файл конфигурации (тег публикации
 `vaulter-collaboration-config`), и это opt-in модуль: он активен, только когда `vaulter.modules.collaboration` равен
 `true`, и тогда ему нужны URL хаба и оба секрета. Источник истины — Yjs-обновления; JSON TipTap — проекция чекпоинта.
 

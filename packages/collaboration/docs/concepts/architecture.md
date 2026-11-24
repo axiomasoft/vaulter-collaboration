@@ -15,6 +15,6 @@ Yjs updates are the source of truth; TipTap JSON is the projection of a checkpoi
 
 ## Additional reference rows
 
-| `axioma-studio/vaulter-collaboration` | `Vaulter\Collaboration\` | Realtime editing: the session endpoint and room token, the hub protocol 2 (`authenticate`, `load`, `append`, `renew`, `recheck`, compaction lease and checkpoint), the update log, receipts and permission versions (`v_collaboration_*`), the drain and prune commands, the control consumer. The hub `@vaulter/collaboration-hub` (Node) lives in `packages/collaboration/hub`. Opt-in. |
+| `axiomasoft/vaulter-collaboration` | `Vaulter\Collaboration\` | Realtime editing: the session endpoint and room token, the hub protocol 2 (`authenticate`, `load`, `append`, `renew`, `recheck`, compaction lease and checkpoint), the update log, receipts and permission versions (`v_collaboration_*`), the drain and prune commands, the control consumer. The hub `@vaulter/collaboration-hub` (Node) lives in `packages/hub`. Opt-in. |
 | `@vaulter/vue-collaboration` | — | The browser side of collaboration (npm): update envelopes, the retry queue, the save status; plugs into `@vaulter/vue` through its `collaboration` adapter. The only package with `yjs` and `@hocuspocus/provider`. |
 | `Vaulter\Documents\Contracts\CollaborationDriver` | `config('vaulter-collaboration.driver')` | [ADR-0001](/adr/0001-collaboration-transport), [ADR-0031](/adr/0031-collaboration-package-and-durability) |

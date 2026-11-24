@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { eventually } from './live.js'
 
-// The docker stand (packages/collaboration/hub/stand/docker-compose.yml, started by
+// The docker stand (packages/hub/stand/docker-compose.yml, started by
 // scripts/collab-stand.sh): PostgreSQL, Redis, the Laravel host behind `testbench serve`, two hubs.
 // The scenarios drive the REAL processes — signals, restarts, the database — never a stub.
 

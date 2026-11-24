@@ -8,10 +8,10 @@ use Vaulter\Documents\Types\RichTextDocumentType;
 
 /**
  * The hub seeds rooms from JSON with its own TipTap extensions
- * (packages/collaboration/hub/src/schema.js). A node, mark or attribute the hub does not know is dropped
+ * (packages/hub/src/schema.js). A node, mark or attribute the hub does not know is dropped
  * from the seed, and one the backend does not allow makes every store fail, so both
  * sides are pinned to one snapshot: this test owns tests/Fixtures/tiptap-schema.json,
- * packages/collaboration/hub/test/schema-parity.test.js compares schema.js against it.
+ * packages/hub/test/schema-parity.test.js compares schema.js against it.
  *
  * After an intended schema change: VAULTER_REGENERATE_FIXTURES=1 regenerates the file.
  */

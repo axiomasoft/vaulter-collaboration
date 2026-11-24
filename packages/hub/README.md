@@ -2,7 +2,7 @@
 
 `@vaulter/collaboration-hub` is the Node service that powers Vaulter's realtime **document collaboration** (Yjs/TipTap).
 It is Hocuspocus plus the Vaulter **protocol 2**: it loads a room from the backend's update log, appends every update
-through the Laravel module [`axioma-studio/vaulter-collaboration`](../README.md) and acknowledges only the committed
+through the Laravel module [`axiomasoft/vaulter-collaboration`](../collaboration/README.md) and acknowledges only the committed
 receipt. It is designed to be consumed as an **external, reusable image** — one published image
 (`ghcr.io/axiomasoft/vaulter-collaboration-hub`) serves many projects. You **reference** it and configure it entirely
 through environment variables; you never copy its source into your app.
@@ -112,7 +112,7 @@ docker run --rm --env-file hub.env ghcr.io/axiomasoft/vaulter-collaboration-hub:
 
 The reference [`docker-compose.yml`](./docker-compose.yml) pulls the published image (or `build: .` for local dev) and
 shows the full security/scaling env surface. The multi-stage [`Dockerfile`](./Dockerfile) runs as the non-root `node` user
-from a committed lockfile; the image is built and pushed to GHCR by `.github/workflows/collaboration-hub-image.yml` on a
+from a committed lockfile; the image is built and tested by `.github/workflows/ci.yml` (see `release/packages.json`) on a
 `vaulter-collaboration-hub-v*` tag (multi-arch, with SBOM + build-provenance attestation).
 
 > **Security:** never expose the WebSocket port directly — bind it to loopback / your private network and front it with a

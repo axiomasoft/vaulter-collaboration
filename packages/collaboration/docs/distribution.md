@@ -1,6 +1,6 @@
 # Distribution
 
-Realtime co-editing is a commercial add-on (`axioma-studio/vaulter-collaboration`).
+Realtime co-editing is a commercial add-on (`axiomasoft/vaulter-collaboration`).
 It is distributed through a private PHP split and Private Packagist for Vendors, with
 `proprietary` Composer metadata and public dependencies at `^1.0`. The associated
 `@vaulter/vue-collaboration` package uses `UNLICENSED`, restricted npm access and no
