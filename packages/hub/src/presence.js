@@ -1,3 +1,4 @@
+// @ts-check
 // Awareness identity: a peer's cursor and name reach every other peer of the room, so the
 // awareness states a connection sends must not speak for someone else. Hocuspocus hands every
 // awareness update of a connection to `beforeHandleAwareness` before it applies and broadcasts it;
@@ -13,20 +14,39 @@
 
 import { FORBIDDEN } from './rooms.js'
 
-/** The principal of a connection context, when onAuthenticate set one. */
+/** @typedef {{ type: string, id: string }} Principal the token's sub_type and sub, as onAuthenticate verified them */
+/** @typedef {{ hasConnection?: (connection: object) => boolean }} AwarenessDocument */
+/**
+ * What Hocuspocus passes to beforeHandleAwareness, as far as this hook reads it.
+ * @typedef {object} AwarenessPayload
+ * @property {{ context?: unknown } | undefined} [connection]
+ * @property {unknown} [context]
+ * @property {AwarenessDocument | undefined} [document]
+ * @property {unknown} [states] awareness client id → state; changed in place
+ * @property {Iterable<number> | undefined} [removedClients]
+ */
+
+/**
+ * The principal of a connection context, when onAuthenticate set one.
+ * @param {unknown} context
+ * @returns {Principal | null}
+ */
 function principalOf(context) {
-  const principal = context?.principal
-  return principal && typeof principal.type === 'string' && typeof principal.id === 'string' ? principal : null
+  const principal = context !== null && typeof context === 'object' && 'principal' in context ? context.principal : null
+  return principal !== null && typeof principal === 'object' && 'type' in principal && 'id' in principal
+    && typeof principal.type === 'string' && typeof principal.id === 'string' ? { type: principal.type, id: principal.id } : null
 }
 
+/** @param {string} reason */
 function refuse(reason) {
   return Object.assign(new Error(reason), { code: FORBIDDEN.code, reason: FORBIDDEN.reason })
 }
 
 export function createPresenceGuard() {
-  /** Per document: awareness client id → the connection that set it. */
+  /** Per document: awareness client id → the connection that set it. @type {WeakMap<AwarenessDocument, Map<number, object>>} */
   const owners = new WeakMap()
 
+  /** @param {AwarenessDocument} document */
   function ownersOf(document) {
     let map = owners.get(document)
     if (!map) {
@@ -36,6 +56,12 @@ export function createPresenceGuard() {
     return map
   }
 
+  /**
+   * @param {AwarenessDocument} document
+   * @param {Map<number, object>} map
+   * @param {number} clientId
+   * @param {object} connection
+   */
   function claim(document, map, clientId, connection) {
     const owner = map.get(clientId)
     if (owner !== undefined && owner !== connection && document.hasConnection?.(owner)) {
@@ -44,6 +70,7 @@ export function createPresenceGuard() {
     map.set(clientId, connection)
   }
 
+  /** @param {AwarenessPayload} payload */
   async function beforeHandleAwareness({ connection, context, document, states, removedClients } = {}) {
     if (!connection || !document || !(states instanceof Map)) return
 
