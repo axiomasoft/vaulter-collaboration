@@ -106,7 +106,9 @@ final readonly class LogTables
                 ->limit(self::PAGE);
             if ($after !== null) {
                 [$document, $generation] = $after;
-                $query->where(static fn (Builder $query): Builder => $query
+                // The leading `document_id >=` repeats what the OR implies, so every engine seeks the key index to the
+                // cursor instead of filtering every row before it: a late page costs what the first one does.
+                $query->where('document_id', '>=', $document)->where(static fn (Builder $query): Builder => $query
                     ->where('document_id', '>', $document)
                     ->orWhere(static fn (Builder $query): Builder => $query->where('document_id', $document)->where('generation', '>', $generation)));
             }
