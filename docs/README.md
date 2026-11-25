@@ -8,6 +8,7 @@ The overview guides live here; the full module documentation ships with the PHP 
 - [Collaboration guide](guides/collaboration.md): the protocol-neutral ledger, the room JWT, epoch fencing, compaction
   and revocation in one page.
 - [Hub guide](guides/hub.md): the hub's runtime, lifecycle, environment and operations in one page.
+- [Testing and CI](guides/testing-and-ci.md): the CI DAG, path filters, and how to run the suites locally.
 
 ## Module documentation
 
