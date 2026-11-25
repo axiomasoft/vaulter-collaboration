@@ -58,8 +58,8 @@ it('requires a complete lease with a bound within the generation head', function
         ->toThrow(QueryException::class, 'v_collaboration_heads_compaction_lease');
     expect(Compaction::head($node)?->leaseToken)->toBeNull();
 })->with([
-    'token without a bound' => [['lease_token' => 'token', 'lease_owner' => 'hub', 'lease_expires_at' => '2040-01-01 00:00:00']],
-    'bound beyond the head' => [['lease_token' => 'token', 'lease_owner' => 'hub', 'lease_expires_at' => '2040-01-01 00:00:00', 'lease_through_seq' => 2]],
+    'token without a bound' => [['lease_token' => 'token', 'lease_owner' => 'hub', 'lease_expires_at' => '2037-01-01 00:00:00']],
+    'bound beyond the head' => [['lease_token' => 'token', 'lease_owner' => 'hub', 'lease_expires_at' => '2037-01-01 00:00:00', 'lease_through_seq' => 2]],
     'bound without a token' => [['lease_through_seq' => 1]],
 ]);
 
