@@ -122,7 +122,7 @@ from a committed lockfile; the image is built and tested by `.github/workflows/c
 ## Verification
 
 - Syntax: `npm run check` (`node --check` per file). Types: from the repository root, `npm run check:hub` also runs
-  `tsc --strict` over every source file that opts in with `// @ts-check` (`tokens.js`, `presence.js` so far).
+  `tsc --strict` over every source file that opts in with `// @ts-check` (`tokens.js`, `presence.js`, `limits.js` so far).
 - Unit: `npm test` — `node:test` covers the backend client (bearer JWT + body signature with a nonce, protocol header),
   retry and the pending ledger, envelopes, origins and the buffered/durable modes, server-side load and one-time seeding,
   the epoch fence (4409), compaction and the `compact --pending` command line, read-only and token expiry, revocation
