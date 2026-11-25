@@ -19,7 +19,7 @@ All Yjs snapshots and incremental updates **must** be stored as raw binary `byte
 ## 2. Room Capability JWT
 
 Clients never connect to the Hub with raw session cookies or long-lived API tokens. Instead, the browser requests a short-lived **Room Capability JWT** from Laravel:
-- **Claims:** `sub` and `sub_type` identify the actor. `tenant`, `drive_id`, `document_id`, `generation`, and `room` identify the room. `protocol` names the driver version, and `scope` is `read` or `write`.
+- **Claims:** `sub` and `sub_type` identify the actor. `tenant`, `drive_id`, `document_id`, `generation`, and `room` identify the room. `protocol` names the driver version, `state_format` the binary state format, and `scope` is `read` or `write`. `schema_version` and `permissions_version` record what the token was issued under. The standard `iss`, `aud`, `iat` and `nbf` are checked by the hub and the backend; `exp` is `iat` + `hub.token_ttl` (300 s by default, never longer), and every token carries a fresh `jti` that revocation and renewal refer to.
 - **Key Rotation:** Supported via `kid` header and dual-key verification windows (see `packages/collaboration/docs/key-rotation.md`).
 - **Scope:** A token is bound to a single room generation. Laravel rejects its use across rooms or after a generation change.
 
@@ -45,9 +45,9 @@ When a user's access to a document is downgraded (editor → viewer) or revoked:
 2. The Hub immediately disconnects the affected actor's WebSocket sessions (or demotes them to read-only) so no further updates are accepted even before the JWT `exp` elapses.
 3. Any subsequent HTTP replay or token refresh re-authorizes against current ACLs and fails closed with `403 Forbidden`.
 
-## 6. Strict Profile `3.5` & Client `UndoManager` Limits
+## 6. Strict Profile & Client `UndoManager` Limits
 
-For high-assurance deployments (e.g. concurrent human + AI editing under Strict Profile `3.5`):
+For high-assurance deployments (e.g. concurrent human + AI editing with `VAULTER_COLLAB_STRICT_PROFILE=true`):
 - **No Redis for Document Data:** `@hocuspocus/extension-redis` must **not** be used as a data transport/store for document updates in strict mode; all durability flows through the PostgreSQL update ledger (`protocol=2`).
 - **No `DirectConnection.transact`:** Direct mutations must go through the fenced ledger API.
 - **Mutex Hygiene:** `Y.encodeStateAsUpdateV2` must run outside the room write mutex on a cloned snapshot to stay within p95/p99 SLO budgets (ceiling: <= 15–20 concurrent authors per strict room).

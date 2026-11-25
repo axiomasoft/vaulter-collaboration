@@ -13,7 +13,7 @@ The Vaulter Collaboration Hub (`packages/hub`, image `ghcr.io/axiomasoft/vaulter
 
 ## 2. Protocol 2 Lifecycle & Binary Persistence
 
-1. **Authentication (`onAuthenticate`):** Validates the Room Capability JWT (`sub`, `tenant_id`, `document_id`, `epoch`, `role`). Rejects expired, malformed, or cross-origin (CSWSH) connections.
+1. **Authentication (`onAuthenticate`):** Validates the Room Capability JWT (signature by `kid`, `iss`/`aud`, `exp`, and the room and generation it names). Rejects expired, malformed, or cross-origin (CSWSH) connections.
 2. **Load (`onLoadDocument`):** Fetches the latest binary snapshot + tail `bytea` updates from Laravel (`protocol=2`). Never performs JSON-to-Y.Doc reconstruction.
 3. **Append (`onStoreDocument` / ledger):** Appends binary updates to `v_collaboration_updates` with idempotent receipt tracking and `owner_fence` verification.
 4. **Epoch Fencing:** If Laravel returns an epoch conflict, the Hub closes room clients with WebSocket code `4409` (or `4412` on strict precondition failure) and evicts the in-memory `Y.Doc`.
@@ -44,9 +44,9 @@ docker run --rm --env-file hub.env \
 ```
 Exit code `0` means all pending rooms were compacted; exit code `1` prints remaining rooms to `stderr`.
 
-## 5. Strict Profile `3.5` & Observability
+## 5. Strict Profile & Observability
 
-- **Strict Profile `3.5`:** Disable `@hocuspocus/extension-redis` for document data and avoid `DirectConnection.transact`. Keep `Y.UndoManager` strictly off the server `Y.Doc`.
+- **Strict Profile (`VAULTER_COLLAB_STRICT_PROFILE=true`):** Disable `@hocuspocus/extension-redis` for document data and avoid `DirectConnection.transact`. Keep `Y.UndoManager` strictly off the server `Y.Doc`.
 - **Health Probes:** Use `GET http://127.0.0.1:1235/livez` for liveness and `/readyz` for readiness.
 - **OpenTelemetry:** Propagate `traceparent` per logical mutation rather than binding all room activity to the long-lived HTTP 101 Upgrade span; emit custom attributes under the `vaulter.*` namespace.
 - **Graceful Shutdown:** Send `SIGTERM` with `terminationGracePeriodSeconds` greater than `VAULTER_COLLAB_SHUTDOWN_FLUSH_MS + VAULTER_COLLAB_SHUTDOWN_DESTROY_MS`.
