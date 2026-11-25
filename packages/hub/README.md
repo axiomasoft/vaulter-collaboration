@@ -10,11 +10,11 @@ through environment variables; you never copy its source into your app.
 > **This is the collaboration backend.** Laravel Reverb is a general broadcast bus (notifications, presence) and is
 > **not** a collaboration transport — the `reverb` collaboration driver was removed. Collaborative editing runs on this hub.
 
-> **The authoritative docs are [`docs/guides/hub.md`](../../../docs/guides/hub.md)** (the full environment contract,
+> **The authoritative docs are [`packages/collaboration/docs/guides/hub.md`](../collaboration/docs/guides/hub.md)** (the full environment contract,
 > management listener, shutdown, security hardening, scaling) and
-> [`docs/guides/collaboration.md`](../../../docs/guides/collaboration.md) (installation, config, protocol, durability,
+> [`packages/collaboration/docs/guides/collaboration.md`](../collaboration/docs/guides/collaboration.md) (installation, config, protocol, durability,
 > revocation). This README is a quick reference only. The decisions are in
-> [ADR-0031](../../../docs/adr/0031-collaboration-package-and-durability.md).
+> [ADR-0031](../collaboration/docs/adr/0031-collaboration-package-and-durability.md).
 
 ## How it fits
 
@@ -76,7 +76,7 @@ startup and fails fast** when a required production value is missing or a numeri
 `MAX_DOCUMENT_BYTES`, `MAX_REQUEST_BYTES`, `MAX_ROOMS_PER_TENANT`, …), security (`MAX_PAYLOAD_BYTES`, `THROTTLE*`,
 `BAN_TIME`), revocation (`RENEW_BEFORE_MS`, `CONTROL_*`), shutdown (`SHUTDOWN_FLUSH_MS`, `SHUTDOWN_DESTROY_MS`), scaling
 (`REDIS_URL`, `INSTANCE_NAME`) and ops (`QUIET`, `LOG`) — is documented in
-[`docs/guides/hub.md`](../../../docs/guides/hub.md#environment-contract).
+[`packages/collaboration/docs/guides/hub.md`](../collaboration/docs/guides/hub.md#environment-contract).
 
 On the Laravel side, point the client at this hub with `VAULTER_COLLAB_URL=wss://<hub-host>` (and enable the module with
 `vaulter.modules.collaboration`).
@@ -99,7 +99,7 @@ npm start            # vaulter-collaboration-hub serve
 npm run dev          # watch
 npm run check        # node --check on every source file (syntax gate)
 npm test             # node:test unit suite (stub backend; no running stack)
-npm run test:e2e     # needs a running backend + hub — use ../../../scripts/collab-e2e.sh
+npm run test:e2e     # needs a running backend + hub — use ../../scripts/collab-e2e.sh
 ```
 
 The command line of the image is `serve` (default) or `compact --pending [--deadline=<s>]`:

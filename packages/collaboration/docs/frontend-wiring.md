@@ -16,5 +16,5 @@ app.use(VaulterPlugin, { baseUrl: '/api/vaulter', collaboration: createCollabora
 
 Without the adapter every document uses the autosave path. The backend module is the opt-in
 `axiomasoft/vaulter-collaboration` ([guide](guides/collaboration.md),
-[ADR-0031](../../../docs/adr/0031-collaboration-package-and-durability.md)).
+[ADR-0031](adr/0031-collaboration-package-and-durability.md)).
 

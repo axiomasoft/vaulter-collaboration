@@ -6,13 +6,13 @@ installed together:
 | Piece | What it is |
 |---|---|
 | `axiomasoft/vaulter-collaboration` (this package) | the Laravel module: session endpoint, room token (HS256 JWT), hub protocol 2, the update log, drain and prune commands |
-| [`@vaulter/collaboration-hub`](./hub/README.md) | the Node hub (Hocuspocus + Yjs), shipped as the image `ghcr.io/axiomasoft/vaulter-collaboration-hub` |
+| [`@vaulter/collaboration-hub`](../hub/README.md) | the Node hub (Hocuspocus + Yjs), shipped as the image `ghcr.io/axiomasoft/vaulter-collaboration-hub` |
 | [`@vaulter/vue-collaboration`](../vue-collaboration/README.md) | the browser side: update envelopes, the retry queue and the save status |
 
 A save is a **committed receipt**: the client gives every Yjs update a stable `update_id`, the hub appends it to the log
 through this package and acknowledges it only after the commit. The hub folds the log into checkpoints (PHP cannot merge
-Yjs). Decisions and reasons: [ADR-0031](../../docs/adr/0031-collaboration-package-and-durability.md); the guide is
-[Realtime Collaboration](../../docs/guides/collaboration.md).
+Yjs). Decisions and reasons: [ADR-0031](docs/adr/0031-collaboration-package-and-durability.md); the guide is
+[Realtime Collaboration](docs/guides/collaboration.md).
 
 It depends on `axiomasoft/vaulter-core`, `axiomasoft/vaulter-drive` and `axiomasoft/vaulter-documents`
 (`firebase/php-jwt` signs the tokens), is not part of the `axiomasoft/vaulter` metapackage, and is **opt-in**: it opens
@@ -39,7 +39,7 @@ VAULTER_COLLAB_WEBHOOK_SECRET=...  # shared with the hub; must differ from the s
 ```
 
 An active module without the hub URL and both (different) secrets stops the application at boot; `vaulter:doctor` names
-what is missing. Run the hub from the image ([hub README](./hub/README.md)), install `@vaulter/vue-collaboration` in the
+what is missing. Run the hub from the image ([hub README](../hub/README.md)), install `@vaulter/vue-collaboration` in the
 frontend.
 
 ## What it owns
@@ -84,4 +84,4 @@ scripts/release/consumer-check.sh collaboration      # builds it in an empty dir
 ```
 
 Failure scenarios that need real processes (`scripts/collab-stand.sh`, `scripts/collab-e2e.sh`) need Docker and are not
-part of the fast set. See [ADR-0030](../../docs/adr/0030-package-ownership-and-schema.md) for the package rules.
+part of the fast set. See [ADR-0030](https://github.com/axiomasoft/vaulter/blob/main/docs/adr/0030-package-ownership-and-schema.md) for the package rules.
