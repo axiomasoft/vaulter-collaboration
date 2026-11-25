@@ -5,7 +5,9 @@ declare(strict_types=1);
 use Illuminate\Routing\Route;
 use Illuminate\Support\Facades\Route as Router;
 use Illuminate\Support\Str;
+use Vaulter\Collaboration\CollaborationCallResolver;
 use Vaulter\Collaboration\Http\Middleware\ResolveCollaborationCall;
+use Vaulter\Collaboration\Http\Support\HubProtocol;
 use Vaulter\Collaboration\Tests\Collaboration\HubTestHelpers as Hub;
 use Vaulter\Collaboration\Tests\Support\DocumentsV1 as Docs;
 use Vaulter\Database\VaulterDatabase;
@@ -116,4 +118,42 @@ it('requires signed ownership calls and fences legacy append on a strict generat
     Hub::call('append', $seed, $token)->assertConflict()->assertJsonPath('meta.context.reason', 'strict_profile_required');
     Hub::call('append', $seed + ['owner_id' => $address['owner_id'], 'owner_fence' => 1, 'base_seq' => 0], $token)
         ->assertOk()->assertJsonPath('seq', 1);
+});
+
+it('validates the owner fence, base position and browser binding of a fenced append before it reaches the journal', function (): void {
+    $node = Hub::document();
+    config()->set('vaulter-collaboration.strict_profile', true);
+    app(VaulterDatabase::class)->write(fn () => Hub::aggregate($node)->forceFill(['write_mode' => 'journal'])->save());
+    $token = Hub::token($node);
+    Hub::call('authenticate', ['room' => Hub::room($node), 'strict_capable' => true], $token)->assertOk()->assertJsonPath('profile', 'strict');
+    $address = ['document_id' => (string) Hub::aggregate($node)->getKey(), 'generation' => 0, 'owner_id' => (string) Str::uuid()];
+    Hub::callV2('ownership/acquire', $address + ['include_log' => true], null)->assertOk()->assertJsonPath('owner_fence', 1);
+    $fenced = Hub::seedBody($node, 'seed') + ['owner_id' => $address['owner_id'], 'owner_fence' => 1, 'base_seq' => 0];
+
+    foreach ([
+        'fence zero' => ['owner_fence' => 0],
+        'negative base' => ['base_seq' => -1],
+        'string receipt_only' => ['receipt_only' => 'yes'],
+        'session that is no uuid' => ['client_session_id' => 'session-1'],
+        'bound client id below the browser range' => ['bound_client_id' => 5],
+        'bound client id above 32 bits' => ['bound_client_id' => 0x100000000],
+    ] as $label => $override) {
+        expect(Hub::call('append', [...$fenced, ...$override], $token)->status())->toBe(422, $label);
+    }
+    Hub::call('append', $fenced, $token)->assertOk()->assertJsonPath('seq', 1);
+});
+
+it('refuses a body signature whose timestamp header is not a plain decimal', function (): void {
+    $node = Hub::document();
+    $token = Hub::token($node);
+    $body = ['room' => Hub::room($node), 'nonce' => bin2hex(random_bytes(8))];
+    $headers = Hub::headers($body, $token) + [HubProtocol::HEADER => '2'];
+    $timestamp = $headers[CollaborationCallResolver::TIMESTAMP_HEADER];
+
+    // The signature is valid for the integer the header starts with; the header itself must be that integer.
+    foreach ([$timestamp.'x', '+'.$timestamp, $timestamp.'.0'] as $presented) {
+        test()->postJson('api/vaulter/v1/collaboration/hub/authenticate', $body, [...$headers, CollaborationCallResolver::TIMESTAMP_HEADER => $presented])
+            ->assertUnauthorized();
+    }
+    test()->postJson('api/vaulter/v1/collaboration/hub/authenticate', $body, $headers)->assertOk();
 });

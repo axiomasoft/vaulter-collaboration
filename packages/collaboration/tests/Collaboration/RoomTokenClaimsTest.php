@@ -159,9 +159,14 @@ it('refuses a missing tenant claim and wrong or malformed values', function (): 
         'bad tenant' => ['tenant' => 5],
         'bad permissions version' => ['permissions_version' => ['drive' => 'x', 'global' => 0]],
         'room of another document' => ['document_id' => '999999'],
+        'uppercase profile' => ['profile' => 'Strict'],
+        'numeric profile' => ['profile' => 7],
+        'profile above 32 characters' => ['profile' => 's'.str_repeat('x', 32)],
     ] as $label => $claims) {
         expect(($this->verify)(claimsToken($this, $claims)))->toBeNull($label);
     }
+
+    expect(($this->verify)(claimsToken($this, ['profile' => 'strict']))?->profile)->toBe('strict');
 
     $parts = explode('.', claimsToken($this));
     $payload = json_decode(base64_decode(strtr($parts[1], '-_', '+/')), true);

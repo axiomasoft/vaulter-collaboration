@@ -84,6 +84,19 @@ it('refuses a payload above limits.update_bytes by its base64 length, and takes 
         ->assertJsonPath('seq', 2);
 });
 
+it('refuses a payload one byte above limits.update_bytes that its base64 length alone cannot tell apart', function (): void {
+    // 31 and 32 bytes both encode to 44 base64 characters: only the decoded length tells them apart.
+    config()->set('vaulter-collaboration.limits.update_bytes', 31);
+
+    Hub::callV2('append', Hub::seedBody($this->node, 'valid-seed'), Hub::token($this->node))->assertOk();
+    Hub::callV2('append', Hub::appendBody($this->node, str_repeat('a', 32)), Hub::token($this->node))
+        ->assertStatus(413)
+        ->assertJsonPath('code', 'collaboration_update_too_large');
+    Hub::callV2('append', Hub::appendBody($this->node, str_repeat('a', 31)), Hub::token($this->node))
+        ->assertOk()
+        ->assertJsonPath('seq', 2);
+});
+
 it('bounds a seed by max_state_bytes, not limits.update_bytes: it carries the whole initial state', function (): void {
     config()->set('vaulter-collaboration.limits.update_bytes', 30);
     config()->set('vaulter-collaboration.max_state_bytes', 60);
