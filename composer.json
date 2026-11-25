@@ -106,6 +106,7 @@
         "refactor": "vendor/bin/rector process",
         "refactor:check": "vendor/bin/rector process --dry-run",
         "test": "@php vendor/bin/pest -c phpunit.xml.dist --test-directory=packages/collaboration/tests",
-        "test:pg": "scripts/test-pgsql.sh"
+        "test:pg": "scripts/test-db.sh pgsql",
+        "test:mysql": "scripts/test-db.sh mysql"
     }
 }

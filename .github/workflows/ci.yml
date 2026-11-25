@@ -1,6 +1,6 @@
 name: CI
 
-# Same skeleton as the other Vaulter satellites: quality (static checks and stop-cranes), php (PHP x PostgreSQL),
+# Same skeleton as the other Vaulter satellites: quality (static checks and stop-cranes), php (PHP x PostgreSQL), mysql,
 # node (hub and Vue adapter), the product lanes (images, e2e, stand) and one required `CI gate`.
 #
 # The siblings (../vaulter, ../packman) come from scripts/ci/checkout-ecosystem.sh with the VAULTER_READ_TOKEN
@@ -171,7 +171,68 @@ jobs:
       - name: Pest (PostgreSQL, parallel pass and serial race scenarios, nothing skipped)
         run: |
           psql -v ON_ERROR_STOP=1 -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'
-          scripts/test-pgsql.sh
+          scripts/test-db.sh pgsql
+
+  mysql:
+    name: PHP 8.4 / MySQL 9.7
+    # The log reads take row locks only on MySQL (UpdateLog), the lease column is TIMESTAMP(6) there and the
+    # schema has MySQL-only DDL (CollaborationSchema), so the engine needs its own lane. The forked race
+    # scenarios (group serial) are PostgreSQL-only (ForkRace) and do not run here.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      mysql:
+        image: mysql:9.7@sha256:df90258da46f6e7ff8574ff84f17618aba0765cac749928299c69fd4e7cb8ad8
+        env:
+          MYSQL_ROOT_PASSWORD: secret
+          MYSQL_DATABASE: vaulter_test
+        ports:
+          - 3306:3306
+        options: >-
+          --tmpfs /var/lib/mysql
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -psecret"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: "3306"
+      DB_DATABASE: vaulter_test
+      DB_USERNAME: root
+      DB_PASSWORD: secret
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup PHP 8.4
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2.40.0
+        with:
+          php-version: '8.4'
+          extensions: pdo_mysql, pdo_sqlite, sqlite3, pcntl, posix
+          coverage: none
+          tools: composer:v2
+
+      - name: Check out the sibling repositories
+        run: scripts/ci/checkout-ecosystem.sh
+
+      - name: Get Composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Composer downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: composer-php8.4-${{ hashFiles('composer.json', 'packages/*/composer.json') }}
+          restore-keys: composer-php8.4-
+
+      - name: Install Composer dependencies
+        run: composer install --no-progress
+
+      - name: Pest (MySQL, parallel, nothing skipped)
+        run: scripts/test-db.sh mysql
 
   node:
     name: Node (hub, Vue adapter)
@@ -315,7 +376,7 @@ jobs:
   ci-gate:
     name: CI gate
     if: always()
-    needs: [quality, php, node, image-template, e2e, stand]
+    needs: [quality, php, mysql, node, image-template, e2e, stand]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
