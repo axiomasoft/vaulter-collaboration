@@ -216,6 +216,39 @@ final class CollaborationSchema implements ModuleSchema
     }
 
     /**
+     * Partial indexes for the two head scans of every compaction lease call (each hub every few seconds): the drain
+     * requests, then the generations with uncheckpointed updates. Without them both scans walk every open head in
+     * key order, so their cost grows with the documents ever opened and not with the work due. MySQL and MariaDB have no
+     * partial indexes; there the scans keep walking the primary key.
+     */
+    public function indexCompactionScans(): void
+    {
+        $db = $this->helpers->dbConnection();
+        if (!in_array($db->getDriverName(), ['pgsql', 'sqlite'], true)) {
+            return;
+        }
+        $name = $this->helpers->table('collaboration_heads');
+        $grammar = $db->getQueryGrammar();
+        $table = $grammar->wrapTable($name);
+        $db->statement('CREATE INDEX '.$grammar->wrap($name.'_drain_scan')." ON {$table} (document_id, generation)
+            WHERE drain_requested_at IS NOT NULL AND retired_at IS NULL");
+        $db->statement('CREATE INDEX '.$grammar->wrap($name.'_pending_scan')." ON {$table} (document_id, generation)
+            WHERE head_seq > checkpoint_seq AND drain_requested_at IS NULL AND retired_at IS NULL");
+    }
+
+    public function dropCompactionScanIndexes(): void
+    {
+        $db = $this->helpers->dbConnection();
+        if (!in_array($db->getDriverName(), ['pgsql', 'sqlite'], true)) {
+            return;
+        }
+        $name = $this->helpers->table('collaboration_heads');
+        $grammar = $db->getQueryGrammar();
+        $db->statement('DROP INDEX IF EXISTS '.$grammar->wrap($name.'_drain_scan'));
+        $db->statement('DROP INDEX IF EXISTS '.$grammar->wrap($name.'_pending_scan'));
+    }
+
+    /**
      * v_collaboration_heads — one row per document generation: the last committed log sequence (head_seq), the sequence
      * and state version the last published checkpoint covers, the compaction lease and the drain request. A row is
      * created under the document lock by the first append of its generation; retired_at closes the generation.
