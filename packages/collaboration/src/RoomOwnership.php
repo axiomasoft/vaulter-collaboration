@@ -6,6 +6,7 @@ namespace Vaulter\Collaboration;
 
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Carbon;
+use LogicException;
 use Packman\Attributes\Internal;
 use Packman\Attributes\Spi;
 use Packman\Attributes\SpiKind;
@@ -55,7 +56,7 @@ final readonly class RoomOwnership
             'updated_at' => $now,
         ]);
 
-        return $this->head($document) ?? throw new \LogicException('The collaboration head was not created.');
+        return $this->head($document) ?? throw new LogicException('The collaboration head was not created.');
     }
 
     #[Internal]

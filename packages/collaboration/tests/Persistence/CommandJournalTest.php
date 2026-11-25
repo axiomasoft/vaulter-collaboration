@@ -36,7 +36,7 @@ it('retains a running intent on stale base and atomically commits bytes and one 
     $aggregate = Hub::aggregate($node);
     $update = static fn (string $payload, ?int $seed = null): UpdateEnvelope => new UpdateEnvelope($aggregate->collab_epoch, (string) Str::uuid(), $payload, hash('sha256', $payload), 'server', $seed);
     $log = app(UpdateLog::class);
-    $log->appendFenced($node->getKey(), $update('seed', $aggregate->state_version), $owner, 1, 0, static fn () => null);
+    $log->appendFenced($node->getKey(), $update('seed', $aggregate->state_version), $owner, 1, 0, static fn (): null => null);
     $scope = new CommandActor(Actor::user(AccessTestHelpers::user())->ref(), null, 'test', 'writer', (string) $node->drive_id, (string) $node->getKey());
     $journal = app(CommandJournal::class);
     $proposal = (string) Str::uuid();
@@ -44,7 +44,7 @@ it('retains a running intent on stale base and atomically commits bytes and one 
     $register = fn () => $journal->register($scope, 'A42', $proposal, $digest, 0, 1, 1, ['atomic_effects' => []]);
     $running = $register();
     expect($register())->toBe($running);
-    $log->appendFenced($node->getKey(), $update('human'), $owner, 1, 1, static fn () => null);
+    $log->appendFenced($node->getKey(), $update('human'), $owner, 1, 1, static fn (): null => null);
 
     $prepared = $update('agent');
     $settle = fn (int $base, int $fence) => $journal->settle($running['id'], $owner, $fence, 0, $base, $running['fingerprint'], [$prepared], ['blocks' => []]);

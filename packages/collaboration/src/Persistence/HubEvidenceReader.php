@@ -57,7 +57,7 @@ final readonly class HubEvidenceReader
                 || !is_int($data['position'] ?? null) || $data['position'] < $minimum
                 || !is_string($data['text'] ?? null) || !is_bool($data['textPassed'] ?? null)
                 || !is_array($data['marks'] ?? null) || !array_is_list($data['marks'])
-                || array_filter($data['marks'], 'is_string') !== $data['marks'] || !is_bool($data['marksPassed'] ?? null)) {
+                || array_filter($data['marks'], is_string(...)) !== $data['marks'] || !is_bool($data['marksPassed'] ?? null)) {
                 continue;
             }
 

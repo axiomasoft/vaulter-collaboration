@@ -298,7 +298,7 @@ final readonly class CommandJournal
     }
 
     /**
-     * @param  list<UpdateEnvelope> $updates
+     * @param  list<UpdateEnvelope>    $updates
      * @param  array<array-key, mixed> $evidence
      * @return array<string, mixed>
      */

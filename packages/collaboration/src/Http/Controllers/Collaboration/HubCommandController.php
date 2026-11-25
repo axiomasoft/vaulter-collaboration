@@ -127,7 +127,7 @@ final readonly class HubCommandController
             return $this->locked($request, function (LockedDocumentState $doc) use ($request, $owner, $fence, $generation, $base): array {
                 $update = $this->envelope($request->input('update'), $generation, $this->position($request->input('seed_state_version'), 'seed_state_version'));
 
-                return $this->updates->appendFenced($doc->nodeId, $update, $owner, $fence, $base, static fn () => null)->ack();
+                return $this->updates->appendFenced($doc->nodeId, $update, $owner, $fence, $base, static fn (): null => null)->ack();
             });
         }
         $id = $this->uuid($request->input('id'), 'id');

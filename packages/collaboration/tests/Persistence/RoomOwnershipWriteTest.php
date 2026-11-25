@@ -29,9 +29,9 @@ it('refuses legacy, stale-fence and stale-base appends to a strict generation', 
     $log = app(UpdateLog::class);
 
     expect(fn () => $log->append($nodeId, $seed))->toThrow(RoomWriteConflict::class, 'strict_profile_required')
-        ->and(fn () => $log->appendFenced($nodeId, $seed, $owner, 2, 0, static fn () => null))->toThrow(RoomWriteConflict::class, 'stale_owner')
-        ->and(fn () => $log->appendFenced($nodeId, $seed, $owner, 1, 1, static fn () => null))->toThrow(RoomWriteConflict::class, 'base_moved')
+        ->and(fn () => $log->appendFenced($nodeId, $seed, $owner, 2, 0, static fn (): null => null))->toThrow(RoomWriteConflict::class, 'stale_owner')
+        ->and(fn () => $log->appendFenced($nodeId, $seed, $owner, 1, 1, static fn (): null => null))->toThrow(RoomWriteConflict::class, 'base_moved')
         ->and($log->snapshot($nodeId, $aggregate->collab_epoch)->headSeq)->toBe(0)
-        ->and($log->appendFenced($nodeId, $seed, $owner, 1, 0, static fn () => null)->seq)->toBe(1)
-        ->and($log->appendFenced($nodeId, $seed, $owner, 1, 0, static fn () => null)->duplicate)->toBeTrue();
+        ->and($log->appendFenced($nodeId, $seed, $owner, 1, 0, static fn (): null => null)->seq)->toBe(1)
+        ->and($log->appendFenced($nodeId, $seed, $owner, 1, 0, static fn (): null => null)->duplicate)->toBeTrue();
 });

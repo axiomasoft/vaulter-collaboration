@@ -60,8 +60,8 @@ final class CollaborationSchema implements ModuleSchema
                 'collaboration_updates' => $this->defineUpdates(table: $table, ids: $ids),
                 'collaboration_receipts' => $this->defineReceipts(table: $table, ids: $ids),
                 'collaboration_permission_versions' => $this->definePermissionVersions(table: $table),
-                'collaboration_client_ids' => (new StrictRoomSchema($this->helpers))->clientIds($table, $ids),
-                'collaboration_commands' => (new StrictRoomSchema($this->helpers))->commands($table, $ids),
+                'collaboration_client_ids' => new StrictRoomSchema($this->helpers)->clientIds($table, $ids),
+                'collaboration_commands' => new StrictRoomSchema($this->helpers)->commands($table, $ids),
                 default => throw new InvalidArgumentException(sprintf('Unknown collaboration entity [%s].', $entity)),
             };
         });

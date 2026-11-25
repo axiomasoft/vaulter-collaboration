@@ -7,7 +7,6 @@ use Vaulter\Collaboration\Persistence\AppendResult;
 use Vaulter\Collaboration\Persistence\CheckpointResult;
 use Vaulter\Collaboration\Tests\Collaboration\HubTestHelpers as Hub;
 use Vaulter\Collaboration\Tests\Support\Compaction;
-use Vaulter\Collaboration\Tests\Support\DocumentTestHelpers;
 use Vaulter\Collaboration\Tests\Support\FakeHub;
 use Vaulter\Documents\Facades\Documents;
 use Vaulter\Drive\Access\Roles\RoleRegistry;

@@ -7,6 +7,7 @@ namespace Vaulter\Collaboration\Tests\Support;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use RuntimeException;
 use Vaulter\Configuration\DatabaseOptions;
 use Vaulter\Documents\Content\TipTap\TipTapContent;
 use Vaulter\Documents\Models\Documents\Document;
@@ -107,7 +108,7 @@ final class DocumentTestHelpers
             }
             $bytes = stream_get_contents($value);
 
-            return $bytes === false ? throw new \RuntimeException('Unable to read stored document bytes.') : $bytes;
+            return $bytes === false ? throw new RuntimeException('Unable to read stored document bytes.') : $bytes;
         }, $attributes);
     }
 

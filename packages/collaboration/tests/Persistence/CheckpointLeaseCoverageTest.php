@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Illuminate\Database\QueryException;
 use Vaulter\Collaboration\Exceptions\CollaborationCheckpointConflictException;
+use Vaulter\Collaboration\Persistence\CheckpointResult;
 use Vaulter\Collaboration\Persistence\LogTables;
 use Vaulter\Collaboration\Persistence\UpdateLog;
 use Vaulter\Collaboration\Tests\Collaboration\HubTestHelpers as Hub;
@@ -25,7 +26,7 @@ it('rejects publication of 42 under a lease for 41 and preserves the unmerged ta
     $version = $lease->checkpointVersion;
 
     expect([$lease->log->checkpointSeq, $lease->log->headSeq, $late->seq])->toBe([40, 41, 42]);
-    expect(fn () => Compaction::publish($lease, 42))->toThrow(
+    expect(fn (): CheckpointResult => Compaction::publish($lease, 42))->toThrow(
         CollaborationCheckpointConflictException::class,
         CollaborationCheckpointConflictException::COVERAGE,
     );
@@ -72,7 +73,7 @@ it('rejects a lease at its deadline even when the PHP clock on PostgreSQL is beh
     $postgres = app(VaulterDatabase::class)->connection()->getDriverName() === 'pgsql';
     $this->travelTo($deadline->copy()->subSeconds($postgres ? 60 : 0));
 
-    expect(fn () => Compaction::publish($lease))
+    expect(fn (): CheckpointResult => Compaction::publish($lease))
         ->toThrow(CollaborationCheckpointConflictException::class, CollaborationCheckpointConflictException::LEASE);
     expect(Compaction::seqs($node))->toBe([1]);
 
