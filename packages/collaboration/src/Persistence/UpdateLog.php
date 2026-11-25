@@ -203,7 +203,7 @@ final readonly class UpdateLog
             ->where('seq', '>', max($checkpointSeq, $afterSeq ?? 0))
             ->where('seq', '<=', $headSeq)
             ->orderBy('seq');
-        if ($query->getConnection()->getDriverName() === 'mysql') {
+        if ($this->database->driver() === 'mysql') {
             // The transaction began with a plain read (the node, in lock()): on MySQL (REPEATABLE READ) a plain read
             // here would answer from that older snapshot and miss an append committed since, while the head FOR UPDATE
             // sees it. A locking read sees the committed rows, as every read after the lock does on PostgreSQL, where
