@@ -4,7 +4,7 @@ import { Throttle } from '@hocuspocus/extension-throttle'
 import * as backendModule from './backend.js'
 import { config, isOriginAllowed, validateConfig } from './config.js'
 import { createControlChannel } from './control.js'
-import { createLimits, isSyncRequest, isWriteMessage, LIMIT } from './limits.js'
+import { createLimits, isAwarenessUpdate, isSyncRequest, isWriteMessage, LIMIT } from './limits.js'
 import { createBackendStatus, createManagement, createReadiness, instrumentBackend } from './management.js'
 import { createHubMetrics, roomStats } from './metrics.js'
 import { CLIENT_PROTOCOL, createPersistence, epochChanged, NACK } from './persistence.js'
@@ -168,6 +168,7 @@ const LIMIT_CLOSE = Object.freeze({
   [LIMIT.DOCUMENT_BYTES]: DOCUMENT_TOO_LARGE,
   [LIMIT.UPDATES_PER_SECOND]: RATE_LIMITED,
   [LIMIT.SYNC_REQUESTS]: RATE_LIMITED,
+  [LIMIT.AWARENESS_BYTES]: RATE_LIMITED,
   [LIMIT.CONNECTIONS_PER_ROOM]: TOO_MANY_CONNECTIONS,
   [LIMIT.ROOMS_PER_TENANT]: TOO_MANY_ROOMS,
 })
@@ -363,7 +364,8 @@ export function createHooks({ backend = backendModule, log = console, persistenc
    * update and sync step 2 (its envelopes are refused in onStateless). Then the limits, from the raw
    * message before Hocuspocus decodes it: a message above its size closes the connection 4413, a
    * writer's sync write past the room's rate 4429, and so does any connection's sync request past its
-   * own rate (the answer is the room's state, so the request is the cheap side). While its room takes no writes (writes stopped,
+   * own rate (the answer is the room's state, so the request is the cheap side), and any connection's
+   * awareness updates past its byte rate (the room sends each on to every peer). While its room takes no writes (writes stopped,
    * draining, the room at its size limit) a writer's sync writes are dropped (src/persistence.js).
    */
   async function beforeHandleMessage(payload) {
@@ -400,6 +402,12 @@ export function createHooks({ backend = backendModule, log = console, persistenc
     }
 
     if (connection && isSyncRequest(update) && !limit.admitSyncRequest(connection)) {
+      closeConnection(connection, RATE_LIMITED)
+
+      throw new Error(RATE_LIMITED.reason)
+    }
+
+    if (connection && isAwarenessUpdate(update) && !limit.admitAwareness(connection, update.length)) {
       closeConnection(connection, RATE_LIMITED)
 
       throw new Error(RATE_LIMITED.reason)

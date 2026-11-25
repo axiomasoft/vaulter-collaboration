@@ -154,6 +154,7 @@ Checked before anything is decoded; a refusal is counted in `collab_limit_reject
 | `VAULTER_COLLAB_MAX_CONNECTIONS_PER_ROOM` | `100` | Connections of one room on this hub. |
 | `VAULTER_COLLAB_MAX_UPDATES_PER_SECOND_PER_ROOM` | `200` | Writes one room takes per second. |
 | `VAULTER_COLLAB_MAX_SYNC_REQUESTS_PER_MINUTE` | `10` | Sync step 1 and awareness queries one connection may send per minute (a read-only one too); the next closes it `4429 rate_limited`. Each answer carries the room's state, so without this bound a viewer could make the hub send megabytes for every few bytes it sends. A client sends one when it connects; keep the provider's `forceSyncInterval` above `60000 / limit` ms if you use it. |
+| `VAULTER_COLLAB_MAX_AWARENESS_BYTES_PER_SECOND` | `65536` | Awareness update bytes (cursors, selections, user names) one connection may send per second; the next update closes it `4429 rate_limited`. The room sends each update on to every peer and keeps it for those who join later, so this also bounds what one peer costs the others. A larger single update never passes. |
 
 ### Security
 

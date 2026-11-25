@@ -13,6 +13,8 @@
 //     or closed 4429 when it got in concurrently;
 //   - a connection's sync requests (sync step 1, awareness query) past MAX_SYNC_REQUESTS_PER_MINUTE →
 //     closed 4429: each answer carries the room's whole state, so a few bytes would buy megabytes;
+//   - a connection's awareness updates past MAX_AWARENESS_BYTES_PER_SECOND → closed 4429: each one
+//     is sent on to every peer of the room and kept for every peer that joins later;
 //   - a backend request above MAX_REQUEST_BYTES → not sent; answered 413 as the backend would.
 // This module imports nothing, so the size arithmetic and the counters are tested without Yjs.
 
@@ -24,6 +26,7 @@ export const LIMIT_DEFAULTS = Object.freeze({
   maxConnectionsPerRoom: 100,
   maxUpdatesPerSecondPerRoom: 200,
   maxSyncRequestsPerMinute: 10,
+  maxAwarenessBytesPerSecond: 64 * 1024,
 })
 
 /** The limit names: the `limit` label of collab_limit_rejections_total. */
@@ -35,6 +38,7 @@ export const LIMIT = Object.freeze({
   CONNECTIONS_PER_ROOM: 'connections_per_room',
   UPDATES_PER_SECOND: 'updates_per_second',
   SYNC_REQUESTS: 'sync_requests',
+  AWARENESS_BYTES: 'awareness_bytes',
 })
 
 /** What an envelope carries besides its base64 update: keys, version, generation, uuid, sha256 (generous). */
@@ -104,6 +108,9 @@ export function readVarUint(bytes, cursor) {
 /** Hocuspocus message types that carry a Yjs sync message (Sync, SyncReply). */
 const SYNC_MESSAGES = Object.freeze([0, 4])
 
+/** The Hocuspocus message type of an awareness update: the room sends it on to every other peer. */
+const AWARENESS = 1
+
 /** The Hocuspocus message type of an awareness query: its answer is every awareness state of the room. */
 const QUERY_AWARENESS = 3
 
@@ -162,6 +169,11 @@ export function isSyncRequest(bytes) {
   return header?.kind === 'step1' || header?.type === QUERY_AWARENESS
 }
 
+/** Whether a raw Hocuspocus message is an awareness update. */
+export function isAwarenessUpdate(bytes) {
+  return readMessageHeader(bytes)?.type === AWARENESS
+}
+
 /** The update_id an oversized envelope names, read from its first bytes only (null when it names none). */
 export function envelopeIdOf(payload) {
   const match = /"id"\s*:\s*"([^"\\]{1,64})"/.exec(payload.slice(0, 256))
@@ -193,12 +205,15 @@ export function createLimits(conf = {}, { clock = Date.now } = {}) {
     maxConnectionsPerRoom: setting(conf, 'maxConnectionsPerRoom'),
     maxUpdatesPerSecondPerRoom: setting(conf, 'maxUpdatesPerSecondPerRoom'),
     maxSyncRequestsPerMinute: setting(conf, 'maxSyncRequestsPerMinute'),
+    maxAwarenessBytesPerSecond: setting(conf, 'maxAwarenessBytesPerSecond'),
   })
   const rejections = Object.fromEntries(Object.values(LIMIT).map((limit) => [limit, 0]))
   /** channel\0documentName → { tokens, at }. */
   const buckets = new Map()
   /** connection → its sync request bucket { tokens, at }; dropped with the connection. */
   const syncRequests = new WeakMap()
+  /** connection → its awareness byte bucket { tokens, at }; dropped with the connection. */
+  const awarenessBytes = new WeakMap()
   /** documentName → Set of connection keys (socketId, or the connection). */
   const connections = new Map()
   /** tenant → Set of documentNames with a connection here; documentName → its tenant. */
@@ -296,6 +311,32 @@ export function createLimits(conf = {}, { clock = Date.now } = {}) {
   }
 
   /**
+   * Take the bytes of one awareness update of a connection: false, counted, when its bucket holds
+   * fewer. The bucket holds MAX_AWARENESS_BYTES_PER_SECOND bytes and refills at that rate, so a
+   * message larger than that is never taken. A cursor or a name is a few hundred bytes, sent at
+   * most a few dozen times a second.
+   */
+  function admitAwareness(connection, bytes) {
+    const rate = settings.maxAwarenessBytesPerSecond
+    const now = clock()
+    const bucket = awarenessBytes.get(connection) ?? { tokens: rate, at: now }
+
+    bucket.tokens = Math.min(rate, bucket.tokens + (Math.max(0, now - bucket.at) * rate) / 1000)
+    bucket.at = now
+    awarenessBytes.set(connection, bucket)
+
+    if (bucket.tokens < bytes) {
+      count(LIMIT.AWARENESS_BYTES)
+
+      return false
+    }
+
+    bucket.tokens -= bytes
+
+    return true
+  }
+
+  /**
    * The limit a new connection of a room would cross (null when it may come in): the room holds
    * MAX_CONNECTIONS_PER_ROOM, or the room is new here and its tenant (`undefined`: not known yet,
    * not checked) has MAX_ROOMS_PER_TENANT rooms open. Not counted: a caller that refuses counts.
@@ -369,6 +410,7 @@ export function createLimits(conf = {}, { clock = Date.now } = {}) {
     updateTooLarge,
     admitWrite,
     admitSyncRequest,
+    admitAwareness,
     admission,
     register,
     unregister,
