@@ -118,6 +118,8 @@ export function createLedger({
   /** documentName → pending bytes, and their total: kept as records come and go (the budget reads them often). */
   const bytesOf = new Map()
   let totalBytes = 0
+  /** connection → the records it waits for: detach() touches only those, not the whole ledger. */
+  const byConnection = new Map()
   /** documentName → the running flush of that document. */
   const running = new Map()
   /** Documents whose last flush stopped on an exhausted series; the next cycle tries again. */
@@ -151,6 +153,38 @@ export function createLedger({
     return { status: 'dropped', code: failure.code, retry: failure.retry === true, httpStatus: failure.status ?? null }
   }
 
+  function attach(entry, connection) {
+    entry.connections.add(connection)
+
+    let waiting = byConnection.get(connection)
+    if (waiting === undefined) {
+      waiting = new Set()
+      byConnection.set(connection, waiting)
+    }
+    waiting.add(entry)
+  }
+
+  /** Forget a record that left its queue: its index slot, its bytes and its connections. */
+  function forget(entry) {
+    index.delete(key(entry.documentName, entry.updateId))
+    count(entry, -1)
+
+    for (const connection of entry.connections) {
+      const waiting = byConnection.get(connection)
+      waiting?.delete(entry)
+      if (waiting?.size === 0) {
+        byConnection.delete(connection)
+      }
+    }
+  }
+
+  function settleEmpty(documentName, queue) {
+    if (queue.length === 0) {
+      queues.delete(documentName)
+      blockedDocuments.delete(documentName)
+    }
+  }
+
   function remove(entry) {
     const queue = queues.get(entry.documentName)
 
@@ -158,20 +192,16 @@ export function createLedger({
       return false
     }
 
-    const position = queue.indexOf(entry)
+    // The flush settles records from the head, so the usual position is 0.
+    const position = queue[0] === entry ? 0 : queue.indexOf(entry)
 
     if (position === -1) {
       return false
     }
 
     queue.splice(position, 1)
-    index.delete(key(entry.documentName, entry.updateId))
-    count(entry, -1)
-
-    if (queue.length === 0) {
-      queues.delete(entry.documentName)
-      blockedDocuments.delete(entry.documentName)
-    }
+    forget(entry)
+    settleEmpty(entry.documentName, queue)
 
     return true
   }
@@ -187,7 +217,7 @@ export function createLedger({
 
     if (existing) {
       if (record.connection) {
-        existing.connections.add(record.connection)
+        attach(existing, record.connection)
       }
 
       return existing
@@ -207,13 +237,17 @@ export function createLedger({
       origin: record.origin ?? 'client',
       token: record.token ?? null,
       seedStateVersion: record.seedStateVersion,
-      connections: new Set(record.connection ? [record.connection] : []),
+      connections: new Set(),
       attempts: 0,
       firstAt: clock(),
       sequence: ++sequence,
       lastFailure: null,
       settled,
       resolve,
+    }
+
+    if (record.connection) {
+      attach(entry, record.connection)
     }
 
     if (!queues.has(entry.documentName)) {
@@ -262,11 +296,31 @@ export function createLedger({
   }
 
   function dropWhere(documentName, predicate, failure) {
-    const queue = queues.get(documentName) ?? []
-    const dropped = queue.filter(predicate)
+    const queue = queues.get(documentName)
+
+    if (!queue) {
+      return []
+    }
+
+    // One pass: an epoch drop may cover a whole room's backlog, and removing records one by one
+    // (indexOf + splice each) made that quadratic.
+    const dropped = []
+    const kept = []
+    for (const entry of queue) {
+      (predicate(entry) ? dropped : kept).push(entry)
+    }
+
+    if (dropped.length === 0) {
+      return dropped
+    }
+
+    queues.set(documentName, kept)
+    for (const entry of dropped) {
+      forget(entry)
+    }
+    settleEmpty(documentName, kept)
 
     for (const entry of dropped) {
-      remove(entry)
       settle(entry, droppedResult(failure))
     }
 
@@ -433,9 +487,10 @@ export function createLedger({
 
   /** Forget a closed connection: it can no longer receive acks. */
   function detach(connection) {
-    for (const entry of index.values()) {
+    for (const entry of byConnection.get(connection) ?? []) {
       entry.connections.delete(connection)
     }
+    byConnection.delete(connection)
   }
 
   function entries(documentName) {
@@ -462,10 +517,25 @@ export function createLedger({
     return documentName === undefined ? totalBytes : (bytesOf.get(documentName) ?? 0)
   }
 
+  /**
+   * Records join their queue in arrival order, so each queue's head is its oldest record. Reading
+   * the heads keeps a metrics scrape O(documents): spreading every record into Math.min() threw
+   * RangeError past ~125k pending records, i.e. exactly during a long backend outage.
+   */
   function oldestAgeMs() {
-    const all = entries()
+    let oldest = Infinity
 
-    return all.length === 0 ? null : clock() - Math.min(...all.map((entry) => entry.firstAt))
+    for (const queue of queues.values()) {
+      if (queue.length > 0 && queue[0].firstAt < oldest) {
+        oldest = queue[0].firstAt
+      }
+    }
+
+    return oldest === Infinity ? null : clock() - oldest
+  }
+
+  function pendingCount(documentName) {
+    return documentName === undefined ? index.size : (queues.get(documentName)?.length ?? 0)
   }
 
   /** The cycle: every document with records that is not flushing gets a flush. unref()'d. */
@@ -500,7 +570,7 @@ export function createLedger({
     detach,
     entries,
     pendingBytes,
-    pendingCount: (documentName) => entries(documentName).length,
+    pendingCount,
     oldestAgeMs,
     find: (documentName, updateId) => index.get(key(documentName, updateId)) ?? null,
     documents: () => [...queues.keys()],

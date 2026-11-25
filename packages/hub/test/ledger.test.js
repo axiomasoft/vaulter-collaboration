@@ -399,3 +399,74 @@ test('pending bytes and age are reported per document and in total', async (t) =
   assert.equal(ledger.oldestAgeMs(), 1500)
   assert.deepEqual(ledger.documents().sort(), [ROOM, 'vaulter.documents.1.43.0'])
 })
+
+/** A ledger whose appends never answer: records stay pending, nothing touches the network. */
+function stalledLedger(time = virtualTime()) {
+  return createLedger({
+    append: () => new Promise(() => {}),
+    clock: time.clock,
+    sleep: time.sleep,
+    flushIntervalMs: 0,
+    log: { error: () => {}, warn: () => {} },
+  })
+}
+
+test('the oldest age and the counts stay readable with a backlog past the argument-spread limit', () => {
+  // 8 MiB of keystroke-sized updates per room is ~400k records: the metrics scrape must not throw then.
+  const time = virtualTime()
+  const ledger = stalledLedger(time)
+  const payload = Buffer.alloc(4).toString('base64')
+
+  ledger.enqueue({ ...record(), documentName: 'vaulter.documents.1.43.0' })
+  time.advance(250)
+  for (let n = 0; n < 200_000; n += 1) {
+    ledger.enqueue({ documentName: ROOM, generation: 0, updateId: `u-${n}`, sha256: 'x', payload, bytes: 4, token: 't' })
+  }
+  time.advance(750)
+
+  assert.equal(ledger.oldestAgeMs(), 1000, 'the oldest head of every queue, whatever its size')
+  assert.equal(ledger.pendingCount(), 200_001)
+  assert.equal(ledger.pendingCount(ROOM), 200_000)
+  assert.equal(ledger.pendingCount('vaulter.documents.9.9.0'), 0)
+  assert.equal(ledger.stats().pending, 200_001)
+})
+
+test('a detached connection gets nothing more, and the other waiters of the same record still do', async (t) => {
+  const mock = await startMockBackend({ append: (call) => receipt(call.body, 3) })
+  t.after(() => mock.close())
+  const { ledger, seen } = ledgerFor(mock)
+  const stays = connection()
+  const leaves = connection()
+  const original = record()
+  const unrelated = record({ documentName: 'vaulter.documents.1.43.0' })
+
+  // The appends are in flight (nothing answered yet) when the connection leaves.
+  ledger.enqueue({ ...original, connection: leaves })
+  ledger.enqueue({ ...original, connection: stays })
+  ledger.enqueue({ ...unrelated, connection: leaves })
+  ledger.detach(leaves)
+  ledger.detach(connection()) // a connection that never waited for anything
+  await ledger.flush()
+
+  const acked = new Map(seen.acked.map(([entry]) => [entry.updateId, [...entry.connections]]))
+  assert.deepEqual(acked.get(original.updateId), [stays])
+  assert.deepEqual(acked.get(unrelated.updateId), [])
+  assert.equal(ledger.pendingCount(), 0)
+})
+
+test('an epoch drop keeps the other generations in their order with their bytes', async (t) => {
+  const mock = await startMockBackend({ append: (call) => (call.body.generation === 0 ? problem(409, backend.EPOCH_MISMATCH) : receipt(call.body, 1)) })
+  t.after(() => mock.close())
+  const { ledger, seen } = ledgerFor(mock)
+
+  const records = [0, 1, 0, 1, 0].map((generation) => record({ generation, data: Buffer.alloc(generation + 1) }))
+  const entries = records.map((item) => ledger.enqueue(item))
+  await ledger.flush(ROOM)
+  await Promise.all(entries.map((entry) => entry.settled))
+
+  assert.deepEqual(seen.dropped.map(([entry]) => entry.updateId), [records[0], records[2], records[4]].map((item) => item.updateId))
+  assert.deepEqual(seen.acked.map(([entry]) => entry.updateId), [records[1], records[3]].map((item) => item.updateId))
+  assert.deepEqual(mock.appends().map((call) => call.body.update_id), [records[0], records[1], records[3]].map((item) => item.updateId))
+  assert.equal(ledger.pendingBytes(), 0)
+  assert.equal(ledger.pendingCount(), 0)
+})
