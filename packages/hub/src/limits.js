@@ -11,6 +11,8 @@
 //     envelope is nacked `rate_limited` retry:true;
 //   - a connection past MAX_CONNECTIONS_PER_ROOM or a new room past MAX_ROOMS_PER_TENANT → refused,
 //     or closed 4429 when it got in concurrently;
+//   - a connection's sync requests (sync step 1, awareness query) past MAX_SYNC_REQUESTS_PER_MINUTE →
+//     closed 4429: each answer carries the room's whole state, so a few bytes would buy megabytes;
 //   - a backend request above MAX_REQUEST_BYTES → not sent; answered 413 as the backend would.
 // This module imports nothing, so the size arithmetic and the counters are tested without Yjs.
 
@@ -21,6 +23,7 @@ export const LIMIT_DEFAULTS = Object.freeze({
   maxRoomsPerTenant: 1000,
   maxConnectionsPerRoom: 100,
   maxUpdatesPerSecondPerRoom: 200,
+  maxSyncRequestsPerMinute: 10,
 })
 
 /** The limit names: the `limit` label of collab_limit_rejections_total. */
@@ -31,6 +34,7 @@ export const LIMIT = Object.freeze({
   ROOMS_PER_TENANT: 'rooms_per_tenant',
   CONNECTIONS_PER_ROOM: 'connections_per_room',
   UPDATES_PER_SECOND: 'updates_per_second',
+  SYNC_REQUESTS: 'sync_requests',
 })
 
 /** What an envelope carries besides its base64 update: keys, version, generation, uuid, sha256 (generous). */
@@ -100,6 +104,9 @@ export function readVarUint(bytes, cursor) {
 /** Hocuspocus message types that carry a Yjs sync message (Sync, SyncReply). */
 const SYNC_MESSAGES = Object.freeze([0, 4])
 
+/** The Hocuspocus message type of an awareness query: its answer is every awareness state of the room. */
+const QUERY_AWARENESS = 3
+
 const SYNC_STEPS = Object.freeze({ 0: 'step1', 1: 'step2', 2: 'update' })
 
 /**
@@ -144,6 +151,17 @@ export function isWriteMessage(bytes) {
   return kind === 'step2' || kind === 'update'
 }
 
+/**
+ * Whether a raw Hocuspocus message asks for the room's state: a sync step 1 (answered with all the
+ * room holds beyond the sender's state vector, the whole document for an empty one) or an awareness
+ * query (answered with every awareness state). Any connection may send one, a read-only one too.
+ */
+export function isSyncRequest(bytes) {
+  const header = readMessageHeader(bytes)
+
+  return header?.kind === 'step1' || header?.type === QUERY_AWARENESS
+}
+
 /** The update_id an oversized envelope names, read from its first bytes only (null when it names none). */
 export function envelopeIdOf(payload) {
   const match = /"id"\s*:\s*"([^"\\]{1,64})"/.exec(payload.slice(0, 256))
@@ -174,10 +192,13 @@ export function createLimits(conf = {}, { clock = Date.now } = {}) {
     maxRoomsPerTenant: setting(conf, 'maxRoomsPerTenant'),
     maxConnectionsPerRoom: setting(conf, 'maxConnectionsPerRoom'),
     maxUpdatesPerSecondPerRoom: setting(conf, 'maxUpdatesPerSecondPerRoom'),
+    maxSyncRequestsPerMinute: setting(conf, 'maxSyncRequestsPerMinute'),
   })
   const rejections = Object.fromEntries(Object.values(LIMIT).map((limit) => [limit, 0]))
   /** channel\0documentName → { tokens, at }. */
   const buckets = new Map()
+  /** connection → its sync request bucket { tokens, at }; dropped with the connection. */
+  const syncRequests = new WeakMap()
   /** documentName → Set of connection keys (socketId, or the connection). */
   const connections = new Map()
   /** tenant → Set of documentNames with a connection here; documentName → its tenant. */
@@ -240,6 +261,31 @@ export function createLimits(conf = {}, { clock = Date.now } = {}) {
 
     if (bucket.tokens < 1) {
       count(LIMIT.UPDATES_PER_SECOND)
+
+      return false
+    }
+
+    bucket.tokens -= 1
+
+    return true
+  }
+
+  /**
+   * Take one sync request (isSyncRequest) of a connection: false, counted, when its bucket is empty.
+   * The bucket holds MAX_SYNC_REQUESTS_PER_MINUTE requests and refills at that rate; a client sends
+   * one when it connects or reconnects, so only a flood reaches the bound.
+   */
+  function admitSyncRequest(connection) {
+    const rate = settings.maxSyncRequestsPerMinute
+    const now = clock()
+    const bucket = syncRequests.get(connection) ?? { tokens: rate, at: now }
+
+    bucket.tokens = Math.min(rate, bucket.tokens + (Math.max(0, now - bucket.at) * rate) / 60_000)
+    bucket.at = now
+    syncRequests.set(connection, bucket)
+
+    if (bucket.tokens < 1) {
+      count(LIMIT.SYNC_REQUESTS)
 
       return false
     }
@@ -322,6 +368,7 @@ export function createLimits(conf = {}, { clock = Date.now } = {}) {
     envelopeTooLarge,
     updateTooLarge,
     admitWrite,
+    admitSyncRequest,
     admission,
     register,
     unregister,

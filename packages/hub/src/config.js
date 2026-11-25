@@ -67,6 +67,8 @@
 //   VAULTER_COLLAB_MAX_ROOMS_PER_TENANT     — rooms of one tenant open on this hub (default 1000).
 //   VAULTER_COLLAB_MAX_CONNECTIONS_PER_ROOM — connections of one room on this hub (default 100).
 //   VAULTER_COLLAB_MAX_UPDATES_PER_SECOND_PER_ROOM — writes one room takes per second (default 200).
+//   VAULTER_COLLAB_MAX_SYNC_REQUESTS_PER_MINUTE — sync step 1 and awareness queries one connection sends per
+//                                             minute (default 10); each is answered with the room's state.
 //
 // Revocation (src/revocation.js, src/control.js):
 //   VAULTER_COLLAB_RENEW_BEFORE_MS          — how long before a token's exp the hub renews it through the backend
@@ -248,6 +250,7 @@ export function buildConfig(env = process.env) {
     maxRoomsPerTenant: int('VAULTER_COLLAB_MAX_ROOMS_PER_TENANT', 1000, env),
     maxConnectionsPerRoom: int('VAULTER_COLLAB_MAX_CONNECTIONS_PER_ROOM', 100, env),
     maxUpdatesPerSecondPerRoom: int('VAULTER_COLLAB_MAX_UPDATES_PER_SECOND_PER_ROOM', 200, env),
+    maxSyncRequestsPerMinute: int('VAULTER_COLLAB_MAX_SYNC_REQUESTS_PER_MINUTE', 10, env),
 
     // Revocation
     renewBeforeMs: int('VAULTER_COLLAB_RENEW_BEFORE_MS', 60000, env),
@@ -303,6 +306,7 @@ const NUMERIC = Object.freeze([
   { key: 'maxRoomsPerTenant', env: 'VAULTER_COLLAB_MAX_ROOMS_PER_TENANT', min: 1 },
   { key: 'maxConnectionsPerRoom', env: 'VAULTER_COLLAB_MAX_CONNECTIONS_PER_ROOM', min: 1 },
   { key: 'maxUpdatesPerSecondPerRoom', env: 'VAULTER_COLLAB_MAX_UPDATES_PER_SECOND_PER_ROOM', min: 1 },
+  { key: 'maxSyncRequestsPerMinute', env: 'VAULTER_COLLAB_MAX_SYNC_REQUESTS_PER_MINUTE', min: 1 },
   { key: 'maxPayloadBytes', env: 'VAULTER_COLLAB_MAX_PAYLOAD_BYTES', min: 1 },
   { key: 'throttle', env: 'VAULTER_COLLAB_THROTTLE', min: 1 },
   { key: 'throttleSeconds', env: 'VAULTER_COLLAB_THROTTLE_SECONDS', min: 1 },

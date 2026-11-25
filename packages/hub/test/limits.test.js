@@ -12,6 +12,7 @@ import {
   decodedLength,
   envelopeIdOf,
   envelopeLength,
+  isSyncRequest,
   isWriteMessage,
   LIMIT,
   LIMIT_DEFAULTS,
@@ -134,6 +135,30 @@ test('writes per second are counted per room and channel with a token bucket', (
   assert.equal(limits.admitWrite(ROOM, 'sync'), true, 'an unloaded room starts again')
 })
 
+test('sync requests are told apart from their header and counted per connection with a token bucket', () => {
+  assert.equal(isSyncRequest(rawMessage(0, 0, 1)), true, 'sync step 1')
+  assert.equal(isSyncRequest(rawMessage(4, 0, 1)), true, 'sync step 1 as a sync reply')
+  assert.equal(isSyncRequest(rawMessage(3)), true, 'awareness query')
+  assert.equal(isSyncRequest(rawMessage(0, 1, 1)), false, 'sync step 2')
+  assert.equal(isSyncRequest(rawMessage(0, 2, 1)), false, 'update')
+  assert.equal(isSyncRequest(rawMessage(1, undefined, 4)), false, 'awareness update')
+  assert.equal(isSyncRequest(new Uint8Array([0xff])), false, 'unreadable header')
+
+  let now = 0
+  const limits = createLimits({ maxSyncRequestsPerMinute: 2 }, { clock: () => now })
+  const first = {}
+  const second = {}
+
+  assert.equal(limits.admitSyncRequest(first), true)
+  assert.equal(limits.admitSyncRequest(first), true)
+  assert.equal(limits.admitSyncRequest(first), false)
+  assert.equal(limits.admitSyncRequest(second), true, 'each connection has a bucket of its own')
+  now = 30_000
+  assert.equal(limits.admitSyncRequest(first), true, 'it refills at the rate per minute')
+  assert.equal(limits.admitSyncRequest(first), false)
+  assert.equal(limits.rejections()[LIMIT.SYNC_REQUESTS], 2)
+})
+
 test('connections per room and rooms per tenant are admitted, registered and released', () => {
   const limits = createLimits({ maxConnectionsPerRoom: 2, maxRoomsPerTenant: 2 })
   const room = (n) => `vaulter.documents.1.${n}.0`
@@ -168,8 +193,8 @@ test('the limits come from the hub config with safe defaults', () => {
   const defaults = buildConfig({ NODE_ENV: 'test' })
 
   assert.deepEqual(
-    [defaults.maxUpdateBytes, defaults.maxDocumentBytes, defaults.maxRequestBytes, defaults.maxRoomsPerTenant, defaults.maxConnectionsPerRoom, defaults.maxUpdatesPerSecondPerRoom],
-    [1024 * 1024, 16 * 1024 * 1024, 2 * 1024 * 1024, 1000, 100, 200],
+    [defaults.maxUpdateBytes, defaults.maxDocumentBytes, defaults.maxRequestBytes, defaults.maxRoomsPerTenant, defaults.maxConnectionsPerRoom, defaults.maxUpdatesPerSecondPerRoom, defaults.maxSyncRequestsPerMinute],
+    [1024 * 1024, 16 * 1024 * 1024, 2 * 1024 * 1024, 1000, 100, 200, 10],
   )
   assert.deepEqual(createLimits(defaults).settings, LIMIT_DEFAULTS)
   assert.deepEqual(createLimits({ maxUpdateBytes: NaN, maxConnectionsPerRoom: 0 }).settings, LIMIT_DEFAULTS, 'an unusable value falls back')
@@ -184,13 +209,15 @@ test('the limits come from the hub config with safe defaults', () => {
     VAULTER_COLLAB_MAX_ROOMS_PER_TENANT: '5',
     VAULTER_COLLAB_MAX_CONNECTIONS_PER_ROOM: '6',
     VAULTER_COLLAB_MAX_UPDATES_PER_SECOND_PER_ROOM: '7',
+    VAULTER_COLLAB_MAX_SYNC_REQUESTS_PER_MINUTE: '8',
   })
-  assert.deepEqual(createLimits(custom).settings, { maxUpdateBytes: 2048, maxDocumentBytes: 4096, maxRequestBytes: 8192, maxRoomsPerTenant: 5, maxConnectionsPerRoom: 6, maxUpdatesPerSecondPerRoom: 7 })
+  assert.deepEqual(createLimits(custom).settings, { maxUpdateBytes: 2048, maxDocumentBytes: 4096, maxRequestBytes: 8192, maxRoomsPerTenant: 5, maxConnectionsPerRoom: 6, maxUpdatesPerSecondPerRoom: 7, maxSyncRequestsPerMinute: 8 })
   assert.equal(custom.maxPayloadBytes, 4096 + 1024, 'the default frame follows the limits')
   assert.deepEqual(validateConfig(custom), [])
 
   const problems = (env) => validateConfig(buildConfig({ NODE_ENV: 'test', ...env }))
   assert.ok(problems({ VAULTER_COLLAB_MAX_UPDATE_BYTES: '0' }).some((problem) => problem.includes('VAULTER_COLLAB_MAX_UPDATE_BYTES')))
+  assert.ok(problems({ VAULTER_COLLAB_MAX_SYNC_REQUESTS_PER_MINUTE: '0' }).some((problem) => problem.includes('VAULTER_COLLAB_MAX_SYNC_REQUESTS_PER_MINUTE')))
   assert.ok(problems({ VAULTER_COLLAB_MAX_CONNECTIONS_PER_ROOM: 'many' }).some((problem) => problem.includes('VAULTER_COLLAB_MAX_CONNECTIONS_PER_ROOM')))
   assert.ok(problems({ VAULTER_COLLAB_MAX_DOCUMENT_BYTES: '100', VAULTER_COLLAB_MAX_UPDATE_BYTES: '200' }).some((problem) => problem.includes('VAULTER_COLLAB_MAX_DOCUMENT_BYTES must be >=')))
   assert.ok(problems({ VAULTER_COLLAB_MAX_REQUEST_BYTES: '1000' }).some((problem) => problem.includes('VAULTER_COLLAB_MAX_REQUEST_BYTES must hold')))
@@ -546,6 +573,31 @@ test('a writer\'s sync writes past the room\'s rate close the connection 4429', 
   const viewer = fakeConnection('viewer')
   viewer.readOnly = true
   await assert.doesNotReject(hooks.beforeHandleMessage({ connection: viewer, context: writerContext({ mode: 'ro', readOnly: true }), documentName: ROOM, update: rawMessage(0, 2, 5) }))
+})
+
+test('a connection\'s sync requests past its rate close it 4429, a read-only viewer\'s too', async (t) => {
+  const { fakeConnection, writerContext } = await support()
+  const { hooks } = await hooksFor(t, { maxSyncRequestsPerMinute: 2 })
+  const viewer = fakeConnection('viewer')
+  viewer.readOnly = true
+  const context = writerContext({ mode: 'ro', readOnly: true })
+  const request = (connection, update) => hooks.beforeHandleMessage({ connection, context, documentName: ROOM, update })
+
+  await request(viewer, rawMessage(0, 0, 1))
+  await request(viewer, rawMessage(3))
+  await assert.rejects(request(viewer, rawMessage(0, 0, 1)), /rate_limited/)
+  assert.deepEqual(viewer.closed, [{ code: 4429, reason: 'rate_limited' }])
+  assert.equal(hooks.limits.rejections().sync_requests, 1)
+
+  // Writes and awareness updates are not sync requests: they do not take from the bucket.
+  const other = fakeConnection('other')
+  other.readOnly = true
+  for (let i = 0; i < 5; i++) {
+    await request(other, rawMessage(1, undefined, 4))
+    await request(other, rawMessage(0, 2, 5))
+  }
+  await request(other, rawMessage(0, 0, 1))
+  assert.deepEqual(other.closed, [])
 })
 
 test('a room at MAX_CONNECTIONS_PER_ROOM refuses the next connection, and a concurrent one is closed 4429', async (t) => {
