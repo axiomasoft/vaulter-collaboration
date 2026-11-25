@@ -314,6 +314,54 @@ test('a missing dependency cannot advance the room, and delete-only bytes do adv
   for (const doc of [room, base, client]) doc.destroy()
 })
 
+test('after its own append the room takes only the proven bytes on trust; another record is checked in full', async () => {
+  const base = fixture()
+  const client = new Y.Doc()
+  const other = new Y.Doc()
+  const room = new Y.Doc()
+  const checkpoint = Buffer.from(Y.encodeStateAsUpdate(base)).toString('base64')
+  const log = { generation: 3, checkpoint, checkpoint_seq: 40, head_seq: 40, tail: [] }
+  // What the backend commits instead of the submitted update (null: the submitted one).
+  let substitute = null
+  const sequence = createRoomSequencer({
+    room, generation: 3, load: async () => log,
+    append: async ({ payload, sha256 }) => {
+      log.tail.push(substitute ?? { seq: log.head_seq + 1, payload, sha256 })
+      log.head_seq += 1
+      return { seq: log.head_seq }
+    },
+  })
+  await sequence.catchUp()
+  const record = (bytes) => ({ seq: log.head_seq + 1, payload: Buffer.from(bytes).toString('base64'), sha256: sha256Hex(bytes) })
+  const submit = (bytes) => sequence.submitUpdate({
+    bytes, boundClientId: browserId, payload: Buffer.from(bytes).toString('base64'), sha256: sha256Hex(bytes),
+  })
+  for (const doc of [client, other]) Y.applyUpdate(doc, Y.encodeStateAsUpdate(base))
+  client.clientID = browserId
+  other.clientID = 0x80000009
+
+  // The proven record itself: applied, and the room moves on.
+  const before = Y.encodeStateVector(client)
+  textOf(client).insert(0, 'A')
+  await submit(Y.encodeStateAsUpdate(client, before))
+  assert.equal(sequence.appliedSeq, 41)
+  assert.equal(textOf(room).toString(), textOf(client).toString())
+
+  // The log grows by one record that is not the proven one and lacks a dependency: it must not
+  // ride on the proof of the submitted update.
+  textOf(other).insert(0, 'X')
+  const skipped = Y.encodeStateVector(other)
+  textOf(other).insert(1, 'Y')
+  const incomplete = Y.encodeStateAsUpdate(other, skipped)
+  const next = Y.encodeStateVector(client)
+  textOf(client).insert(0, 'B')
+  substitute = record(incomplete)
+  await assert.rejects(submit(Y.encodeStateAsUpdate(client, next)), { code: 'missing_dependencies' })
+  assert.equal(sequence.appliedSeq, 41, 'nothing of the unproven record became visible')
+  assert.doesNotMatch(textOf(room).toString(), /Y/)
+  for (const doc of [room, base, client, other]) doc.destroy()
+})
+
 test('relative evidence survives a shifted offset and detects an offline edit to the target', async () => {
   const base = fixture()
   const offline = new Y.Doc()

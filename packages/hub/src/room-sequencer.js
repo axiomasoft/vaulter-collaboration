@@ -309,6 +309,9 @@ export function createRoomSequencer({ room, generation, load, append, onBypass =
   let stopped = false
   let applying = false
   let chain = Promise.resolve()
+  // The update submitUpdate() just proved complete on a copy of the room at `from`: when the log
+  // then grows by exactly that record, catchUp() applies it without proving it a second time.
+  let verified = null
   function guard(transaction) {
     if (transaction.origin === LOAD_ORIGIN || transaction.origin === COMMITTED_ORIGIN || stopped) return
     // Applying a remote Y.Text update may synchronously open a formatting-cleanup transaction.
@@ -341,8 +344,29 @@ export function createRoomSequencer({ room, generation, load, append, onBypass =
     if (log.head_seq < Math.max(appliedSeq, minimum) || log.checkpoint_seq > log.head_seq) throw refusal('log_gap')
     if (log.head_seq === appliedSeq) return appliedSeq
 
-    // Verify the entire new prefix on a scratch document before making any bytes visible.
+    const proven = verified
+    verified = null
     const checkpointNeeded = appliedSeq < log.checkpoint_seq
+    if (!checkpointNeeded && proven !== null && proven.from === appliedSeq && log.head_seq === appliedSeq + 1) {
+      const fresh = log.tail.filter((record) => record.seq > appliedSeq)
+      if (fresh.length === 1 && fresh[0].seq === log.head_seq && fresh[0].sha256 === proven.sha256) {
+        // The room cannot have changed since the proof (every change runs in this queue), so the
+        // same bytes on the same state are complete again: skip the second full-room copy, which
+        // was half of the CPU a strict keystroke cost on a large document.
+        const bytes = recordBytes(fresh[0])
+        applying = true
+        try {
+          Y.applyUpdate(room, bytes, COMMITTED_ORIGIN)
+        } finally {
+          applying = false
+        }
+        appliedSeq = log.head_seq
+        room.flush?.()
+        return appliedSeq
+      }
+    }
+
+    // Verify the entire new prefix on a scratch document before making any bytes visible.
     const checkpoint = checkpointNeeded && log.checkpoint !== null ? Buffer.from(log.checkpoint, 'base64') : null
     if (checkpointNeeded && log.checkpoint_seq > 0 && checkpoint === null) throw refusal('log_gap')
     const copy = cloneRoom(room)
@@ -398,12 +422,14 @@ export function createRoomSequencer({ room, generation, load, append, onBypass =
         try {
           Y.applyUpdate(copy, bytes, LOAD_ORIGIN)
           complete(copy)
-          if ((decoded.structs.length > 0 || decoded.ds.clients.size === 0) && Y.encodeStateAsUpdateV2(copy).length > maxBytes) {
+          if (Number.isFinite(maxBytes) && (decoded.structs.length > 0 || decoded.ds.clients.size === 0)
+            && Y.encodeStateAsUpdateV2(copy).length > maxBytes) {
             throw refusal('document_too_large')
           }
         } finally {
           copy.destroy()
         }
+        verified = { from: appliedSeq, sha256: update.sha256 }
       }
       // A repeated update can overlap known clocks only when SQL already has its exact receipt.
       const ack = await append({ ...update, baseSeq: appliedSeq, receiptOnly: overlaps })
