@@ -1,4 +1,6 @@
+import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
+import { fileURLToPath } from 'node:url'
 import assert from 'node:assert/strict'
 import { CONTENT_TYPE, createHubMetrics, createRegistry, roomStats } from '../src/metrics.js'
 
@@ -14,6 +16,15 @@ function samples(text) {
 
     return { name: match[1], labels: match[2] ?? '', value: match[3] }
   })
+}
+
+/** The metric names the hub guide lists after "Metrics (all prefixed `collab_`):", with the prefix, sorted. */
+function documentedMetrics() {
+  const guide = readFileSync(fileURLToPath(new URL('../../collaboration/docs/guides/hub.md', import.meta.url)), 'utf8')
+  const list = /Metrics \(all prefixed `collab_`\):([^.]+)\./.exec(guide)
+  assert.ok(list, 'the hub guide lists the metrics')
+
+  return [...list[1].matchAll(/`([a-z_]+)`/g)].map((match) => `collab_${match[1]}`).sort()
 }
 
 function value(text, name, labels = '') {
@@ -140,14 +151,12 @@ test('the hub exposes the metric set of the operations runbook, read from its so
   assert.equal(value(text, 'collab_compaction_seconds_bucket', '{le="1"}'), '0')
   assert.equal(value(text, 'collab_compaction_seconds_bucket', '{le="2.5"}'), '1')
 
-  // Every metric the hub guide names, each with HELP and TYPE.
-  for (const name of [
-    'collab_active_rooms', 'collab_active_connections', 'collab_append_latency_seconds', 'collab_pending_updates',
-    'collab_pending_oldest_seconds', 'collab_append_retries_total', 'collab_append_failures_total', 'collab_epoch_mismatch_total',
-    'collab_checkpoint_conflicts_total', 'collab_compaction_seconds', 'collab_revoked_still_connected', 'collab_shutdown_unflushed',
-  ]) {
-    assert.match(text, new RegExp(`# HELP ${name} \\S`), name)
-    assert.match(text, new RegExp(`# TYPE ${name} (counter|gauge|histogram)\\n`), name)
+  // The metric set is the one the hub guide documents, no more and no fewer, each with HELP and TYPE: a
+  // renamed or dropped metric breaks dashboards and alerts silently, an undocumented one is unknown to them.
+  const exposed = [...text.matchAll(/^# TYPE (\S+) (counter|gauge|histogram)$/gm)].map((match) => match[1]).sort()
+  assert.deepEqual(exposed, documentedMetrics())
+  for (const name of exposed) {
+    assert.match(text, new RegExp(`^# HELP ${name} \\S`, 'm'), name)
   }
 
   // No label names a room, a document or a user: their number is unbounded.
