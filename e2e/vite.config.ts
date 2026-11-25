@@ -21,6 +21,7 @@ export default defineConfig({
     dedupe: ['yjs', 'vue', '@tiptap/pm'],
   },
   server: {
+    host: '127.0.0.1',
     port,
     strictPort: true,
     proxy: {
