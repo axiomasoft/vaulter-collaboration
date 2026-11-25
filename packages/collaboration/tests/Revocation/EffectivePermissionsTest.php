@@ -113,6 +113,37 @@ it('answers a batch recheck connection by connection, in order', function (): vo
     ])->and($response->json('results.1.jti'))->toBe(Revocation::claims($lostToken)['jti']);
 });
 
+it('checks the rights once per subject and room binding, and keeps each connection\'s jti', function (): void {
+    $queries = static function (array $connections): int {
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        revocationRecheck($connections)->assertOk();
+        $count = count(DB::getQueryLog());
+        DB::disableQueryLog();
+
+        return $count;
+    };
+    // The first call warms what every later call shares; measure the steady state.
+    $queries([['id' => 'warm', 'token' => Hub::token($this->node)]]);
+    $single = $queries([['id' => 'one', 'token' => Hub::token($this->node)]]);
+    $tabs = array_map(fn (int $i): array => ['id' => "tab$i", 'token' => Hub::token($this->node)], range(1, 8));
+
+    expect($queries($tabs))->toBe($single);
+
+    $tokens = [Hub::token($this->node), Hub::token($this->node, mode: 'ro'), Hub::token($this->node)];
+    $response = revocationRecheck([
+        ['id' => 'a', 'token' => $tokens[0]],
+        ['id' => 'reader', 'token' => $tokens[1]],
+        ['id' => 'b', 'token' => $tokens[2]],
+    ])->assertOk();
+
+    expect(array_map(static fn (array $result): array => [$result['id'], $result['access'], $result['jti']], $response->json('results')))->toBe([
+        ['a', 'write', Revocation::claims($tokens[0])['jti']],
+        ['reader', 'read', Revocation::claims($tokens[1])['jti']],
+        ['b', 'write', Revocation::claims($tokens[2])['jti']],
+    ]);
+});
+
 it('keeps a writer writing on recheck while the rights hold', function (): void {
     revocationRecheck([['id' => 'w', 'token' => Hub::token($this->node)]])->assertOk()->assertJsonPath('results.0.access', 'write');
 });

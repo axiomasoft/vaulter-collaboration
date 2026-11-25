@@ -16,6 +16,7 @@ use Vaulter\Documents\Exceptions\NotADocumentException;
 use Vaulter\Drive\Enums\Access\Ability;
 use Vaulter\Drive\Exceptions\Access\PermissionDeniedException;
 use Vaulter\Drive\Exceptions\Nodes\NodeNotFoundException;
+use Vaulter\Support\Identity;
 
 /**
  * The two checks of a live session's rights the hub asks for: the renewal of one connection's token before it
@@ -95,42 +96,65 @@ final readonly class SessionChecks
      * connection lost everything: `token` (invalid or expired), `gone` (the document is not there or not usable),
      * `generation` (the document moved on), `unavailable` (its type cannot collaborate) or `revoked` (no View).
      *
+     * Connections whose tokens bind the same subject to the same room the same way (one user's tabs, a reconnect next
+     * to the old socket) get one rights check: the room is opened once per binding and the answer reused, since the
+     * check reads nothing else of the token (its jti only correlates the call).
+     *
      * @param  list<array{id: string, token: string}>                                         $connections
      * @return list<array{id: string, access: string, reason: string|null, jti: string|null}>
      */
     public function recheck(array $connections): array
     {
         $results = [];
+        $answers = [];
         foreach ($connections as $connection) {
-            $results[] = ['id' => $connection['id'], ...$this->access($connection['token'])];
+            $call = $this->resolver->verifyToken($connection['token']);
+            if (!$call instanceof CollaborationCall) {
+                $results[] = ['id' => $connection['id'], 'access' => self::ACCESS_NONE, 'reason' => 'token', 'jti' => null];
+
+                continue;
+            }
+            $binding = self::binding($call);
+            $answers[$binding] ??= $this->access($call);
+            $results[] = ['id' => $connection['id'], ...$answers[$binding], 'jti' => $call->jti];
         }
         $this->metrics->counter(name: 'vaulter_collab_rechecks_total', amount: count($results));
 
         return $results;
     }
 
-    /** @return array{access: string, reason: string|null, jti: string|null} */
-    private function access(string $token): array
+    /** Everything of a verified token that {@see CollaborationHub::open()} reads, except the correlating jti. */
+    private static function binding(CollaborationCall $call): string
     {
-        $call = $this->resolver->verifyToken($token);
-        if (!$call instanceof CollaborationCall) {
-            return ['access' => self::ACCESS_NONE, 'reason' => 'token', 'jti' => null];
-        }
+        return json_encode([
+            $call->room,
+            $call->principal->type,
+            Identity::stringify($call->principal->id),
+            $call->tenant,
+            $call->mayStore(),
+            $call->schemaVersion,
+            $call->protocol,
+            $call->stateFormat,
+        ], JSON_THROW_ON_ERROR);
+    }
 
+    /** @return array{access: string, reason: string|null} */
+    private function access(CollaborationCall $call): array
+    {
         try {
             $room = $this->hub->open($call, $call->room);
         } catch (CollaborationEpochMismatchException) {
-            return ['access' => self::ACCESS_NONE, 'reason' => 'generation', 'jti' => $call->jti];
+            return ['access' => self::ACCESS_NONE, 'reason' => 'generation'];
         } catch (CollaborationUnavailableException) {
-            return ['access' => self::ACCESS_NONE, 'reason' => 'unavailable', 'jti' => $call->jti];
+            return ['access' => self::ACCESS_NONE, 'reason' => 'unavailable'];
         } catch (NodeNotFoundException|NotADocumentException|PermissionDeniedException) {
-            return ['access' => self::ACCESS_NONE, 'reason' => 'gone', 'jti' => $call->jti];
+            return ['access' => self::ACCESS_NONE, 'reason' => 'gone'];
         }
 
         return match (true) {
-            $room->ability === null => ['access' => self::ACCESS_NONE, 'reason' => 'revoked', 'jti' => $call->jti],
-            $room->writable => ['access' => self::ACCESS_WRITE, 'reason' => null, 'jti' => $call->jti],
-            default => ['access' => self::ACCESS_READ, 'reason' => null, 'jti' => $call->jti],
+            $room->ability === null => ['access' => self::ACCESS_NONE, 'reason' => 'revoked'],
+            $room->writable => ['access' => self::ACCESS_WRITE, 'reason' => null],
+            default => ['access' => self::ACCESS_READ, 'reason' => null],
         };
     }
 }
