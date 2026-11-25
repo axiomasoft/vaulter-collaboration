@@ -138,10 +138,10 @@ it('reads the document row, payload, sync state and tail of a load with locking 
         ->each->toEndWith('for update')
         ->and($selects['collaboration_updates'])->toHaveCount(1);
 
-    // The tail is read under the head lock. Only MySQL needs a locking read to see it; elsewhere a lock would only
-    // write a row lock into every tuple of the tail on each load.
+    // The tail is read under the head lock. Only MySQL and MariaDB need a locking read to see it; elsewhere a lock
+    // would only write a row lock into every tuple of the tail on each load.
     $tail = expect($selects['collaboration_updates'][0]);
-    app(VaulterDatabase::class)->connection()->getDriverName() === 'mysql'
+    in_array(app(VaulterDatabase::class)->driver(), ['mysql', 'mariadb'], true)
         ? $tail->toEndWith('for update')
         : $tail->not->toContain('for update')->not->toContain('lock in share mode');
 });
