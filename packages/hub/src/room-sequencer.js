@@ -429,7 +429,9 @@ export function createRoomSequencer({ room, generation, load, append, onBypass =
         } finally {
           copy.destroy()
         }
-        verified = { from: appliedSeq, sha256: update.sha256 }
+        // Bound to the bytes just proven, not to the caller's claimed hash: the shortcut in catchUp()
+        // must never accept a record the proof did not cover.
+        verified = { from: appliedSeq, sha256: sha256Hex(bytes) }
       }
       // A repeated update can overlap known clocks only when SQL already has its exact receipt.
       const ack = await append({ ...update, baseSeq: appliedSeq, receiptOnly: overlaps })

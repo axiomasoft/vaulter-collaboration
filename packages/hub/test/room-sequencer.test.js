@@ -362,6 +362,45 @@ test('after its own append the room takes only the proven bytes on trust; anothe
   for (const doc of [room, base, client, other]) doc.destroy()
 })
 
+test('the proof shortcut keys on the proven bytes, not on the hash the caller claims', async () => {
+  const base = fixture()
+  const client = new Y.Doc()
+  const other = new Y.Doc()
+  const room = new Y.Doc()
+  const checkpoint = Buffer.from(Y.encodeStateAsUpdate(base)).toString('base64')
+  const log = { generation: 3, checkpoint, checkpoint_seq: 40, head_seq: 40, tail: [] }
+  let substitute = null
+  const sequence = createRoomSequencer({
+    room, generation: 3, load: async () => log,
+    append: async () => {
+      log.tail.push(substitute)
+      log.head_seq += 1
+      return { seq: log.head_seq }
+    },
+  })
+  await sequence.catchUp()
+  for (const doc of [client, other]) Y.applyUpdate(doc, Y.encodeStateAsUpdate(base))
+  client.clientID = browserId
+  other.clientID = 0x80000009
+
+  // A record that lacks a dependency, committed in place of the submitted update, while the
+  // submission claims that record's hash: the claim must not let it skip the full check.
+  textOf(other).insert(0, 'X')
+  const skipped = Y.encodeStateVector(other)
+  textOf(other).insert(1, 'Y')
+  const incomplete = Y.encodeStateAsUpdate(other, skipped)
+  substitute = { seq: 41, payload: Buffer.from(incomplete).toString('base64'), sha256: sha256Hex(incomplete) }
+  const before = Y.encodeStateVector(client)
+  textOf(client).insert(0, 'A')
+  const bytes = Y.encodeStateAsUpdate(client, before)
+  await assert.rejects(sequence.submitUpdate({
+    bytes, boundClientId: browserId, payload: Buffer.from(bytes).toString('base64'), sha256: substitute.sha256,
+  }), { code: 'missing_dependencies' })
+  assert.equal(sequence.appliedSeq, 40, 'nothing of the unproven record became visible')
+  assert.doesNotMatch(textOf(room).toString(), /Y/)
+  for (const doc of [room, base, client, other]) doc.destroy()
+})
+
 test('relative evidence survives a shifted offset and detects an offline edit to the target', async () => {
   const base = fixture()
   const offline = new Y.Doc()
