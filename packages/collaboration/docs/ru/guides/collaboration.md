@@ -450,7 +450,7 @@ collab.dispose()
 | `connecting` / `connected` | `Ref<boolean>` | Рукопожатие идёт / живое соединение провайдера. |
 | `readOnly` | `ComputedRef<boolean>` | `mode: 'ro'`, схема новее `supportedSchemaVersion` или сессия, не способная сберечь правки. |
 | `schemaOutdated` | `Ref<boolean>` | Документ в более новой схеме, чем поддерживает редактор — попросите пользователя обновить приложение. |
-| `collaborators` | `Ref<Collaborator[]>` | Удалённые участники из awareness. |
+| `collaborators` | `Ref<Collaborator[]>` | Удалённые участники из awareness; `user.id` / `user.type` каждого хаб берёт из проверенного principal, имя задаёт сам участник. |
 | `error` | `Ref<unknown>` | Любая ошибка запроса сессии или сохранения. |
 | `connect()` / `disconnect()` / `dispose()` | | Сессия и провайдер / закрыть соединение, сохранив очередь / закрыть и сбросить очередь. |
 

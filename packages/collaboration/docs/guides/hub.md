@@ -268,6 +268,12 @@ Give your orchestrator a grace period above the flush and destroy limits togethe
   headers and bypass the handshake-flood ban entirely. So the reverse proxy must **overwrite** (not append) both headers
   with the real client address, and the hub must not be reachable except through it.
 
+- **Presence names the verified user.** Each awareness state a connection sends reaches every peer, so the hub sets its
+  `user.id` and `user.type` to the principal the backend verified for the connection (the room token's `sub` and
+  `sub_type`), over whatever the client wrote there; the rest of `user` (name, colour) is the client's and is display only,
+  so resolve a name to show from `user.id`. A connection that sets or removes the awareness state of a client id another live
+  connection of the room owns is closed `4403 forbidden`, so a peer can neither take over nor erase someone else's cursor.
+
 Minimal nginx upgrade block (note the IP headers — they are load-bearing for the throttle):
 
 ```nginx

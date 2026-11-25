@@ -453,7 +453,7 @@ collab.dispose()
 | `connecting` / `connected` | `Ref<boolean>` | Handshake in flight / live provider connection. |
 | `readOnly` | `ComputedRef<boolean>` | `mode: 'ro'`, a newer schema than `supportedSchemaVersion`, or a session that cannot keep the edits safe. |
 | `schemaOutdated` | `Ref<boolean>` | The document is in a newer schema than the editor supports — ask the user to update the application. |
-| `collaborators` | `Ref<Collaborator[]>` | Remote participants from awareness. |
+| `collaborators` | `Ref<Collaborator[]>` | Remote participants from awareness; the hub sets each one's `user.id` / `user.type` to its verified principal, the name is the peer's own. |
 | `error` | `Ref<unknown>` | Any error from the session fetch or from saving. |
 | `connect()` / `disconnect()` / `dispose()` | | Session and provider / close the connection, keeping the queue / close it and drop the queue. |
 

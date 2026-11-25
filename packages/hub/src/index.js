@@ -8,6 +8,7 @@ import { createLimits, isAwarenessUpdate, isSyncRequest, isWriteMessage, LIMIT }
 import { createBackendStatus, createManagement, createReadiness, instrumentBackend } from './management.js'
 import { createHubMetrics, roomStats } from './metrics.js'
 import { CLIENT_PROTOCOL, createPersistence, epochChanged, NACK } from './persistence.js'
+import { createPresenceGuard } from './presence.js'
 import { createRevocation } from './revocation.js'
 import {
   closeConnection,
@@ -232,6 +233,7 @@ export function createHooks({ backend = backendModule, log = console, persistenc
     log,
     ...revocationOptions,
   })
+  const presence = createPresenceGuard()
 
   /**
    * The upgrade gate, ahead of authentication: nothing gets in while the hub drains; then the Origin
@@ -454,6 +456,7 @@ export function createHooks({ backend = backendModule, log = console, persistenc
     onAuthenticate,
     connected,
     beforeHandleMessage,
+    beforeHandleAwareness: presence.beforeHandleAwareness,
     onLoadDocument: store.onLoadDocument,
     onStateless,
     onDisconnect,
@@ -517,6 +520,7 @@ async function buildServer({ hooks = null, backend = backendModule, draining = (
     onAuthenticate: serverHooks.onAuthenticate,
     connected: serverHooks.connected,
     beforeHandleMessage: serverHooks.beforeHandleMessage,
+    ...(serverHooks.beforeHandleAwareness ? { beforeHandleAwareness: serverHooks.beforeHandleAwareness } : {}),
     onLoadDocument: serverHooks.onLoadDocument,
     onStateless: serverHooks.onStateless,
     onDisconnect: serverHooks.onDisconnect,
