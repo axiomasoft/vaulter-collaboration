@@ -6,7 +6,7 @@ import { NACK } from '../src/persistence.js'
 import { problem, receipt } from './support/mock-backend.js'
 import { clientUpdate, envelope, loadedRoom, ROOM, writerContext } from './support/rooms.js'
 
-// The two persistence modes (collaboration#durability):
+// The two persistence modes (packages/collaboration/docs/guides/collaboration.md#saved-means-a-receipt):
 //   buffered (default) — sync before the append, the ack after the commit; pending bytes are
 //     bounded per room and in total, and past either budget writes stop in EVERY room until the
 //     ledger drains;

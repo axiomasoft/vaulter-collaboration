@@ -51,7 +51,7 @@ function sendFrameAndAwaitClose(port, frameSize, settleMs = 1500) {
   })
 }
 
-test('F-P4.5-02: the maxPayload cap is enforced by the v4 transport — an oversized frame is refused with 1009', async () => {
+test('the maxPayload cap is enforced by the v4 transport — an oversized frame is refused with 1009', async () => {
   const server = await buildServer()
   const port = await listenEphemeral(server)
   try {
@@ -63,7 +63,7 @@ test('F-P4.5-02: the maxPayload cap is enforced by the v4 transport — an overs
   }
 })
 
-test('F-P4.5-02: negative control — WITHOUT websocketOptions the same oversized frame is NOT refused with 1009', async () => {
+test('negative control — WITHOUT websocketOptions the same oversized frame is NOT refused with 1009', async () => {
   // A bare Server (no websocketOptions) falls back to the ~100 MiB ws default; the same frame
   // that trips the hardened server above stays well under that cap and is accepted. This proves
   // the 1009 above is caused by OUR wiring, not a library default — unwire it and the guarantee
@@ -79,7 +79,7 @@ test('F-P4.5-02: negative control — WITHOUT websocketOptions the same oversize
   }
 })
 
-test('F-P4.5-02: buildServer wires the hardened websocketOptions (maxPayload + perMessageDeflate off) into the v4 Server config', async () => {
+test('buildServer wires the hardened websocketOptions (maxPayload + perMessageDeflate off) into the v4 Server config', async () => {
   // The public v4 config surface crossws consumes. A deterministic red-if-removed guard that
   // also pins perMessageDeflate:false — the byte-level behavioural test above only exercises the
   // maxPayload half.
@@ -96,7 +96,7 @@ test('F-P4.5-02: buildServer wires the hardened websocketOptions (maxPayload + p
   }
 })
 
-test('P5.9: buildServer leaves the signals to the shutdown coordinator and wires the draining/limit gates', async () => {
+test('buildServer leaves the signals to the shutdown coordinator and wires the draining/limit gates', async () => {
   const server = await buildServer({ draining: () => true })
   try {
     assert.equal(server.configuration.stopOnSignals, false,
@@ -111,7 +111,7 @@ test('P5.9: buildServer leaves the signals to the shutdown coordinator and wires
   }
 })
 
-test('F-P4.5-02: the Throttle flood guard leads the extension chain with the configured per-IP limits', async () => {
+test('the Throttle flood guard leads the extension chain with the configured per-IP limits', async () => {
   // Handshake-flood / reconnect-loop protection (Addendum A.3). Throttle MUST run before any
   // other extension, configured from the same env-driven limits.
   const extensions = await buildExtensions()

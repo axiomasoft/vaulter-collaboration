@@ -77,10 +77,10 @@ test('a partial command failure leaves the base untouched and a valid replacemen
   const base = fixture()
   const replacement = { effect: 'replace_exact', block_id: 'terms', expected: '15', replacement: '30' }
   const intent = { atomic_effects: [replacement, { ...replacement, expected: 'absent' }] }
-  assert.throws(() => prepareOnCopy(base, intent, 2, 'A42'), { code: 'precondition_failed' })
+  assert.throws(() => prepareOnCopy(base, intent, 2, 'cmd-1'), { code: 'precondition_failed' })
   assert.match(textOf(base).toString(), /15/)
 
-  const { bytes } = prepareOnCopy(base, { atomic_effects: [replacement] }, 2, 'A42')
+  const { bytes } = prepareOnCopy(base, { atomic_effects: [replacement] }, 2, 'cmd-1')
   Y.applyUpdate(base, bytes)
   assert.deepEqual(textOf(base).toDelta(), [{ insert: 'Pay in 30 days', attributes: { link: { href: 'https://example.com/' }, bold: {} } }])
   base.destroy()
@@ -166,8 +166,8 @@ test('the strict worker rejects an oversized command and can commit the next com
     id, command_id: commandId, fingerprint: `fingerprint-${id}`,
     intent: { atomic_effects: [{ effect: 'replace_exact', block_id: 'terms', expected: '15', replacement }] },
   })
-  const oversized = command('oversized', 'A42', 'x'.repeat(1000))
-  const valid = command('valid', 'A43', '30')
+  const oversized = command('oversized', 'cmd-1', 'x'.repeat(1000))
+  const valid = command('valid', 'cmd-2', '30')
   const pending = [oversized, valid]
   const settleCommand = t.mock.fn(async ({ id, kind, reason, updates }) => {
     assert.equal(id, pending[0].id)
@@ -241,7 +241,7 @@ test('replaces a unique text run on either side of a hard break and verifies its
   const prepared = prepareOnCopy(base, {
     preconditions: [{ block_id: 'terms', expected_block: expectedBlock }],
     atomic_effects: [effect, { ...effect, expected: '25', replacement: '50' }],
-  }, 2, 'A42')
+  }, 2, 'cmd-1')
   Y.applyUpdate(base, prepared.bytes)
 
   assert.deepEqual(paragraph.toArray(), [textOf(base), hardBreak, second])
@@ -264,12 +264,12 @@ test('replaces a unique text run on either side of a hard break and verifies its
   })
 
   for (const expected of ['daysThen', 'days\uFFFCThen']) {
-    assert.throws(() => prepareOnCopy(base, { atomic_effects: [{ ...effect, expected }] }, 3, 'A43'), {
+    assert.throws(() => prepareOnCopy(base, { atomic_effects: [{ ...effect, expected }] }, 3, 'cmd-2'), {
       code: 'precondition_failed',
     })
   }
   second.insert(second.length, ' 30')
-  assert.throws(() => prepareOnCopy(base, { atomic_effects: [{ ...effect, expected: '30' }] }, 3, 'A43'), {
+  assert.throws(() => prepareOnCopy(base, { atomic_effects: [{ ...effect, expected: '30' }] }, 3, 'cmd-2'), {
     code: 'precondition_failed',
   })
 })
@@ -374,7 +374,7 @@ test('relative evidence survives a shifted offset and detects an offline edit to
   const offlineBytes = Y.encodeStateAsUpdate(offline, offlineVector)
   const prepared = prepareOnCopy(base, {
     atomic_effects: [{ effect: 'replace_exact', block_id: 'terms', expected: '15', replacement: '30' }],
-  }, 2, 'A42')
+  }, 2, 'cmd-1')
   Y.applyUpdate(base, prepared.bytes)
   const proof = prepared.evidence.ranges[0]
   function log() {

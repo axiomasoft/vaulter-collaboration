@@ -15,7 +15,7 @@ import { createRevocation, MAX_RECHECK } from '../src/revocation.js'
 import { startMockBackend } from './support/mock-backend.js'
 import { contextFor, eventually, fakeConnection, OTHER_DRIVE_ROOM, quietLog, roomClaims, ROOM } from './support/revocation.js'
 
-// The control channel (collaboration#revocation): the backend's control message reaches the
+// The control channel (packages/collaboration/docs/guides/collaboration.md#revocation-and-the-exposure-bound): the backend's control message reaches the
 // hub over Redis (vaulter:collab:control) or a signed POST /control on the management listener,
 // and the hub has the backend recheck the connections of that drive — of every drive for a global
 // change. A request without a valid signature changes nothing (401); a message of one drive never

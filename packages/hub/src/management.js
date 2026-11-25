@@ -3,7 +3,7 @@ import { performance } from 'node:perf_hooks'
 import { PROTOCOL_MISMATCH } from './backend.js'
 import { CONTENT_TYPE } from './metrics.js'
 
-// The hub's management listener (collaboration#hub-ops), apart from the WebSocket port, bound to
+// The hub's management listener (packages/collaboration/docs/guides/hub.md#management-listener), apart from the WebSocket port, bound to
 // VAULTER_COLLAB_MANAGEMENT_HOST (default 127.0.0.1: a public ingress never routes to it; a container
 // probe from outside the container needs 0.0.0.0) on VAULTER_COLLAB_MANAGEMENT_PORT:
 //   GET /livez   — 200 while the event loop answers. It reads nothing else: no backend, no database,

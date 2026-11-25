@@ -1,4 +1,4 @@
-// The hub's limits (collaboration#hub-ops), with safe defaults (src/config.js). A size is checked
+// The hub's limits (packages/collaboration/docs/guides/hub.md#limits), with safe defaults (src/config.js). A size is checked
 // against what a message or request declares — its byte length, its base64 length, its header —
 // before it is decoded, parsed or copied; a count (connections of a room, rooms of a tenant, writes
 // of a room per second) before the connection or the write is admitted. What crosses a limit is

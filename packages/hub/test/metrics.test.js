@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { CONTENT_TYPE, createHubMetrics, createRegistry, roomStats } from '../src/metrics.js'
 
-// The hub's /metrics (collaboration#hub-ops): the Prometheus text exposition format 0.0.4 without a
+// The hub's /metrics (packages/collaboration/docs/guides/hub.md#management-listener): the Prometheus text exposition format 0.0.4 without a
 // client library, and the metric set the operations runbook relies on. Values are read at scrape
 // time from what the ledger, the worker, the limits and the rooms already count.
 
@@ -140,7 +140,7 @@ test('the hub exposes the metric set of the operations runbook, read from its so
   assert.equal(value(text, 'collab_compaction_seconds_bucket', '{le="1"}'), '0')
   assert.equal(value(text, 'collab_compaction_seconds_bucket', '{le="2.5"}'), '1')
 
-  // Every metric collaboration#hub-ops names, each with HELP and TYPE.
+  // Every metric the hub guide names, each with HELP and TYPE.
   for (const name of [
     'collab_active_rooms', 'collab_active_connections', 'collab_append_latency_seconds', 'collab_pending_updates',
     'collab_pending_oldest_seconds', 'collab_append_retries_total', 'collab_append_failures_total', 'collab_epoch_mismatch_total',

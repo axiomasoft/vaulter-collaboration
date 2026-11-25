@@ -4,7 +4,7 @@ import crypto from 'node:crypto'
 import { closeAll, connect, eventually, scene as newScene, session, stateOn, text } from '../support/live.js'
 import { receiptIds, restartHubsFromTheLog, standEnv, stop } from '../support/stand.js'
 
-// Scenario 2 (collaboration#tests): the backend is down, the hub's retry series runs out of its
+// Scenario 2 (packages/collaboration/tests/scenarios.json): the backend is down, the hub's retry series runs out of its
 // deadline, then every hub is killed with SIGKILL. Every edit the hub told the client was saved
 // (an `ack`, which the hub gives only after the backend committed the append) must be there when the
 // hubs come back — the state is rebuilt from the update log alone (Redis is emptied).
@@ -20,7 +20,7 @@ const tag = crypto.randomBytes(4).toString('hex')
 
 after(() => closeAll(clients))
 
-test('I17-2: every acknowledged update survives a backend outage that outlasts the retry deadline and a SIGKILL of all hubs', { timeout: 300000 }, async () => {
+test('scenario 2: every acknowledged update survives a backend outage that outlasts the retry deadline and a SIGKILL of all hubs', { timeout: 300000 }, async () => {
   const scene = await newScene(stand.backend)
   const writer = await session(stand.backend, scene.node_id, scene.writer_user)
   assert.equal(writer.mode, 'write')

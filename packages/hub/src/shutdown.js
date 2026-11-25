@@ -1,6 +1,6 @@
 import { documentIdOf } from './rooms.js'
 
-// The hub's shutdown coordinator (collaboration#hub-ops): the ONE handler of SIGTERM and SIGINT
+// The hub's shutdown coordinator (packages/collaboration/docs/guides/hub.md#graceful-shutdown-sigterm): the ONE handler of SIGTERM and SIGINT
 // — the Hocuspocus Server runs with stopOnSignals: false, because its own handler awaits destroy(),
 // which never settles while a document survived a failed store (test/hocuspocus-v4.test.js, fact 3).
 // A signal drains the hub in this order, each step bounded:

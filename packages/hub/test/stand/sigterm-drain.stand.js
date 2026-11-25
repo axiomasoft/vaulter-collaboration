@@ -4,7 +4,7 @@ import crypto from 'node:crypto'
 import { closeAll, connect, eventually, pause, scene as newScene, session, stateOn, text } from '../support/live.js'
 import { exitCode, probe, receiptIds, signal, standEnv, up } from '../support/stand.js'
 
-// Scenario 10 (collaboration#tests): SIGTERM while a client is typing. The hub drains: /readyz
+// Scenario 10 (packages/collaboration/tests/scenarios.json): SIGTERM while a client is typing. The hub drains: /readyz
 // answers 503 at once, /livez keeps answering 200 while the process lives (health stays observable),
 // writes stop, the pending ledger flushes and the process exits 0. After the drain boundary — the
 // first 503 — no write is accepted: an envelope sent from then on gets no ack and no receipt, and
@@ -25,7 +25,7 @@ after(async () => {
   await up(stand, 'hub-a')
 })
 
-test('I17-10: SIGTERM during typing — readiness falls at once, health stays observable, nothing is saved after the drain boundary', { timeout: 300000 }, async () => {
+test('scenario 10: SIGTERM during typing — readiness falls at once, health stays observable, nothing is saved after the drain boundary', { timeout: 300000 }, async () => {
   const scene = await newScene(stand.backend)
   const writer = await session(stand.backend, scene.node_id, scene.writer_user)
   const client = await connect(stand.hubA, writer, clients)

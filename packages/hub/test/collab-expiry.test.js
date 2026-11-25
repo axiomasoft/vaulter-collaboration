@@ -41,7 +41,7 @@ test('decodeTokenExpiry returns null when the exp claim is missing or non-numeri
 
 // ── armExpiryTimer ───────────────────────────────────────────────────────────────────
 
-test('armExpiryTimer is a no-op when exp is null (unparsable token — pre-P3.2 behaviour)', () => {
+test('armExpiryTimer is a no-op when exp is null (an unparsable token arms no timer)', () => {
   let closed = false
   const connection = { close: () => { closed = true } }
 
@@ -70,7 +70,7 @@ test('armExpiryTimer does NOT close a connection whose token has not expired yet
   assert.equal(closed, false, 'a fresh token must not be closed at arm-time')
 })
 
-test('armExpiryTimer force-closes the connection once exp passes (F-P1.6-03)', async () => {
+test('armExpiryTimer force-closes the connection once exp passes', async () => {
   let closedWith = null
   const connection = { close: (opts) => { closedWith = opts } }
 

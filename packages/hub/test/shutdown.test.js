@@ -7,7 +7,7 @@ import { createBackendStatus, createManagement, createReadiness } from '../src/m
 import { documentIdOf } from '../src/rooms.js'
 import { createShutdown, SHUTDOWN_DEFAULTS, SHUTDOWN_SIGNALS, unflushedOf } from '../src/shutdown.js'
 
-// The shutdown coordinator (collaboration#hub-ops, collaboration scenarios 10 and 16): the one handler of
+// The shutdown coordinator (packages/collaboration/docs/guides/hub.md#graceful-shutdown-sigterm, collaboration scenarios 10 and 16): the one handler of
 // SIGTERM/SIGINT. Draining starts at once — /readyz 503, no connection and no write admitted —,
 // the pending ledger flushes within SHUTDOWN_FLUSH_MS, connections close 4503, destroy() runs in a
 // race with SHUTDOWN_DESTROY_MS, and the exit code tells whether anything was left unflushed (with

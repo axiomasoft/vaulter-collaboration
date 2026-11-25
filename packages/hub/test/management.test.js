@@ -7,7 +7,7 @@ import { buildConfig } from '../src/config.js'
 import { createBackendStatus, createManagement, createReadiness, instrumentBackend } from '../src/management.js'
 import { CONTENT_TYPE } from '../src/metrics.js'
 
-// The management listener (collaboration#hub-ops): /livez, /readyz and /metrics on a port of
+// The management listener (packages/collaboration/docs/guides/hub.md#management-listener): /livez, /readyz and /metrics on a port of
 // their own, loopback by default. Liveness depends on the event loop only — never on the backend,
 // the database or Redis; readiness reads the cached backend status of the calls the hub makes
 // anyway (it calls nothing itself), Redis when it is required, the protocol and the drain.

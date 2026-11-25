@@ -20,7 +20,7 @@ import {
   requestLimit,
 } from '../src/limits.js'
 
-// The hub's limits (collaboration#hub-ops, collaboration scenario 17): every size is checked from what a
+// The hub's limits (packages/collaboration/docs/guides/hub.md#limits, scenario 17 of packages/collaboration/tests/scenarios.json): every size is checked from what a
 // message or request declares — its length, its base64 length, its header — before anything is
 // decoded or copied; the counts before the connection or the write is admitted. What crosses a
 // limit is refused (nack, close 4413/4429, a request never sent) and counted by limit.

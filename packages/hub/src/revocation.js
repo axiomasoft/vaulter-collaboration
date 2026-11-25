@@ -4,7 +4,7 @@ import { ACCESS, createRegistry } from './registry.js'
 import { retryPolicy, withRetry } from './retry.js'
 import { closeConnection, DOCUMENT_GONE, EPOCH_CHANGED, FORBIDDEN, TOKEN_EXPIRED } from './rooms.js'
 
-// Revocation in the hub (collaboration#revocation). A WebSocket fanout is not a backend call,
+// Revocation in the hub (packages/collaboration/docs/guides/collaboration.md#revocation-and-the-exposure-bound). A WebSocket fanout is not a backend call,
 // so a connection's rights are checked again on three occasions besides every append:
 //   - control: the backend publishes a control message after a change of effective permissions
 //     (src/control.js); the hub asks the backend, in one batch per 200 connections, what each

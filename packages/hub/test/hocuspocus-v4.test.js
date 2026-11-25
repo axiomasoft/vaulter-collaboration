@@ -139,7 +139,7 @@ test('fact 1: a failed onStoreDocument leaves the document in memory and is neve
     await sleep(NO_RETRY_WINDOW_MS)
 
     assert.equal(state.stores, afterFirstAttempt,
-      'no store is re-scheduled by the library within three debounce periods — a retry is the hub\'s job (ledger, P5.7)')
+      'no store is re-scheduled by the library within three debounce periods — a retry is the job of the hub\'s pending ledger')
     assert.equal(server.hocuspocus.documents.has(ROOM), true, 'still resident: nothing unloads it')
     assert.equal(state.afterUnload, 0, 'afterUnloadDocument has not fired for the surviving document')
   } finally {

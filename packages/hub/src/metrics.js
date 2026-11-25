@@ -1,5 +1,5 @@
 // The hub's metrics in the Prometheus text exposition format (0.0.4), without a client library: a
-// registry of counters, gauges and histograms, and the hub's own set (collaboration#hub-ops). Most
+// registry of counters, gauges and histograms, and the hub's own set (packages/collaboration/docs/guides/hub.md#management-listener). Most
 // values are read when /metrics is scraped from the objects that already count them (the ledger,
 // the worker, the limits, the rooms); the two latencies are observed as they happen. No metric
 // carries a room, a document or a token as a label: their number is unbounded.

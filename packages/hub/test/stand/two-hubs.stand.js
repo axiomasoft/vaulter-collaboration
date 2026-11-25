@@ -4,7 +4,7 @@ import crypto from 'node:crypto'
 import { closeAll, connect, eventually, pause, scene as newScene, session, stateOn, text } from '../support/live.js'
 import { receiptIds, restartHubsFromTheLog, standEnv } from '../support/stand.js'
 
-// Scenario 3 (collaboration#tests): two hubs, unrelated edits saved at the same time. A client sits
+// Scenario 3 (packages/collaboration/tests/scenarios.json): two hubs, unrelated edits saved at the same time. A client sits
 // on each hub, in the same room (Redis carries the live sync between the hubs); each types its own
 // paragraphs concurrently. The hub that holds a connection appends what that connection sent — a change
 // that arrived through Redis is never appended twice — so the log holds both sets. Then every hub is
@@ -32,7 +32,7 @@ async function typing(client, label) {
   return entries
 }
 
-test('I17-3: unrelated updates saved on two hubs at once are all in the state rebuilt from the log', { timeout: 300000 }, async () => {
+test('scenario 3: unrelated updates saved on two hubs at once are all in the state rebuilt from the log', { timeout: 300000 }, async () => {
   const scene = await newScene(stand.backend)
   const [sessionA, sessionB] = await Promise.all([
     session(stand.backend, scene.node_id, scene.writer_user),
