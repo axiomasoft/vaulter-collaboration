@@ -57,7 +57,7 @@ final readonly class CommandJournal
      */
     public function register(CommandActor $scope, string $key, string $proposal, string $digest, int $generation, int $schema, int $readPosition, array $intent): array
     {
-        if ($key === '' || strlen($key) > 255 || !Str::isUuid($proposal) || !preg_match('/\A[0-9a-f]{64}\z/', $digest)
+        if ($key === '' || strlen($key) > 255 || !Str::isUuid($proposal) || preg_match('/\A[0-9a-f]{64}\z/', $digest) !== 1
             || $generation < 0 || $schema < 1 || $readPosition < 0) {
             throw new RoomWriteConflict('invalid_intent');
         }
@@ -145,7 +145,7 @@ final readonly class CommandJournal
             if ($row === null || $doc->documentId !== Identity::stringify($row->document_id)) {
                 throw NodeNotFoundException::forId($scope->resourceId);
             }
-            if ($row->evidence === null || !LogTables::time($row->evidence_expires_at, 'UTC')?->greaterThan($this->tables->leaseClock())) {
+            if ($row->evidence === null || LogTables::time($row->evidence_expires_at, 'UTC')?->greaterThan($this->tables->leaseClock()) !== true) {
                 throw new RoomWriteConflict('evidence_unavailable');
             }
 
@@ -436,7 +436,7 @@ final readonly class CommandJournal
     /** @return array<string, mixed> */
     private function replay(stdClass $row): array
     {
-        if (!LogTables::time($row->replay_until, 'UTC')?->greaterThan($this->tables->leaseClock())) {
+        if (LogTables::time($row->replay_until, 'UTC')?->greaterThan($this->tables->leaseClock()) !== true) {
             throw new RoomWriteConflict('key_expired');
         }
 

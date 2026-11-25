@@ -1,5 +1,7 @@
 includes:
+    - vendor/axiomasoft/packman-devtools/config/phpstan-base.neon
     - vendor/larastan/larastan/extension.neon
+    - vendor/phpstan/phpstan-strict-rules/rules.neon
     - vendor/spaze/phpstan-disallowed-calls/extension.neon
 
 parameters:
@@ -7,6 +9,7 @@ parameters:
     tmpDir: build/phpstan
     paths:
         - packages/collaboration/src
+        - packages/collaboration/database
     excludePaths:
         - vendor/*
         - node_modules/*
@@ -55,3 +58,10 @@ parameters:
         -
             constant: 'CURLOPT_RESOLVE'
             message: 'Pin webhook connections with CURLOPT_CONNECT_TO.'
+
+    ignoreErrors:
+        # Larastan marks forwarded Container/Auth/HTTP client magic reflections as isStatic(): true,
+        # colliding with phpstan-strict-rules. Same exemption as the base repo.
+        -
+            identifier: staticMethod.dynamicCall
+            message: '#^Dynamic call to static method (Illuminate\\Auth\\SessionGuard|Illuminate\\Http\\Client\\PendingRequest)#'

@@ -77,7 +77,7 @@ final readonly class RoomOwnership
     {
         $head = $this->strictHead($document);
         $now = $this->log->leaseClock();
-        if ($head->ownerExpiresAt?->greaterThan($now)) {
+        if ($head->ownerExpiresAt?->greaterThan($now) === true) {
             if ($head->ownerId !== $ownerId) {
                 throw new RoomWriteConflict('owner_busy');
             }
@@ -113,7 +113,7 @@ final readonly class RoomOwnership
     {
         $head = $this->strictHead($document);
         if ($fence < 1 || $head->ownerFence !== $fence || $head->ownerId !== $ownerId
-            || !$head->ownerExpiresAt?->greaterThan($this->log->leaseClock())) {
+            || $head->ownerExpiresAt?->greaterThan($this->log->leaseClock()) !== true) {
             throw new RoomWriteConflict('stale_owner');
         }
 

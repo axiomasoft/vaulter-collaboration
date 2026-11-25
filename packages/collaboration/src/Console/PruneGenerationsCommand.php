@@ -33,7 +33,7 @@ final class PruneGenerationsCommand extends Command
         $now = Carbon::now();
         $cutoff = $now->copy()->subSeconds($config->retiredGenerationGraceSeconds());
 
-        if ($this->option('dry-run')) {
+        if ($this->option('dry-run') === true) {
             $due = $generations->countDue($cutoff);
             $this->components->info(sprintf('Would prune %d closed generation%s retired before %s.', $due, $due === 1 ? '' : 's', $cutoff->toDateTimeString()));
 

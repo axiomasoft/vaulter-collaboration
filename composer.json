@@ -64,6 +64,7 @@
         "firebase/php-jwt": "^7.0"
     },
     "require-dev": {
+        "axiomasoft/packman-devtools": "^0.1",
         "axiomasoft/vaulter-media": "^1.0",
         "larastan/larastan": "^3.15.0",
         "laravel/pint": "^1.32",
@@ -73,6 +74,8 @@
         "pestphp/pest": "^5.2",
         "pestphp/pest-plugin-type-coverage": "^5.1",
         "phpstan/phpstan": "^2.3.6",
+        "phpstan/phpstan-strict-rules": "^2.0.12",
+        "rector/rector": "^2.6 <2.9",
         "spaze/phpstan-disallowed-calls": "^4.15.1",
         "symfony/yaml": "^8.0"
     },
@@ -96,7 +99,12 @@
         }
     },
     "scripts": {
-        "test": "@php vendor/bin/pest -c phpunit.xml.dist --test-directory=packages/collaboration/tests",
-        "phpstan": "@php vendor/bin/phpstan analyse -c phpstan.neon.dist --no-progress --memory-limit=512M"
+        "lint": "vendor/bin/pint",
+        "lint:check": "vendor/bin/pint --test",
+        "analyse": "@php vendor/bin/phpstan analyse -c phpstan.neon.dist --no-progress --memory-limit=1G",
+        "phpstan": "@analyse",
+        "refactor": "vendor/bin/rector process",
+        "refactor:check": "vendor/bin/rector process --dry-run",
+        "test": "@php vendor/bin/pest -c phpunit.xml.dist --test-directory=packages/collaboration/tests"
     }
 }
