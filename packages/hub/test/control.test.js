@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import crypto from 'node:crypto'
+import http from 'node:http'
 import { EventEmitter } from 'node:events'
 import {
   CONTROL_CHANNEL,
@@ -114,6 +115,8 @@ test('parseControlMessage reads the format of the backend\'s control consumer an
   assert.equal(parseControlMessage(JSON.stringify({ v: 1, drive_id: 12 })).message.drive_id, '12')
   assert.equal(parseControlMessage(JSON.stringify({ v: 1, drive_id: null })).message.scope, 'global')
   assert.equal(parseControlMessage(message({ scope: 'subtree' })).message.scope, 'subtree')
+  assert.equal(parseControlMessage(message({ drive_id: 'd'.repeat(191) })).ok, true, 'the longest drive id')
+  assert.equal(parseControlMessage(JSON.stringify({ v: 1, type: 'wakeup', document_id: 'd'.repeat(64), generation: 0, position: 0 })).ok, true, 'the longest document id')
 
   for (const [raw, reason] of [
     ['{', 'not_json'],
@@ -121,6 +124,8 @@ test('parseControlMessage reads the format of the backend\'s control consumer an
     [message({ v: 2 }), 'version'],
     [message({ drive_id: '' }), 'drive_id'],
     [message({ drive_id: { id: 1 } }), 'drive_id'],
+    [message({ drive_id: 'd'.repeat(192) }), 'drive_id'],
+    [JSON.stringify({ v: 1, type: 'wakeup', document_id: 'd'.repeat(65), generation: 0, position: 0 }), 'wakeup'],
     [message({ scope: 'tenant' }), 'scope'],
     [message({ permissions_version: -1 }), 'permissions_version'],
   ]) {
@@ -205,6 +210,46 @@ test('a replayed signed request is refused (409) and changes nothing; a signed u
   await revocation.settled()
   assert.equal(calls.length, 1, 'one recheck for the one accepted message')
   assert.deepEqual(control.stats(), { accepted: 1, unauthorized: 0, invalid: 1, replayed: 1 })
+})
+
+test('the replay store keeps at most maxSeen signatures and forgets the oldest first', async (t) => {
+  const { revocation } = revocationWith(t)
+  const control = createControlChannel({ revocation, conf: { webhookSecret: SECRET }, log: quietLog, maxSeen: 2 })
+  const requests = [1, 2, 3].map((version) => {
+    const body = message({ permissions_version: version })
+
+    return { headers: signed(body), rawBody: body }
+  })
+
+  for (const request of requests) assert.equal(control.receiveHttp(request).status, 202)
+  assert.equal(control.receiveHttp(requests[2]).status, 409, 'a recent signature is still refused')
+  assert.equal(control.receiveHttp(requests[0]).status, 202, 'the oldest left the bounded store')
+  await revocation.settled()
+})
+
+test('/control refuses a declared Content-Length above its limit before reading the body, and a body that grows past it', async (t) => {
+  const { revocation } = revocationWith(t)
+  const control = createControlChannel({ revocation, conf: { webhookSecret: SECRET }, log: quietLog })
+  const management = createManagement({ control, log: quietLog, readiness: () => ({ ready: true, checks: {} }), metrics: () => '' })
+  const { port } = await management.start()
+  t.after(() => management.close())
+
+  // Only one byte of the declared length is sent: the answer cannot wait for the rest.
+  const declared = await new Promise((resolve, reject) => {
+    const request = http.request({ host: '127.0.0.1', port, path: '/control', method: 'POST', headers: { 'content-length': String(MAX_CONTROL_BYTES + 1) } }, resolve)
+    request.on('error', reject)
+    request.write('x')
+  })
+  declared.resume()
+  assert.equal(declared.statusCode, 413)
+
+  // No Content-Length (chunked): the stream is cut once it passes the limit.
+  const large = 'x'.repeat(MAX_CONTROL_BYTES + 1)
+  const chunked = await fetch(`http://127.0.0.1:${port}/control`, {
+    method: 'POST', headers: signed(large), duplex: 'half',
+    body: new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(large)); controller.close() } }),
+  })
+  assert.equal(chunked.status, 413)
 })
 
 test('/control takes POST only, refuses a body above its limit (413) and is absent without a channel (404)', async (t) => {

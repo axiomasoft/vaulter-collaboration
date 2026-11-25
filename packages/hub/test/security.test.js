@@ -138,6 +138,7 @@ test('room claims retain typed principal and exact binding and reject malformed 
     generation: 4, document_id: '43', drive_id: '8', tenant: 0, scope: 'owner', exp: 1.5, room: 'other' })) {
     assert.equal(roomTokenClaims(jwt({ ...base, [key]: value }), room), null, key)
   }
+  assert.equal(roomTokenClaims(jwt({ ...base, sub_type: 'vaulter:system' }), room), null, 'the system actor never joins a room')
   for (const key of Object.keys(base)) {
     const missing = { ...base }
     delete missing[key]

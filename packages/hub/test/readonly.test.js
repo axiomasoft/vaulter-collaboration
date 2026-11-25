@@ -134,3 +134,19 @@ test('authentication forwards the exact typed credential and retains its read ce
   }
   assert.equal(forwarded.length, 1)
 })
+
+test('a strict room writes only through a client session: without one the writer is read-only', async () => {
+  const hooks = hooksAnswering({ allowed: true, mode: 'rw', userId: '1', profile: 'strict' }, { conf: { ...testConf(), strictProfile: true } })
+  const exp = Math.floor(Date.now() / 1000) + 600
+  const session = '0b6c1f0e-3a7d-4c55-9a1e-2f4b8d6c7e10'
+
+  const without = await hooks.onAuthenticate({ token: token({ exp }), documentName: ROOM, connectionConfig: {}, requestParameters: v2 })
+  const twice = await hooks.onAuthenticate({ token: token({ exp }), documentName: ROOM, connectionConfig: {},
+    requestParameters: new URLSearchParams(`protocol=2&client_session_id=${session}&client_session_id=${session}`) })
+  const bound = await hooks.onAuthenticate({ token: token({ exp }), documentName: ROOM, connectionConfig: {},
+    requestParameters: new URLSearchParams(`protocol=2&client_session_id=${session}`) })
+
+  assert.deepEqual([without.mode, without.readOnly, without.clientSession], ['ro', true, undefined])
+  assert.deepEqual([twice.mode, twice.readOnly], ['ro', true], 'a repeated session parameter binds nothing')
+  assert.deepEqual([bound.mode, bound.readOnly, bound.clientSession, bound.profile], ['rw', false, session, 'strict'])
+})
