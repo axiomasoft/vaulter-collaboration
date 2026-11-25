@@ -197,17 +197,21 @@ final readonly class UpdateLog
         $head = $this->rooms->head($locked);
         $checkpointSeq = $head->checkpointSeq ?? 0;
         $headSeq = $head->headSeq ?? 0;
-        // The transaction began with a plain read (the node, in lock()): on MySQL (REPEATABLE READ) a plain read here
-        // would answer from that older snapshot and miss an append committed since, while the head FOR UPDATE sees
-        // it. A locking read sees the committed rows, as every read after the lock does on PostgreSQL
-        // (the same split as NodeReadRepository::siblingQuery).
-        $tail = $this->table('collaboration_updates')
+        $query = $this->table('collaboration_updates')
             ->where('document_id', Identity::key($locked->documentId))
             ->where('generation', $locked->generation)
             ->where('seq', '>', max($checkpointSeq, $afterSeq ?? 0))
             ->where('seq', '<=', $headSeq)
-            ->orderBy('seq')
-            ->lockForUpdate()
+            ->orderBy('seq');
+        if ($query->getConnection()->getDriverName() === 'mysql') {
+            // The transaction began with a plain read (the node, in lock()): on MySQL (REPEATABLE READ) a plain read
+            // here would answer from that older snapshot and miss an append committed since, while the head FOR UPDATE
+            // sees it. A locking read sees the committed rows, as every read after the lock does on PostgreSQL, where
+            // locking the tail would only write a row lock into every tuple of it (the same split as
+            // NodeReadRepository::siblingQuery).
+            $query->lockForUpdate();
+        }
+        $tail = $query
             ->get(['seq', 'update_id', 'payload', 'sha256'])
             ->map(fn (object $row): array => [
                 'seq' => self::int($row->seq),
