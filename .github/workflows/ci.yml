@@ -131,13 +131,13 @@ jobs:
           python3 scripts/ci/stop-cranes.py --self-test
 
       - name: Lint workflows
-        uses: ./.github/actions/lint-workflows
+        uses: $/.github/actions/lint-workflows
 
       - name: Check out the sibling repositories
         run: scripts/ci/checkout-ecosystem.sh
 
       - name: Setup PHP and Composer
-        uses: ./.github/actions/setup-php
+        uses: $/.github/actions/setup-php
         with:
           php-version: "8.4"
           coverage: none
@@ -155,7 +155,7 @@ jobs:
         run: composer refactor:check
 
       - name: Setup Node
-        uses: ./.github/actions/setup-node
+        uses: $/.github/actions/setup-node
         with:
           node-version: "26.13.1"
 
@@ -223,7 +223,7 @@ jobs:
         run: scripts/ci/checkout-ecosystem.sh
 
       - name: Setup PHP and Composer
-        uses: ./.github/actions/setup-php
+        uses: $/.github/actions/setup-php
         with:
           php-version: ${{ matrix.php }}
           extensions: pdo_pgsql, pgsql, pdo_sqlite, sqlite3, pcntl, posix
@@ -317,7 +317,7 @@ jobs:
         run: scripts/ci/checkout-ecosystem.sh
 
       - name: Setup PHP and Composer
-        uses: ./.github/actions/setup-php
+        uses: $/.github/actions/setup-php
         with:
           php-version: "8.4"
           extensions: pdo_mysql, pdo_sqlite, sqlite3, pcntl, posix
@@ -343,7 +343,7 @@ jobs:
         run: scripts/ci/checkout-ecosystem.sh
 
       - name: Setup Node
-        uses: ./.github/actions/setup-node
+        uses: $/.github/actions/setup-node
         with:
           node-version: "26.13.1"
           install: "false"
@@ -397,7 +397,7 @@ jobs:
         run: scripts/ci/checkout-ecosystem.sh
 
       - name: Setup Node
-        uses: ./.github/actions/setup-node
+        uses: $/.github/actions/setup-node
         with:
           node-version: "26.13.1"
           install: "false"
@@ -415,7 +415,7 @@ jobs:
           node -e "process.exit(0)"
 
       - name: Setup PHP and Composer
-        uses: ./.github/actions/setup-php
+        uses: $/.github/actions/setup-php
         with:
           php-version: "8.4"
           extensions: pdo_pgsql, pgsql, pdo_sqlite, sqlite3, pcntl, posix
@@ -447,14 +447,14 @@ jobs:
         run: scripts/ci/checkout-ecosystem.sh
 
       - name: Setup PHP and Composer
-        uses: ./.github/actions/setup-php
+        uses: $/.github/actions/setup-php
         with:
           php-version: "8.4"
           extensions: pdo_pgsql, pgsql, pdo_sqlite, sqlite3, pcntl, posix
           coverage: none
 
       - name: Setup Node
-        uses: ./.github/actions/setup-node
+        uses: $/.github/actions/setup-node
         with:
           node-version: "26.13.1"
 
