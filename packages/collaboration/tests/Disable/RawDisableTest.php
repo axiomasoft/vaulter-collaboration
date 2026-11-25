@@ -66,7 +66,7 @@ function rawDisableLeftPending(Node $node): void
 
 /**
  * The services of the collaboration package the container built. The kernel reads the manifest and the schema
- * descriptor of every installed module, an inactive one too (ModuleSchemas, architecture#module-system: schema and
+ * descriptor of every installed module, an inactive one too (ModuleSchemas, the vaulter module system: schema and
  * diagnostic descriptors are allowed); nothing else of the package may be built.
  *
  * @param  list<string> $resolved

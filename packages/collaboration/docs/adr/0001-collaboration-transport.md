@@ -28,9 +28,9 @@ The driver is selected through `config('vaulter.collaboration.driver')` and reso
 - The full Yjs runtime (presence, snapshot persistence, offline merge) is layered on top of
   this abstraction in a later milestone.
 
-## Amendment (VLT-REMED P3.1, 2026-07-11) — default transport switched to Hocuspocus
+## Amendment (2026-07-11) — default transport switched to Hocuspocus
 
-**The default driver is now `hocuspocus`, not `reverb` (F-P3.6-01 / D21).** This corrects
+**The default driver is now `hocuspocus`, not `reverb`.** This corrects
 the ADR to match the code: `config/vaulter.php:755` (`'driver' =>
 env('VAULTER_COLLAB_DRIVER', 'hocuspocus')`) was moved to this default by commit `9200e51`
 ("Realtime collaboration e2e (Hocuspocus) + 2 fixes + driver re-scope"), but this ADR was

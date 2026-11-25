@@ -41,7 +41,7 @@ it('retains a running intent on stale base and atomically commits bytes and one 
     $journal = app(CommandJournal::class);
     $proposal = (string) Str::uuid();
     $digest = hash('sha256', 'proposal');
-    $register = fn () => $journal->register($scope, 'A42', $proposal, $digest, 0, 1, 1, ['atomic_effects' => []]);
+    $register = fn () => $journal->register($scope, 'cmd-1', $proposal, $digest, 0, 1, 1, ['atomic_effects' => []]);
     $running = $register();
     expect($register())->toBe($running);
     $log->appendFenced($node->getKey(), $update('human'), $owner, 1, 1, static fn (): null => null);
@@ -51,7 +51,7 @@ it('retains a running intent on stale base and atomically commits bytes and one 
     $tables = app(DatabaseOptions::class);
     $outbox = DB::table($tables->table('outbox'))->count();
     expect(fn () => $settle(1, 1))->toThrow(RoomWriteConflict::class, 'base_moved')
-        ->and($journal->status($scope, 'A42')['state'])->toBe('running');
+        ->and($journal->status($scope, 'cmd-1')['state'])->toBe('running');
     $request = [
         'kind' => 'commit', 'id' => $running['id'], 'fingerprint' => $running['fingerprint'],
         'generation' => 0, 'owner_id' => $owner, 'owner_fence' => 1, 'base_seq' => 2,
@@ -83,16 +83,16 @@ it('terminally rejects an intent after Edit is revoked and refuses replay after 
     });
     $scope = new CommandActor(Actor::user(AccessTestHelpers::user())->ref(), null, 'test', 'writer', (string) $node->drive_id, (string) $node->getKey());
     $journal = app(CommandJournal::class);
-    $registered = $journal->register($scope, 'A42', (string) Str::uuid(), hash('sha256', 'proposal'), 0, 1, 0, ['atomic_effects' => []]);
+    $registered = $journal->register($scope, 'cmd-1', (string) Str::uuid(), hash('sha256', 'proposal'), 0, 1, 0, ['atomic_effects' => []]);
     $drive->access()->revoke($folder->id, $grant->id);
 
     $result = $journal->settle($registered['id'], $owner, 1, 0, 0, $registered['fingerprint'], [], []);
     expect($result)->toMatchArray(['state' => 'rejected', 'rejection_code' => 'edit_revoked', 'receipt_id' => null])
-        ->and($journal->status($scope, 'A42'))->toBe($result)
+        ->and($journal->status($scope, 'cmd-1'))->toBe($result)
         ->and(app(UpdateLog::class)->snapshot($node->getKey(), 0)->headSeq)->toBe(0);
 
     $drive->access()->revoke($node->getKey(), $reader->id);
-    expect(fn () => $journal->status($scope, 'A42'))->toThrow(NodeNotFoundException::class);
+    expect(fn () => $journal->status($scope, 'cmd-1'))->toThrow(NodeNotFoundException::class);
 });
 
 it('leaves a command running when its stored authority is malformed', function (): void {
@@ -109,7 +109,7 @@ it('leaves a command running when its stored authority is malformed', function (
     });
     $scope = new CommandActor(Actor::user(AccessTestHelpers::user())->ref(), null, 'test', 'writer', (string) $node->drive_id, (string) $node->getKey());
     $journal = app(CommandJournal::class);
-    $command = $journal->register($scope, 'A42', (string) Str::uuid(), hash('sha256', 'proposal'), 0, 1, 0, ['atomic_effects' => []]);
+    $command = $journal->register($scope, 'cmd-1', (string) Str::uuid(), hash('sha256', 'proposal'), 0, 1, 0, ['atomic_effects' => []]);
     $commands = DB::table(app(DatabaseOptions::class)->table('collaboration_commands'));
     $commands->where('id', $command['id'])->update(['intent' => json_encode([
         'principal_type' => ['invalid'], 'principal_id' => $scope->principal->id,
@@ -118,7 +118,7 @@ it('leaves a command running when its stored authority is malformed', function (
 
     expect(fn () => $journal->settle($command['id'], $owner, 1, 0, 0, $command['fingerprint'], [], []))
         ->toThrow(LogicException::class, 'Invalid stored collaboration command scope.')
-        ->and($journal->status($scope, 'A42'))->toBe($command);
+        ->and($journal->status($scope, 'cmd-1'))->toBe($command);
 });
 
 it('rejects a full discovery batch of trashed documents and finds the next healthy target', function (): void {
@@ -140,7 +140,7 @@ it('rejects a full discovery batch of trashed documents and finds the next healt
             app(RoomOwnership::class)->selectProfile($doc, strict: true);
         });
         $scope = new CommandActor($actor, null, 'test', 'writer', (string) $node->drive_id, (string) $node->getKey());
-        $command = $journal->register($scope, 'A42', $proposal, $digest, 0, 1, 0, ['atomic_effects' => []]);
+        $command = $journal->register($scope, 'cmd-1', $proposal, $digest, 0, 1, 0, ['atomic_effects' => []]);
         if ($index < 16) {
             $trashedDrive = Vaulter::drive($node->storage()->firstOrFail())->asSystem('journal test');
             $trashedDrive->nodes()->trash($node->id);

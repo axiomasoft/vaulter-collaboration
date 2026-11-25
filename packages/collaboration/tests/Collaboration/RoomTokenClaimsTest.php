@@ -238,7 +238,7 @@ it('refuses a token while the key set is unusable and never trusts a key equal t
     expect(($this->verify)($token))->toBeNull();
 });
 
-it('keeps the P3.7 binding: a wrong or missing state_format is denied even with valid crypto, issuer and audience', function (): void {
+it('binds the token to its state_format: a wrong or missing state_format is denied even with valid crypto, issuer and audience', function (): void {
     $body = ['room' => Hub::room($this->node)];
 
     Hub::call('authenticate', $body, claimsToken($this))->assertOk();

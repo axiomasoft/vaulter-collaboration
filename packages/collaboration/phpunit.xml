@@ -17,7 +17,7 @@
     </source>
 
     <php>
-        <!-- Deterministic test-only key (not a secret): fixes tests running without a committed APP_KEY (P5.5, D33). -->
+        <!-- Deterministic test-only key (not a secret): fixes tests running without a committed APP_KEY. -->
         <env name="APP_KEY" value="base64:tJ4mVwShl8LETWdRtTCwcoKS7MS2ipekchk9seHrIVc="/>
         <ini name="memory_limit" value="512M"/>
         <env name="APP_ENV" value="testing"/>
