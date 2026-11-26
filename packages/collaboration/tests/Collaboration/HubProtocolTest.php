@@ -7,6 +7,7 @@ use Illuminate\Support\Str;
 use Vaulter\Collaboration\Exceptions\CollaborationEpochMismatchException;
 use Vaulter\Collaboration\Exceptions\CollaborationSeedConflictException;
 use Vaulter\Collaboration\Persistence\CheckpointResult;
+use Vaulter\Collaboration\Persistence\CompactionLeases;
 use Vaulter\Collaboration\Persistence\UpdateEnvelope;
 use Vaulter\Collaboration\Persistence\UpdateLog;
 use Vaulter\Collaboration\Tests\Collaboration\HubTestHelpers as Hub;
@@ -21,6 +22,8 @@ use Vaulter\Documents\Exceptions\DocumentStateTooLargeException;
 use Vaulter\Documents\Exceptions\InvalidDocumentContentException;
 use Vaulter\Documents\Facades\Documents;
 use Vaulter\Documents\Models\Revisions\DocumentRevision;
+use Vaulter\Documents\State\CollaborationStateBinding;
+use Vaulter\Documents\State\CollaborativeState;
 use Vaulter\Drive\Access\Roles\RoleRegistry;
 use Vaulter\Drive\Facades\Vaulter;
 use Vaulter\Drive\Models\Node;
@@ -110,6 +113,41 @@ it('refuses a seed over a generation that starts from a checkpoint', function ()
     Hub::call('append', Hub::seedBody($node, 'late-seed', stateVersion: $version), Hub::token($node))
         ->assertStatus(409)
         ->assertJsonPath('code', 'collaboration_seed_conflict');
+});
+
+it('includes the V2 checkpoint format in ownership and command log snapshots', function (): void {
+    $node = Hub::document();
+    config()->set('vaulter-collaboration.strict_profile', true);
+    $db = app(VaulterDatabase::class);
+    $db->write(fn () => Hub::aggregate($node)->forceFill(['write_mode' => 'journal'])->save());
+    $token = Hub::token($node);
+    Hub::call('authenticate', ['room' => Hub::room($node), 'strict_capable' => true], $token)
+        ->assertOk()->assertJsonPath('profile', 'strict');
+
+    $address = ['document_id' => (string) Hub::aggregate($node)->getKey(), 'generation' => 0];
+    $owner = ['owner_id' => (string) Str::uuid()];
+    Hub::call('ownership/acquire', $address + $owner, null)->assertOk()->assertJsonPath('owner_fence', 1);
+    $owner['owner_fence'] = 1;
+    Hub::call('append', Hub::seedBody($node, 'seed') + $owner + ['base_seq' => 0], $token)
+        ->assertOk()->assertJsonPath('seq', 1);
+
+    $marker = $db->transaction(fn () => app(CollaborativeState::class)->lock($node->getKey())->pending);
+    expect($marker)->not->toBeNull();
+    app(CompactionLeases::class)->requestDrain($marker);
+    $lease = Compaction::leaseOf($node);
+    $state = "\x00v2";
+    $binding = new CollaborationStateBinding('yjs', 'yjs-update-v2', $lease->log->schemaVersion, $lease->log->generation);
+    Compaction::publish($lease, overrides: ['binding' => $binding, 'state' => $state]);
+
+    foreach ([
+        'ownership/acquire' => $address + $owner + ['include_log' => true],
+        'commands/next' => $address + ['read_log' => true],
+    ] as $endpoint => $body) {
+        Hub::call($endpoint, $body, null)->assertOk()
+            ->assertJsonPath('log.checkpoint_seq', 1)
+            ->assertJsonPath('log.checkpoint', base64_encode($state))
+            ->assertJsonPath('log.state_format', 'yjs-update-v2');
+    }
 });
 
 it('publishes the projection the hub emits for a link, an image and a table in a checkpoint', function (): void {

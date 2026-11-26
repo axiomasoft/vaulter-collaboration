@@ -17,6 +17,7 @@ use Vaulter\Documents\Exceptions\DocumentTypeUnavailableException;
 use Vaulter\Documents\Exceptions\InvalidDocumentContentException;
 use Vaulter\Documents\Exceptions\NotADocumentException;
 use Vaulter\Documents\State\CheckpointPublication;
+use Vaulter\Documents\State\CollaborationStateBinding;
 use Vaulter\Documents\State\CollaborativeState;
 use Vaulter\Drive\Exceptions\Nodes\NodeNotFoundException;
 use Vaulter\Support\LoadTier;
@@ -69,7 +70,11 @@ final readonly class Checkpoint
         return $this->database->transaction(function () use ($request): CheckpointResult {
             $locked = $this->state->lock($request->nodeId);
             $this->rooms->assertGeneration($locked, $request->generation);
-            if ($locked->binding === null || !$request->binding->sameAs($locked->binding) || $request->documentType !== $locked->type) {
+            $binding = $locked->binding;
+            if ($binding === null || $request->documentType !== $locked->type
+                || $request->binding->protocol !== $binding->protocol || $request->binding->schemaVersion !== $binding->schemaVersion
+                || $request->binding->generation !== $binding->generation
+                || !CollaborationStateBinding::acceptsFormat($binding->protocol, $binding->stateFormat, $request->binding->stateFormat)) {
                 throw new CollaborationCheckpointConflictException(CollaborationCheckpointConflictException::VERSION);
             }
             $protocol = $this->rooms->protocol($locked);
@@ -78,11 +83,12 @@ final readonly class Checkpoint
                 throw new CollaborationEpochMismatchException(expected: $request->generation, actual: $locked->generation);
             }
             $now = $this->log->leaseClock();
+            // A strict Yjs publication may upgrade its encoding under the lease on the old binding.
             if ($head === null || $head->leaseThroughSeq === null || !$head->heldBy($request->leaseToken, $now)
-                || !LeaseBinding::matches($request->leaseToken, $locked->documentId, $request->documentType, $request->binding, $head->checkpointVersion)) {
+                || !LeaseBinding::matches($request->leaseToken, $locked->documentId, $request->documentType, $binding, $head->checkpointVersion)) {
                 throw new CollaborationCheckpointConflictException(CollaborationCheckpointConflictException::LEASE);
             }
-            if ($head->protocol !== $protocol) {
+            if ($head->protocol !== $protocol || ($head->profile !== 'strict' && !$request->binding->sameAs($binding))) {
                 throw new CollaborationCheckpointConflictException(CollaborationCheckpointConflictException::VERSION);
             }
             if ($request->coveredFrom !== $head->checkpointSeq || $request->coveredThrough < $request->coveredFrom || $request->coveredThrough > $head->leaseThroughSeq) {
@@ -93,11 +99,12 @@ final readonly class Checkpoint
             }
 
             $outcome = $this->state->publishCheckpoint($locked, new CheckpointPublication(
-                binding: $request->binding,
+                binding: $binding,
                 expectedStateVersion: $head->checkpointVersion,
                 coveredThrough: $request->coveredThrough,
                 collabState: $request->state,
                 content: $request->content,
+                stateFormat: $request->binding->stateFormat,
             ));
             if (!$outcome->published) {
                 throw new CollaborationCheckpointConflictException(CollaborationCheckpointConflictException::VERSION);
@@ -108,7 +115,11 @@ final readonly class Checkpoint
                 ->where('seq', '<=', $request->coveredThrough)
                 ->delete();
             $markerCleared = $outcome->pending === null;
+            $tail = $request->coveredThrough === $head->headSeq
+                ? ['tail_bytes' => 0, 'tail_wire_bytes' => 0, 'tail_oldest_at' => null, 'tail_latest_at' => null]
+                : $this->log->tailCounters($locked->documentId, $locked->generation, $request->coveredThrough);
             $this->log->rows('collaboration_heads', $locked->documentId, $locked->generation)->update([
+                ...$tail,
                 'checkpoint_seq' => $request->coveredThrough,
                 'checkpoint_version' => $outcome->stateVersion,
                 'lease_token' => null,

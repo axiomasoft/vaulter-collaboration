@@ -8,7 +8,7 @@ import { config as defaultConfig } from './config.js'
 import { createLedger } from './ledger.js'
 import { createLimits, envelopeIdOf, isWriteMessage, LIMIT, readMessageHeader, readVarUint } from './limits.js'
 import { retryPolicy } from './retry.js'
-import { closeConnection, closeRoom, DOCUMENT_GONE, EPOCH_CHANGED, FORBIDDEN, HANDOFF, TOKEN_EXPIRED } from './rooms.js'
+import { closeConnection, closeRoom, DOCUMENT_GONE, EPOCH_CHANGED, FORBIDDEN, HANDOFF, TOKEN_EXPIRED, TOO_MANY_ROOMS } from './rooms.js'
 import { checkReviewMarks, extensionsFor, FIELD, lostAttributes } from './schema.js'
 import { createStrictRooms } from './strict-rooms.js'
 
@@ -91,6 +91,7 @@ const MEASURE_STEP_BYTES = 64 * 1024
 
 /** How many times a seed is rebuilt after a seed conflict before the load gives up. */
 const SEED_ATTEMPTS = 3
+const HEAP_CHECK_INTERVAL_MS = 1000
 
 const OWN = Symbol('vaulter.collab.own-origin')
 
@@ -168,11 +169,16 @@ export function originKind(origin, { redisOrigins = [] } = {}) {
  * held anything (a generation that needs no seed). The compaction worker rebuilds a document the
  * same way.
  */
-export function replayLog(document, { checkpoint = null, tail = [] } = {}, origin = LOAD_ORIGIN) {
+export function applyCheckpoint(document, bytes, format, origin) {
+  const apply = format === 'yjs-update-v2' ? Y.applyUpdateV2 : Y.applyUpdate
+  apply(document, bytes, origin)
+}
+
+export function replayLog(document, { checkpoint = null, state_format, tail = [] } = {}, origin = LOAD_ORIGIN) {
   let applied = false
 
   if (typeof checkpoint === 'string' && checkpoint !== '') {
-    Y.applyUpdate(document, Buffer.from(checkpoint, 'base64'), origin)
+    applyCheckpoint(document, Buffer.from(checkpoint, 'base64'), state_format, origin)
     applied = true
   }
 
@@ -418,17 +424,22 @@ export function createPersistence({
   serverToken = null,
   uuid = () => crypto.randomUUID(),
   limits = null,
+  heapUsed = () => process.memoryUsage().heapUsed,
 } = {}) {
   const mode = conf.mode === 'durable' ? 'durable' : 'buffered'
   const policy = retryPolicy(conf)
   const limit = limits ?? createLimits(conf, { clock })
   const strictCapable = conf.strictProfile === true && !conf.redisUrl && redisOrigins.length === 0
-  const strictRooms = createStrictRooms({ backend, backendOptions, conf, log, enabled: strictCapable })
+  const maxHeapBytes = (conf.maxHeapMb ?? Infinity) * 1024 * 1024
+  const strictRooms = createStrictRooms({ backend, backendOptions, conf, log, enabled: strictCapable, canLoad: () => heapUsed() < maxHeapBytes })
   /**
    * documentName → the loaded room: { generation, document, exact (its measured state bytes, null
    * before the first measure), growth (bytes of the updates since), full (at MAX_DOCUMENT_BYTES) }.
    */
   const rooms = new Map()
+  let heapTimer = null
+  let eviction = null
+  let activity = 0
   /**
    * documentName → the close of a room whose generation ended, whose document is gone or whose state
    * holds an update its log never will: nothing of theirs is appended any more, and a connection
@@ -514,6 +525,38 @@ export function createPersistence({
     }
   }
 
+  function touch(documentName) {
+    const room = rooms.get(documentName)
+    if (room) room.lastUsed = ++activity
+  }
+
+  function relieveHeap() {
+    if (eviction !== null || !instance?.unloadDocument || heapUsed() < maxHeapBytes) return eviction
+    eviction = (async () => {
+      const oldestFirst = [...rooms.entries()].sort(([, a], [, b]) => a.lastUsed - b.lastUsed)
+      for (const [name, room] of oldestFirst) {
+        if (heapUsed() < maxHeapBytes) break
+        if (instance.documents.get(name) !== room.document || !instance.shouldUnloadDocument(room.document)
+          || limit.connectionCount(name) > 0 || ledger.pendingCount(name) > 0) continue
+        if (room.strict && !room.strict.pause()) continue
+        room.evicting = true
+        try {
+          await instance.unloadDocument(room.document)
+        } finally {
+          room.evicting = false
+          room.strict?.resume()
+        }
+      }
+    })().finally(() => { eviction = null })
+    return eviction
+  }
+
+  async function admitHeap() {
+    if (heapUsed() < maxHeapBytes) return
+    await relieveHeap()
+    if (heapUsed() >= maxHeapBytes) throw Object.assign(new Error(TOO_MANY_ROOMS.reason), TOO_MANY_ROOMS)
+  }
+
   /**
    * Keep the direct connections of the instance (openDirectConnection): a room that diverged closes
    * them with its WebSockets, or one held open would keep the room loaded — and fenced — for good.
@@ -538,6 +581,7 @@ export function createPersistence({
       connection.disconnect = function closeDirectConnection() {
         if (closing === null) {
           directConnections.get(documentName)?.delete(connection)
+          touch(documentName)
           closing = Promise.resolve().then(() => disconnect.call(connection))
         }
 
@@ -559,6 +603,7 @@ export function createPersistence({
       }
 
       directConnections.get(documentName).add(connection)
+      touch(documentName)
 
       return connection
     }
@@ -976,6 +1021,7 @@ export function createPersistence({
   /** onLoadDocument: replay the room's log (or seed it), then follow its server changes. */
   async function onLoadDocument({ documentName, document, context, instance: hocuspocus }) {
     bind(hocuspocus)
+    await admitHeap()
     // The bytes the room takes while it loads: the first estimate of its state.
     let loadedBytes = 0
     const countLoaded = (update) => { loadedBytes += update.length }
@@ -1015,11 +1061,15 @@ export function createPersistence({
           }
         }
       }
+      await admitHeap()
+    } catch (error) {
+      if (strict) await strictRooms.close(strict)
+      throw error
     } finally {
       document.off('update', countLoaded)
     }
 
-    const room = { generation, document, strict, exact: null, growth: loadedBytes, full: false }
+    const room = { generation, document, strict, exact: null, growth: loadedBytes, full: false, lastUsed: ++activity, evicting: false }
     rooms.set(documentName, room)
 
     if (exceeds(room, 0)) {
@@ -1197,6 +1247,7 @@ export function createPersistence({
 
     if (room !== undefined) {
       roomOf.set(connection, room)
+      touch(room)
     }
 
     // The fenced room is not loaded again until Hocuspocus unloads it: a late joiner gets its close.
@@ -1261,6 +1312,7 @@ export function createPersistence({
   }
 
   async function onDisconnect({ connection, documentName, socketId }) {
+    touch(documentName)
     const room = writers.get(documentName)
     const known = room?.get(socketId ?? connection)?.connection ?? connection
 
@@ -1337,10 +1389,15 @@ export function createPersistence({
       throw Object.assign(new Error(`Collaboration writes are stopped (${stopReasonFor(documentName)}); the server change was not applied`), { code })
     }
 
-    const strict = rooms.get(documentName)?.strict
+    const room = rooms.get(documentName)
+    const strict = room?.strict
     if (strict) {
       const writer = token ?? context.token ?? await writerToken(documentName)
       if (!writer) throw Object.assign(new Error(FORBIDDEN.reason), FORBIDDEN)
+      if (room.evicting || rooms.get(documentName) !== room) {
+        throw Object.assign(new Error(TOO_MANY_ROOMS.reason), TOO_MANY_ROOMS)
+      }
+      touch(documentName)
       return strict.serverWrite(change, { token: writer, room: documentName })
     }
 
@@ -1403,10 +1460,19 @@ export function createPersistence({
     start() {
       ledger.start()
       strictRooms.start()
+      if (heapTimer === null && Number.isFinite(maxHeapBytes)) {
+        heapTimer = setInterval(() => {
+          relieveHeap()?.catch((failure) => log.warn?.('Vaulter collaboration: idle room eviction failed', failure?.name))
+        }, HEAP_CHECK_INTERVAL_MS)
+        heapTimer.unref?.()
+      }
     },
-    stop() {
+    async stop() {
       ledger.stop()
-      return strictRooms.stop()
+      clearInterval(heapTimer)
+      heapTimer = null
+      await strictRooms.stop()
+      await eviction
     },
     strictCapable,
     stopStrict: strictRooms.stop,

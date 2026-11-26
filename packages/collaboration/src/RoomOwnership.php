@@ -22,6 +22,7 @@ use Vaulter\Documents\Contracts\CollaborationProtocolDriver;
 use Vaulter\Documents\Contracts\SupportsCollaboration;
 use Vaulter\Documents\Data\Collaboration\CollaborationMode;
 use Vaulter\Documents\Exceptions\CollaborationUnavailableException;
+use Vaulter\Documents\State\CollaborationStateBinding;
 use Vaulter\Documents\State\LockedDocumentState;
 use Vaulter\Documents\Types\DocumentTypeRegistry;
 use Vaulter\Drive\Enums\DriveStatus;
@@ -253,7 +254,7 @@ final readonly class RoomOwnership
         $type = $this->types->find($document->type);
         if (!$type instanceof SupportsCollaboration || $binding === null
             || $type->collaborationProtocol() !== $binding->protocol
-            || $type->collaborationStateFormat() !== $binding->stateFormat) {
+            || !CollaborationStateBinding::acceptsFormat($binding->protocol, $type->collaborationStateFormat(), $binding->stateFormat)) {
             throw new CollaborationUnavailableException('unsupported_binding', $document->type);
         }
         $driver = $this->registeredDriver($binding->protocol);

@@ -32,6 +32,10 @@ final readonly class Head
         public int $ownerFence,
         public ?string $ownerId,
         public ?Carbon $ownerExpiresAt,
+        public int $tailBytes,
+        public int $tailWireBytes,
+        public ?Carbon $tailOldestAt,
+        public ?Carbon $tailLatestAt,
     ) {}
 
     /** Whether a compaction lease holds the generation at `$now`. */

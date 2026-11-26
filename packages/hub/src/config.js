@@ -65,6 +65,7 @@
 //   VAULTER_COLLAB_MAX_REQUEST_BYTES        — one backend request body (default 2 MiB, as limits.request_bytes; a
 //                                             checkpoint may carry the base64 state on top).
 //   VAULTER_COLLAB_MAX_ROOMS_PER_TENANT     — rooms of one tenant open on this hub (default 1000).
+//   VAULTER_COLLAB_MAX_HEAP_MB             — process heap budget for room admission and idle eviction (default 512 MiB).
 //   VAULTER_COLLAB_MAX_CONNECTIONS_PER_ROOM — connections of one room on this hub (default 100).
 //   VAULTER_COLLAB_MAX_UPDATES_PER_SECOND_PER_ROOM — writes one room takes per second (default 200).
 //   VAULTER_COLLAB_MAX_SYNC_REQUESTS_PER_MINUTE — sync step 1 and awareness queries one connection sends per
@@ -251,6 +252,7 @@ export function buildConfig(env = process.env) {
     maxDocumentBytes,
     maxRequestBytes: int('VAULTER_COLLAB_MAX_REQUEST_BYTES', 2 * 1024 * 1024, env),
     maxRoomsPerTenant: int('VAULTER_COLLAB_MAX_ROOMS_PER_TENANT', 1000, env),
+    maxHeapMb: int('VAULTER_COLLAB_MAX_HEAP_MB', 512, env),
     maxConnectionsPerRoom: int('VAULTER_COLLAB_MAX_CONNECTIONS_PER_ROOM', 100, env),
     maxUpdatesPerSecondPerRoom: int('VAULTER_COLLAB_MAX_UPDATES_PER_SECOND_PER_ROOM', 200, env),
     maxSyncRequestsPerMinute: int('VAULTER_COLLAB_MAX_SYNC_REQUESTS_PER_MINUTE', 10, env),
@@ -310,6 +312,7 @@ const NUMERIC = Object.freeze([
   { key: 'maxDocumentBytes', env: 'VAULTER_COLLAB_MAX_DOCUMENT_BYTES', min: 1 },
   { key: 'maxRequestBytes', env: 'VAULTER_COLLAB_MAX_REQUEST_BYTES', min: 1, backend: true },
   { key: 'maxRoomsPerTenant', env: 'VAULTER_COLLAB_MAX_ROOMS_PER_TENANT', min: 1 },
+  { key: 'maxHeapMb', env: 'VAULTER_COLLAB_MAX_HEAP_MB', min: 1 },
   { key: 'maxConnectionsPerRoom', env: 'VAULTER_COLLAB_MAX_CONNECTIONS_PER_ROOM', min: 1 },
   { key: 'maxUpdatesPerSecondPerRoom', env: 'VAULTER_COLLAB_MAX_UPDATES_PER_SECOND_PER_ROOM', min: 1 },
   { key: 'maxSyncRequestsPerMinute', env: 'VAULTER_COLLAB_MAX_SYNC_REQUESTS_PER_MINUTE', min: 1 },

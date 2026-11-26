@@ -9,7 +9,7 @@ import { checkReviewMarks, extensionsFor, FIELD, lostAttributes } from './schema
 // by the backend under the same locks as the lease. compactLease() rebuilds the document on a new
 // Y.Doc — the checkpoint, then the tail in seq order, as a room is loaded (src/persistence.js
 // replayLog) — and returns:
-//   - state: Y.encodeStateAsUpdate of the result (base64), equal to applying every update of
+//   - state: the Yjs checkpoint (base64), equal to applying every update of
 //     (C, H] to the checkpoint;
 //   - content: its TipTap JSON projection (@hocuspocus/transformer), which the backend stores as
 //     the document's content;
@@ -88,7 +88,7 @@ function checkEntry(entry) {
     isDocument(entry.document) ? null : 'document',
     isCounter(entry.generation) ? null : 'generation',
     entry.protocol === 'yjs' ? null : 'protocol',
-    entry.state_format === 'yjs-update-v1' ? null : 'state_format',
+    ['yjs-update-v1', 'yjs-update-v2'].includes(entry.state_format) ? null : 'state_format',
     Number.isInteger(entry.schema_version) && entry.schema_version >= 1 ? null : 'schema_version',
     typeof entry.lease_token === 'string' && entry.lease_token !== '' ? null : 'lease_token',
     isCounter(entry.checkpoint_seq) ? null : 'checkpoint_seq',
@@ -124,7 +124,7 @@ export function mergeLog(entry) {
     if (entry.profile === 'strict' && tail.some((record) => sha256Hex(Buffer.from(record.payload, 'base64')) !== record.sha256)) {
       throw new Error('The committed update does not match its journal hash')
     }
-    replayLog(document, { checkpoint, tail }, COMPACTION_ORIGIN)
+    replayLog(document, { checkpoint, state_format: entry.state_format, tail }, COMPACTION_ORIGIN)
     if (entry.profile === 'strict' && (document.store.pendingStructs !== null || document.store.pendingDs !== null)) {
       throw new Error('The committed prefix has unresolved dependencies')
     }
@@ -189,15 +189,14 @@ export function compactLease(entry) {
 
   try {
     const content = projectionOf(document, entry.type)
-    const state = entry.profile === 'strict'
-      ? Y.convertUpdateFormatV2ToV1(Y.encodeStateAsUpdateV2(document))
-      : Y.encodeStateAsUpdate(document)
+    const v2 = entry.profile === 'strict' || entry.state_format === 'yjs-update-v2'
+    const state = v2 ? Y.encodeStateAsUpdateV2(document) : Y.encodeStateAsUpdate(document)
 
     return {
       document: entry.document,
       generation: entry.generation,
       protocol: entry.protocol,
-      stateFormat: entry.state_format,
+      stateFormat: v2 ? 'yjs-update-v2' : entry.state_format,
       schemaVersion: entry.schema_version,
       type: entry.type,
       leaseToken: entry.lease_token,

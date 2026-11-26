@@ -29,7 +29,7 @@ final readonly class HocuspocusCollaborationDriver implements CollaborationProto
 
     public function supportsState(string $documentType, string $stateFormat, int $schemaVersion, bool $hasCheckpoint, CollaborationMode $mode): bool
     {
-        return $stateFormat === 'yjs-update-v1' && match ($documentType) {
+        return in_array($stateFormat, ['yjs-update-v1', 'yjs-update-v2'], true) && match ($documentType) {
             'vaulter/rich-text' => $schemaVersion === 1 || ($schemaVersion === 2 && $this->documents->tiptap->blockIds),
             'vaulter/markdown' => $schemaVersion === 1,
             default => false,

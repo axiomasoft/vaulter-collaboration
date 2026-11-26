@@ -137,7 +137,11 @@ paths:
       summary: 'Hub: append one update to the log of a room (protocol 2)'
       description: 'Requires X-Vaulter-Collab-Protocol: 2 (409 collaboration_protocol_mismatch otherwise). The body size is
         checked by its Content-Length and the payload by its base64 length before decoding (413 collaboration_update_too_large).
-        The answer is the committed receipt: a retry with the same update_id and payload gets the same seq. The hub''s seed
+        The answer is the committed receipt: a retry with the same update_id and payload gets the same seq. A strict append
+        behind the head returns 409 collaboration_room_conflict with meta.context.reason set to base_moved. The
+        meta.context.replay object carries generation, state_format, checkpoint_seq, head_seq and the committed tail
+        after the supplied base_seq. If compaction passed base_seq, replay includes the checkpoint and the tail after it.
+        The hub''s seed
         of an empty generation carries seed_state_version: it is appended only while the generation has no checkpoint and
         no record and the document''s state version still equals it (409 collaboration_seed_conflict otherwise). While
         vaulter:collaboration:drain drains the log before the module is switched off, every append answers 503
@@ -362,6 +366,7 @@ paths:
                   type: string
                 state_format:
                   type: string
+                  description: The encoding of state. A strict Yjs checkpoint can upgrade from the leased V1 format to V2.
                 schema_version:
                   type: integer
                   minimum: 1
@@ -1028,7 +1033,7 @@ components:
         server_client_id: {type: integer, minimum: 1, maximum: 2147483647}
         log:
           type: object
-          required: [generation, state_version, type, schema_version, profile, checkpoint_seq, head_seq, checkpoint, content, tail]
+          required: [generation, state_version, type, schema_version, profile, checkpoint_seq, state_format, head_seq, checkpoint, content, tail]
           properties:
             generation: {type: integer, minimum: 0}
             state_version: {type: integer, minimum: 0}
@@ -1036,6 +1041,9 @@ components:
             schema_version: {type: integer, minimum: 1}
             profile: {const: strict}
             checkpoint_seq: {type: integer, minimum: 0}
+            state_format:
+              type: string
+              description: The encoding of the checkpoint state.
             head_seq: {type: integer, minimum: 0}
             checkpoint: {type: [string, 'null']}
             content: {type: [object, 'null']}

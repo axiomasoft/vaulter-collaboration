@@ -31,6 +31,7 @@ final readonly class LogTables
         'document_id', 'generation', 'protocol', 'head_seq', 'checkpoint_seq', 'checkpoint_version',
         'lease_token', 'lease_owner', 'lease_expires_at', 'lease_through_seq', 'drain_requested_at', 'retired_at',
         'profile', 'owner_fence', 'owner_id', 'owner_expires_at',
+        'tail_bytes', 'tail_wire_bytes', 'tail_oldest_at', 'tail_latest_at',
     ];
 
     public function __construct(
@@ -49,6 +50,49 @@ final readonly class LogTables
         return $this->table($entity)
             ->where('document_id', Identity::key($documentId))
             ->where('generation', $generation);
+    }
+
+    /**
+     * Summarize the surviving tail after a checkpoint, under the document and head locks.
+     *
+     * @return array{tail_bytes: int, tail_wire_bytes: int, tail_oldest_at: mixed, tail_latest_at: mixed}
+     */
+    public function tailCounters(string $documentId, int $generation, int $checkpointSeq): array
+    {
+        [$bytes, $wireBytes] = self::payloadLengths($this->database->driver());
+        $query = $this->rows('collaboration_updates', $documentId, $generation)->where('seq', '>', $checkpointSeq);
+        if (in_array($this->database->driver(), ['mysql', 'mariadb'], true)) {
+            $query->lockForUpdate();
+        }
+        $tail = $query->selectRaw("coalesce(sum({$bytes}), 0) as tail_bytes, coalesce(sum({$wireBytes}), 0) as tail_wire_bytes,
+            min(created_at) as tail_oldest_at, max(created_at) as tail_latest_at")->first();
+
+        return [
+            'tail_bytes' => self::int($tail->tail_bytes ?? 0),
+            'tail_wire_bytes' => self::int($tail->tail_wire_bytes ?? 0),
+            'tail_oldest_at' => $tail->tail_oldest_at ?? null,
+            'tail_latest_at' => $tail->tail_latest_at ?? null,
+        ];
+    }
+
+    /** @return array{literal-string, literal-string} SQL lengths in decoded bytes and base64 wire bytes */
+    public static function payloadLengths(string $driver): array
+    {
+        // Before this migration every payload was canonical base64, including its padding.
+        $length = 'length(payload)';
+        $trimmed = match ($driver) {
+            'pgsql' => "length(rtrim(convert_from(payload, 'UTF8'), '='))",
+            'sqlite' => "length(rtrim(cast(payload as text), '='))",
+            default => "length(trim(trailing '=' from payload))",
+        };
+        $decoded = $driver === 'pgsql' || $driver === 'sqlite'
+            ? "({$trimmed} * 3 / 4)"
+            : "({$trimmed} * 3 DIV 4)";
+
+        return $driver === 'pgsql'
+            ? ["case when payload_raw then {$length} else {$decoded} end",
+                "case when payload_raw then 4 * (({$length} + 2) / 3) else {$length} end"]
+            : [$decoded, $length];
     }
 
     /**
@@ -139,6 +183,10 @@ final readonly class LogTables
             ownerFence: self::int($row->owner_fence),
             ownerId: is_string($row->owner_id) ? $row->owner_id : null,
             ownerExpiresAt: self::time($row->owner_expires_at, 'UTC'),
+            tailBytes: self::int($row->tail_bytes),
+            tailWireBytes: self::int($row->tail_wire_bytes),
+            tailOldestAt: self::time($row->tail_oldest_at),
+            tailLatestAt: self::time($row->tail_latest_at),
         );
     }
 

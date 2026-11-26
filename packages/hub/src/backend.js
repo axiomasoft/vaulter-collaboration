@@ -257,7 +257,11 @@ export async function append({ token, room, generation, updateId, sha256, payloa
     return { ok: true, status: response.status, ack }
   }
 
-  return refusal(response)
+  const result = refusal(response)
+  const replay = response.body?.meta?.context?.replay
+  return ownerId !== undefined && response.status === 409 && result.code === 'base_moved' && replay
+    ? { ...result, replay }
+    : result
 }
 
 async function ownerCall(operation, body, options) {

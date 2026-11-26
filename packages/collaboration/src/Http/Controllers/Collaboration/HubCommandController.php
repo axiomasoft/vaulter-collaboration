@@ -206,6 +206,7 @@ final readonly class HubCommandController
         return [
             'generation' => $log->generation, 'state_version' => $log->stateVersion, 'type' => $log->type,
             'schema_version' => $log->schemaVersion, 'profile' => $log->profile, 'checkpoint_seq' => $log->checkpointSeq,
+            'state_format' => $log->binding->stateFormat,
             'head_seq' => $log->headSeq, 'checkpoint' => $log->checkpoint === null ? null : base64_encode($log->checkpoint),
             'content' => $log->checkpoint === null ? $log->content : null, 'tail' => $log->tail,
         ];

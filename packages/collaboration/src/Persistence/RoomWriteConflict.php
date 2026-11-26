@@ -17,7 +17,7 @@ final class RoomWriteConflict extends VaulterException implements ProblemExcepti
 {
     use ProvidesProblemDetails;
 
-    public function __construct(public readonly string $reason)
+    public function __construct(public readonly string $reason, private readonly ?LogSnapshot $replay = null)
     {
         parent::__construct('The collaboration room refused the operation ('.$reason.').');
     }
@@ -34,7 +34,19 @@ final class RoomWriteConflict extends VaulterException implements ProblemExcepti
 
     public function problemDetails(): array
     {
-        return ['context' => ['reason' => $this->reason]];
+        $context = ['reason' => $this->reason];
+        if ($this->replay !== null) {
+            $context['replay'] = [
+                'generation' => $this->replay->generation,
+                'state_format' => $this->replay->binding->stateFormat,
+                'checkpoint' => $this->replay->checkpoint === null ? null : base64_encode($this->replay->checkpoint),
+                'checkpoint_seq' => $this->replay->checkpointSeq,
+                'head_seq' => $this->replay->headSeq,
+                'tail' => $this->replay->tail,
+            ];
+        }
+
+        return ['context' => $context];
     }
 
     public function errorDescriptor(): ErrorDescriptor

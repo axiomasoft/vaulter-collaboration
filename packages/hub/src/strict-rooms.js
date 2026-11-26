@@ -13,7 +13,7 @@ function keyOf(documentId, generation) {
 }
 
 /** Owns leases and replays the journal for live rooms and background work. */
-export function createStrictRooms({ backend, backendOptions, conf, log, enabled }) {
+export function createStrictRooms({ backend, backendOptions, conf, log, enabled, canLoad = () => true }) {
   const owner = crypto.randomUUID()
   const live = new Map()
   const opening = new Set()
@@ -31,6 +31,17 @@ export function createStrictRooms({ backend, backendOptions, conf, log, enabled 
     let initial = acquired.log
     let nextRenewal = performance.now() + RENEW_MS
     let closed = false
+    let paused = false
+    let background = 0
+    async function inBackground(task) {
+      if (closed || paused) return
+      background++
+      try {
+        await task()
+      } finally {
+        background--
+      }
+    }
     const seq = createRoomSequencer({
       room: doc,
       generation,
@@ -48,7 +59,7 @@ export function createStrictRooms({ backend, backendOptions, conf, log, enabled 
       },
       append: async (update) => {
         const result = await backend.append({ ...update, generation, ownerId: owner, fence: credentials.owner_fence }, backendOptions)
-        if (!result.ok) throw Object.assign(refusal(result.code ?? 'append_failed'), { status: result.status })
+        if (!result.ok) throw Object.assign(refusal(result.code ?? 'append_failed'), { status: result.status, replay: result.replay })
         if (result.ack.generation !== generation || result.ack.sha256 !== update.sha256) throw refusal('invalid_receipt')
         return result.ack
       },
@@ -78,18 +89,28 @@ export function createStrictRooms({ backend, backendOptions, conf, log, enabled 
       }
       return {
         documentId, generation, fence: credentials.owner_fence, seq, onFailure, close,
-        async renew() {
-          if (!closed && nextRenewal <= performance.now()) {
-            await backend.renewOwnership(credentials, backendOptions)
-            nextRenewal = performance.now() + RENEW_MS
-          }
+        pause() {
+          if (background > 0 || seq.busy) return false
+          paused = true
+          return true
         },
-        async process() {
-          if (closed) return
-          const { command } = await backend.nextCommand(credentials, backendOptions)
-          if (command !== null) {
-            await seq.runCommand(command, clientId, type, (request) => backend.settleCommand({ ...credentials, ...request }, backendOptions))
-          }
+        resume() { paused = false },
+        poll() {
+          return inBackground(async () => {
+            if (nextRenewal <= performance.now()) {
+              await backend.renewOwnership(credentials, backendOptions)
+              nextRenewal = performance.now() + RENEW_MS
+            }
+            await seq.catchUp()
+          })
+        },
+        process() {
+          return inBackground(async () => {
+            const { command } = await backend.nextCommand(credentials, backendOptions)
+            if (command !== null) {
+              await seq.runCommand(command, clientId, type, (request) => backend.settleCommand({ ...credentials, ...request }, backendOptions))
+            }
+          })
         },
         submitUpdate(update, principal) {
           return seq.submitUpdate({ ...update, subject: principal?.id })
@@ -152,6 +173,7 @@ export function createStrictRooms({ backend, backendOptions, conf, log, enabled 
     if (opening.has(key) || cold.has(key)) return
     const room = live.get(key)
     if (room) return room.process().catch((failure) => fault(room, failure))
+    if (!canLoad()) return
 
     const run = (async () => {
       const doc = new Y.Doc()
@@ -178,8 +200,7 @@ export function createStrictRooms({ backend, backendOptions, conf, log, enabled 
     polling = (async () => {
       const active = [...live.values()].map(async (entry) => {
         try {
-          await entry.renew()
-          await entry.seq.catchUp()
+          await entry.poll()
         } catch (failure) {
           fault(entry, failure)
         }

@@ -47,7 +47,8 @@ beforeEach(function (): void {
 });
 
 it('commits the first append as seq 1 with its receipt, head and pending marker', function (): void {
-    $result = idemAppend($this->node, "\x01\x00yjs", $this->id);
+    $payload = "\x01\x00yjs";
+    $result = idemAppend($this->node, $payload, $this->id);
     $document = Hub::aggregate($this->node);
     $update = DB::table(app(DatabaseOptions::class)->table('collaboration_updates'))->first();
     $storedPayload = is_resource($update->payload) ? stream_get_contents($update->payload) : $update->payload;
@@ -55,12 +56,14 @@ it('commits the first append as seq 1 with its receipt, head and pending marker'
         throw new RuntimeException('Unable to read stored update bytes.');
     }
 
-    expect($result->ack())->toBe(['generation' => 0, 'update_id' => $this->id, 'seq' => 1, 'sha256' => hash('sha256', "\x01\x00yjs"), 'persisted' => true])
+    $expectedStorage = DB::connection()->getDriverName() === 'pgsql' ? $payload : base64_encode($payload);
+
+    expect($result->ack())->toBe(['generation' => 0, 'update_id' => $this->id, 'seq' => 1, 'sha256' => hash('sha256', $payload), 'persisted' => true])
         ->and($result->duplicate)->toBeFalse()
         ->and(idemCount('collaboration_updates'))->toBe(1)
         ->and(idemCount('collaboration_receipts'))->toBe(1)
         ->and(DB::table(app(DatabaseOptions::class)->table('collaboration_heads'))->value('head_seq'))->toBe(1)
-        ->and(base64_decode($storedPayload, true))->toBe("\x01\x00yjs")
+        ->and($storedPayload)->toBe($expectedStorage)
         ->and([$document->syncState?->pending_generation, $document->syncState?->pending_through_seq])->toBe([0, 1]);
 });
 

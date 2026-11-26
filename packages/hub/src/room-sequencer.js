@@ -1,10 +1,11 @@
 import crypto from 'node:crypto'
+import { setImmediate } from 'node:timers/promises'
 import { isDeepStrictEqual } from 'node:util'
 import { TiptapTransformer } from '@hocuspocus/transformer'
 import { getSchema } from '@tiptap/core'
 import { updateYFragment } from 'y-prosemirror'
 import * as Y from 'yjs'
-import { COMMITTED_ORIGIN, LOAD_ORIGIN, sha256Hex } from './persistence.js'
+import { applyCheckpoint, COMMITTED_ORIGIN, LOAD_ORIGIN, sha256Hex } from './persistence.js'
 import { validReviewUpdate } from './review-validation.js'
 import { checkReviewMarks, extensionsFor, FIELD, isRecord, isReviewMark, lostAttributes, REVIEW_STRUCTURE, REVIEW_SUGGESTION } from './schema.js'
 
@@ -20,10 +21,14 @@ function complete(doc) {
   }
 }
 
-export function cloneRoom(doc) {
+function copyOf(update) {
   const copy = new Y.Doc({ gc: false })
-  Y.applyUpdate(copy, Y.encodeStateAsUpdate(doc), LOAD_ORIGIN)
+  Y.applyUpdate(copy, update, LOAD_ORIGIN)
   return copy
+}
+
+export function cloneRoom(doc) {
+  return copyOf(Y.encodeStateAsUpdate(doc))
 }
 
 function blocks(root, blockId, found = []) {
@@ -187,7 +192,7 @@ function appendParagraph(block, effect, id) {
 }
 
 export function prepareOnCopy(base, intent, clientId, commandId, type = 'vaulter/rich-text') {
-  return prepareCommand(base, intent, clientId, commandId, type, Infinity)
+  return prepareCommand(Y.encodeStateAsUpdate(base), intent, clientId, commandId, type, Infinity)
 }
 
 function prepareReviewReplacement(schema, before, effect) {
@@ -245,7 +250,7 @@ function prepareImportReplacement(schema, intent) {
 }
 
 /** Prepare on a disposable copy. Confirm the emitted bytes reproduce the entire checked tree. */
-function prepareCommand(base, intent, clientId, commandId, type, maxBytes) {
+function prepareCommand(snapshot, intent, clientId, commandId, type, maxBytes) {
   if (!Number.isInteger(clientId) || clientId < 1 || clientId >= 0x80000000 ||
       !Array.isArray(intent?.atomic_effects)) {
     throw refusal('invalid_intent')
@@ -256,7 +261,7 @@ function prepareCommand(base, intent, clientId, commandId, type, maxBytes) {
     }
     throw refusal('invalid_intent')
   }
-  const copy = cloneRoom(base)
+  const copy = copyOf(snapshot)
   const vector = Y.encodeStateVector(copy)
   copy.clientID = clientId
   try {
@@ -330,7 +335,7 @@ function prepareCommand(base, intent, clientId, commandId, type, maxBytes) {
     const bytes = !clearedRecords && isDeepStrictEqual(before, after) ? null : Buffer.from(Y.encodeStateAsUpdate(copy, vector))
     if (bytes !== null) {
       if (Y.encodeStateAsUpdateV2(copy).length > maxBytes) throw refusal('document_too_large')
-      const replay = cloneRoom(base)
+      const replay = copyOf(snapshot)
       try {
         Y.applyUpdate(replay, bytes)
         complete(replay)
@@ -350,6 +355,7 @@ function prepareCommand(base, intent, clientId, commandId, type, maxBytes) {
 }
 
 function recordBytes(record) {
+  if (typeof record?.payload !== 'string') throw refusal('journal_hash_mismatch')
   const bytes = Buffer.from(record.payload, 'base64')
   if (bytes.length === 0 || record.sha256 !== sha256Hex(bytes)) throw refusal('journal_hash_mismatch')
   return bytes
@@ -361,9 +367,8 @@ export function createRoomSequencer({ room, generation, type = 'vaulter/rich-tex
   let stopped = false
   let applying = false
   let chain = Promise.resolve()
-  // The update submitUpdate() just proved complete on a copy of the room at `from`: when the log
-  // then grows by exactly that record, catchUp() applies it without proving it a second time.
-  let verified = null
+  let writes = Promise.resolve()
+  let pending = 0
   function guard(transaction) {
     if (transaction.origin === LOAD_ORIGIN || transaction.origin === COMMITTED_ORIGIN || stopped) return
     // Applying a remote Y.Text update may synchronously open a formatting-cleanup transaction.
@@ -381,51 +386,47 @@ export function createRoomSequencer({ room, generation, type = 'vaulter/rich-tex
   }
 
   function enqueue(task) {
+    pending++
     const run = chain.then(() => {
       assertOpen()
       return task()
-    })
+    }).finally(() => { pending-- })
     chain = run.catch(() => {})
+    return run
+  }
+
+  // Preserve arrival order while a writer works on a private copy. Polling can still replay
+  // committed updates, so each writer compares its base again before publishing.
+  function write(task) {
+    pending++
+    const run = writes.then(task).finally(() => { pending-- })
+    writes = run.catch(() => {})
     return run
   }
 
   async function catchUp(minimum = -1) {
     const log = await load(appliedSeq < 0 ? undefined : appliedSeq)
     assertOpen()
+    return applyLog(log, minimum)
+  }
+
+  function applyLog(log, minimum) {
+    if (!log || typeof log !== 'object') throw refusal('log_gap')
     if (log.generation !== generation) throw refusal('collaboration_epoch_mismatch')
-    if (log.head_seq < Math.max(appliedSeq, minimum) || log.checkpoint_seq > log.head_seq) throw refusal('log_gap')
+    if (!Number.isSafeInteger(log.head_seq) || !Number.isSafeInteger(log.checkpoint_seq) ||
+        log.head_seq < Math.max(appliedSeq, minimum) || log.checkpoint_seq < 0 ||
+        log.checkpoint_seq > log.head_seq || !Array.isArray(log.tail)) throw refusal('log_gap')
     if (log.head_seq === appliedSeq) return appliedSeq
 
-    const proven = verified
-    verified = null
     const checkpointNeeded = appliedSeq < log.checkpoint_seq
-    if (!checkpointNeeded && proven !== null && proven.from === appliedSeq && log.head_seq === appliedSeq + 1) {
-      const fresh = log.tail.filter((record) => record.seq > appliedSeq)
-      if (fresh.length === 1 && fresh[0].seq === log.head_seq && fresh[0].sha256 === proven.sha256) {
-        // The room cannot have changed since the proof (every change runs in this queue), so the
-        // same bytes on the same state are complete again: skip the second full-room copy, which
-        // was half of the CPU a strict keystroke cost on a large document.
-        const bytes = recordBytes(fresh[0])
-        applying = true
-        try {
-          Y.applyUpdate(room, bytes, COMMITTED_ORIGIN)
-        } finally {
-          applying = false
-        }
-        appliedSeq = log.head_seq
-        room.flush?.()
-        return appliedSeq
-      }
-    }
-
     // Verify the entire new prefix on a scratch document before making any bytes visible.
-    const checkpoint = checkpointNeeded && log.checkpoint !== null ? Buffer.from(log.checkpoint, 'base64') : null
+    const checkpoint = checkpointNeeded && typeof log.checkpoint === 'string' ? Buffer.from(log.checkpoint, 'base64') : null
     if (checkpointNeeded && log.checkpoint_seq > 0 && checkpoint === null) throw refusal('log_gap')
     const copy = cloneRoom(room)
     let cursor = Math.max(appliedSeq, log.checkpoint_seq)
     const updates = []
     try {
-      if (checkpoint !== null) Y.applyUpdate(copy, checkpoint, LOAD_ORIGIN)
+      if (checkpoint !== null) applyCheckpoint(copy, checkpoint, log.state_format, LOAD_ORIGIN)
       complete(copy)
       for (const record of log.tail) {
         if (record.seq <= cursor) continue
@@ -440,9 +441,13 @@ export function createRoomSequencer({ room, generation, type = 'vaulter/rich-tex
     } finally {
       copy.destroy()
     }
+    return commitPrefix(cursor, updates, checkpoint, log.state_format)
+  }
+
+  function commitPrefix(cursor, updates, checkpoint = null, format = undefined) {
     applying = true
     try {
-      if (checkpoint !== null) Y.applyUpdate(room, checkpoint, COMMITTED_ORIGIN)
+      if (checkpoint !== null) applyCheckpoint(room, checkpoint, format, COMMITTED_ORIGIN)
       for (const bytes of updates) Y.applyUpdate(room, bytes, COMMITTED_ORIGIN)
     } finally {
       applying = false
@@ -453,9 +458,8 @@ export function createRoomSequencer({ room, generation, type = 'vaulter/rich-tex
     return appliedSeq
   }
 
-  async function submitUpdate(update) {
-    return enqueue(async () => {
-      await catchUp()
+  function submitUpdate(update) {
+    return write(async () => {
       const { boundClientId, bytes, subject, ...envelope } = update
       if (!Number.isInteger(boundClientId) || boundClientId < 0x80000000 || boundClientId > 0xffffffff) {
         throw refusal('client_id_conflict')
@@ -466,55 +470,94 @@ export function createRoomSequencer({ room, generation, type = 'vaulter/rich-tex
       } catch {
         throw refusal('invalid_update')
       }
-      const clock = Y.decodeStateVector(Y.encodeStateVector(room)).get(boundClientId) ?? 0
       if (decoded.structs.some((item) => item.id.client !== boundClientId)) throw refusal('client_id_conflict')
-      const overlaps = decoded.structs.some((item) => item.id.clock < clock)
-      if (!overlaps) {
-        const copy = cloneRoom(room)
+      const hash = sha256Hex(bytes)
+      if (envelope.sha256 !== hash) throw refusal('collaboration_update_mismatch')
+
+      let rebased = false
+      for (;;) {
+        const { base, overlaps, copy } = await enqueue(async () => {
+          if (appliedSeq < 0) await catchUp()
+          const clock = Y.decodeStateVector(Y.encodeStateVector(room)).get(boundClientId) ?? 0
+          const overlaps = decoded.structs.some((item) => item.id.clock < clock)
+          if (overlaps) return { base: appliedSeq, overlaps, copy: null }
+          const copy = cloneRoom(room)
+          try {
+            Y.applyUpdate(copy, bytes, LOAD_ORIGIN)
+            complete(copy)
+            if (!validReviewUpdate(room, copy, subject, type)) throw refusal('invalid_update')
+            return { base: appliedSeq, overlaps, copy }
+          } catch (error) {
+            copy.destroy()
+            throw error
+          }
+        })
+        let tooLarge = false
         try {
-          Y.applyUpdate(copy, bytes, LOAD_ORIGIN)
-          complete(copy)
-          if (!validReviewUpdate(room, copy, subject, type)) throw refusal('invalid_update')
-          if (Number.isFinite(maxBytes) && (decoded.structs.length > 0 || decoded.ds.clients.size === 0)
-            && Y.encodeStateAsUpdateV2(copy).length > maxBytes) {
-            throw refusal('document_too_large')
+          if (copy !== null && Number.isFinite(maxBytes) && (decoded.structs.length > 0 || decoded.ds.clients.size === 0)) {
+            await setImmediate()
+            tooLarge = Y.encodeStateAsUpdateV2(copy).length > maxBytes
           }
         } finally {
-          copy.destroy()
+          copy?.destroy()
         }
-        // Bound to the bytes just proven, not to the caller's claimed hash: the shortcut in catchUp()
-        // must never accept a record the proof did not cover.
-        verified = { from: appliedSeq, sha256: sha256Hex(bytes) }
+
+        const ack = await enqueue(async () => {
+          if (base !== appliedSeq) return null
+          if (tooLarge) throw refusal('document_too_large')
+          try {
+            // Overlapping clocks are accepted only when PHP has the exact receipt.
+            const receipt = await append({ ...envelope, boundClientId, bytes, baseSeq: base, receiptOnly: overlaps })
+            assertOpen()
+            if (!Number.isSafeInteger(receipt.seq) || receipt.seq < 1 ||
+                (receipt.sha256 !== undefined && receipt.sha256 !== hash)) throw refusal('invalid_receipt')
+            if (!overlaps && receipt.seq === base + 1) commitPrefix(receipt.seq, [bytes])
+            else if (receipt.seq > appliedSeq) {
+              // A known update may have committed in an intervening prefix after a lost answer.
+              if (rebased) throw refusal('base_moved')
+              await catchUp(receipt.seq)
+            }
+            return receipt
+          } catch (error) {
+            if (rebased || error?.code !== 'base_moved' || !error.replay) throw error
+            assertOpen()
+            applyLog(error.replay, base + 1)
+            rebased = true
+            return null
+          }
+        })
+        if (ack !== null) return ack
       }
-      // A repeated update can overlap known clocks only when SQL already has its exact receipt.
-      const ack = await append({ ...envelope, boundClientId, bytes, baseSeq: appliedSeq, receiptOnly: overlaps })
-      assertOpen()
-      await catchUp(ack.seq)
-      return ack
     })
   }
 
   function serverUpdate(change, clientId, persist) {
-    return enqueue(async () => {
-      await catchUp()
-      const copy = cloneRoom(room)
-      const before = Y.encodeStateAsUpdateV2(copy)
-      const vector = Y.encodeStateVector(copy)
-      copy.clientID = clientId
+    return write(async () => {
+      const { base, copy } = await enqueue(async () => {
+        await catchUp()
+        return { base: appliedSeq, copy: cloneRoom(room) }
+      })
       try {
+        await setImmediate()
+        const before = Y.encodeStateAsUpdateV2(copy)
+        const vector = Y.encodeStateVector(copy)
+        copy.clientID = clientId
         copy.transact(() => {
           const result = change(copy)
           if (typeof result?.then === 'function') throw refusal('async_server_write')
         })
         complete(copy)
         const after = Y.encodeStateAsUpdateV2(copy)
-        if (Buffer.from(before).equals(after)) return []
-        if (after.length > maxBytes) throw refusal('document_too_large')
-        const bytes = Buffer.from(Y.encodeStateAsUpdate(copy, vector))
-        const updateId = crypto.randomUUID()
-        const ack = await persist({ updateId, baseSeq: appliedSeq, sha256: sha256Hex(bytes), payload: bytes.toString('base64') })
-        await catchUp(ack.seq)
-        return [updateId]
+        return await enqueue(async () => {
+          if (base !== appliedSeq) throw refusal('base_moved')
+          if (Buffer.from(before).equals(after)) return []
+          if (after.length > maxBytes) throw refusal('document_too_large')
+          const bytes = Buffer.from(Y.encodeStateAsUpdate(copy, vector))
+          const updateId = crypto.randomUUID()
+          const ack = await persist({ updateId, baseSeq: base, sha256: sha256Hex(bytes), payload: bytes.toString('base64') })
+          await catchUp(ack.seq)
+          return [updateId]
+        })
       } finally {
         copy.destroy()
       }
@@ -522,16 +565,20 @@ export function createRoomSequencer({ room, generation, type = 'vaulter/rich-tex
   }
 
   function runCommand(command, clientId, type, settle) {
-    return enqueue(async () => {
+    return write(async () => {
       for (let attempt = 0; attempt < 3; attempt++) {
-        await catchUp()
+        const { base, snapshot } = await enqueue(async () => {
+          await catchUp()
+          return { base: appliedSeq, snapshot: Y.encodeStateAsUpdate(room) }
+        })
         let prepared
         const importing = command.intent?.operation === IMPORT
         try {
-          if (importing && (command.intent.base_generation !== generation || command.intent.base_position !== appliedSeq)) {
+          if (importing && (command.intent.base_generation !== generation || command.intent.base_position !== base)) {
             throw refusal('precondition_failed')
           }
-          prepared = prepareCommand(room, command.intent, clientId, command.command_id, type, maxBytes)
+          await setImmediate()
+          prepared = prepareCommand(snapshot, command.intent, clientId, command.command_id, type, maxBytes)
         } catch (error) {
           const invalidCommand = error?.code === 'invalid_intent' && (importing || command.intent?.operation === 'review.suggestion.accept')
           if (error?.code !== 'precondition_failed' && error?.code !== 'document_too_large' && !invalidCommand) throw error
@@ -540,13 +587,16 @@ export function createRoomSequencer({ room, generation, type = 'vaulter/rich-tex
         }
         const bytes = prepared.bytes
         try {
-          const outcome = await settle({
-            id: command.id, fingerprint: command.fingerprint, base_seq: appliedSeq,
-            kind: prepared.reason ? 'reject' : 'commit', reason: prepared.reason, evidence: prepared.evidence,
-            updates: bytes ? [{ update_id: crypto.randomUUID(), sha256: sha256Hex(bytes), payload: bytes.toString('base64') }] : [],
+          return await enqueue(async () => {
+            if (base !== appliedSeq) throw refusal('base_moved')
+            const outcome = await settle({
+              id: command.id, fingerprint: command.fingerprint, base_seq: base,
+              kind: prepared.reason ? 'reject' : 'commit', reason: prepared.reason, evidence: prepared.evidence,
+              updates: bytes ? [{ update_id: crypto.randomUUID(), sha256: sha256Hex(bytes), payload: bytes.toString('base64') }] : [],
+            })
+            if (outcome.state === 'committed') await catchUp(outcome.to_seq)
+            return outcome
           })
-          if (outcome.state === 'committed') await catchUp(outcome.to_seq)
-          return outcome
         } catch (error) {
           if (error?.code !== 'base_moved') throw error
         }
@@ -559,6 +609,7 @@ export function createRoomSequencer({ room, generation, type = 'vaulter/rich-tex
     submitUpdate, serverUpdate, runCommand,
     catchUp: () => enqueue(catchUp),
     get appliedSeq() { return appliedSeq },
+    get busy() { return pending !== 0 },
     close() {
       stopped = true
       room.off('beforeTransaction', guard)
