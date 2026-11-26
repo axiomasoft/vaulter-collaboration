@@ -50,6 +50,9 @@ export function createPresenceGuard(maxClients = LIMIT_DEFAULTS.maxAwarenessClie
   const owners = new WeakMap()
   /** Multiplexed document connections share one WebSocket. @type {WeakMap<object, number>} */
   const counts = new WeakMap()
+  // Hocuspocus serializes messages per document connection.
+  /** @type {WeakMap<Peer, Iterable<number>>} */
+  const pending = new WeakMap()
 
   /** @param {Map<number, Peer>} map @param {number} id */
   function release(map, id) {
@@ -108,6 +111,7 @@ export function createPresenceGuard(maxClients = LIMIT_DEFAULTS.maxAwarenessClie
       throw Object.assign(new Error(RATE_LIMITED.reason), RATE_LIMITED)
     }
 
+    if (states.size > 0) pending.set(connection, states.keys())
     for (const [clientId, state] of states) {
       if (map.get(clientId) !== connection) {
         release(map, clientId)
@@ -117,6 +121,20 @@ export function createPresenceGuard(maxClients = LIMIT_DEFAULTS.maxAwarenessClie
       if (state === null || typeof state !== 'object' || Array.isArray(state)) continue
       const user = state.user !== null && typeof state.user === 'object' && !Array.isArray(state.user) ? state.user : {}
       state.user = { ...user, id: principal.id, type: principal.type }
+    }
+  }
+
+  // A stale clock or a rejected message can leave a reservation without a visible state.
+  /** @param {{ document: AwarenessDocument, connection: Peer }} payload */
+  function afterHandleMessage({ document, connection }) {
+    const reserved = pending.get(connection)
+    if (!reserved) return
+    pending.delete(connection)
+    const map = owners.get(document)
+    const applied = document.getClients?.(connection)
+    if (!map || !applied) return
+    for (const clientId of reserved) {
+      if (map.get(clientId) === connection && !applied.has(clientId)) release(map, clientId)
     }
   }
 
@@ -141,5 +159,5 @@ export function createPresenceGuard(maxClients = LIMIT_DEFAULTS.maxAwarenessClie
     }
   }
 
-  return { beforeHandleAwareness, onAwarenessUpdate, onDisconnect }
+  return { beforeHandleAwareness, afterHandleMessage, onAwarenessUpdate, onDisconnect }
 }

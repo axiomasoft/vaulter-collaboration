@@ -182,3 +182,19 @@ test('a local connection can claim a known remote awareness id only after its st
   remote.delete(5)
   await call(new Map([[5, {}]]))
 })
+
+test('a first state ignored by Yjs releases its slot after the message finishes', async () => {
+  const guard = createPresenceGuard(1)
+  const connection = {}
+  const active = new Set()
+  const document = { getClients: () => active, hasConnection: () => true }
+  const send = (id) => guard.beforeHandleAwareness({
+    connection, document, context: { principal: { type: 'user', id: 'alice' } }, states: new Map([[id, {}]]),
+  })
+  await send(7)
+  guard.afterHandleMessage({ connection, document })
+  await send(8)
+  active.add(8)
+  guard.afterHandleMessage({ connection, document })
+  await assert.rejects(send(9), { code: 4429 })
+})
