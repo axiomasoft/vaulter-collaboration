@@ -17,7 +17,7 @@ const { validateConfig } = await import('../src/config.js')
 const { createPersistence, originKind } = await import('../src/persistence.js')
 const { Redis } = await import('../src/redis.js')
 
-test('F-P4.1-R2: the hub uses a single MIT ioredis major 5 client without redlock', () => {
+test('the hub resolves the MIT-licensed ioredis 5 client', () => {
   const pkg = require('ioredis/package.json')
   const installedMajor = Number(pkg.version.split('.')[0])
 
@@ -25,7 +25,7 @@ test('F-P4.1-R2: the hub uses a single MIT ioredis major 5 client without redloc
   assert.equal(pkg.license, 'MIT')
 })
 
-test('F-P4.1-R2: buildExtensions wires the clean-room Redis extension (after Throttle) when a Redis URL is set', async () => {
+test('buildExtensions wires the Redis extension after Throttle when a Redis URL is set', async () => {
   const extensions = await buildExtensions()
   const redis = extensions.find((ext) => ext?.constructor?.name === 'Redis' && typeof ext.onConfigure === 'function')
 

@@ -49,7 +49,7 @@ final class CollaborationRegistrar implements ModuleBindings
         // The host-user resolver seam: the collaboration webhook resolves the
         // acting user by id through the host's auth user-provider. Bound to the
         // default DefaultHostUserResolver; a host (or a test) may swap it. Purely
-        // collaboration machinery — core neither defines nor binds it (finding).
+        // collaboration machinery — core neither defines nor binds it.
         $app->bind(HostUserResolver::class, DefaultHostUserResolver::class);
 
         // How a drain waits for the hub's checkpoint; a test binds a fake hub here.
