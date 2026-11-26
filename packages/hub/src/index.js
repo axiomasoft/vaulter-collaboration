@@ -344,7 +344,8 @@ export function createHooks({ backend = backendModule, log = console, persistenc
       return
     }
 
-    const crossed = limit.register(documentName, payload?.socketId ?? connection, payload?.context?.tenant ?? null)
+    const socketId = payload?.socketId ?? connection?.socketId
+    const crossed = limit.register(documentName, socketId ?? connection, payload?.context?.tenant ?? null)
 
     if (crossed !== null) {
       closeConnection(connection, LIMIT_CLOSE[crossed] ?? RATE_LIMITED)
@@ -352,7 +353,7 @@ export function createHooks({ backend = backendModule, log = console, persistenc
       return
     }
 
-    await store.connected(payload)
+    await store.connected({ ...payload, socketId })
 
     if (connection) {
       revoke.track({ connection, context: payload?.context ?? connection.context ?? {}, documentName })
@@ -445,11 +446,15 @@ export function createHooks({ backend = backendModule, log = console, persistenc
     await store.onStateless(payload)
   }
 
-  async function onDisconnect(payload) {
-    limit.unregister(payload?.documentName ?? payload?.connection?.document?.name, payload?.socketId ?? payload?.connection)
-    presence.onDisconnect(payload)
-    revoke.disconnected(payload)
-    await store.onDisconnect(payload)
+  async function onDisconnect(payload = {}) {
+    const entry = revoke.disconnected(payload)
+    const connection = entry?.connection ?? payload.connection
+    const document = payload.document ?? connection?.document
+    const documentName = payload.documentName ?? entry?.documentName ?? document?.name
+    const socketId = payload.socketId ?? connection?.socketId
+    limit.unregister(documentName, socketId ?? connection)
+    presence.onDisconnect({ document, socketId, connection })
+    await store.onDisconnect({ ...payload, documentName, socketId, connection })
   }
 
   return {

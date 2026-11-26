@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import crypto from 'node:crypto'
 import * as Y from 'yjs'
 import { EPOCH_MISMATCH, PROTOCOL_MISMATCH } from '../src/backend.js'
+import { createHooks } from '../src/index.js'
 import { isWriteMessage, NACK } from '../src/persistence.js'
 import { EPOCH_CHANGED, TOKEN_EXPIRED } from '../src/rooms.js'
 import { problem, receipt } from './support/mock-backend.js'
@@ -346,3 +347,24 @@ test('only a sync step 2 or an update writes: what a stopped writer may not send
   assert.equal(isWriteMessage(new Uint8Array([200])), false, 'truncated')
   assert.equal(isWriteMessage(undefined), false)
 })
+
+for (const disconnect of [false, true]) {
+  test('pending receipt delivery after demotion, disconnected=' + disconnect, async (t) => {
+    let release
+    const gate = new Promise((resolve) => { release = resolve })
+    const room = await loadedRoom(t, { handlers: { append: async (call) => { await gate; return receipt(call.body, 3) } } })
+    const hooks = createHooks({ persistence: room.persistence })
+    const context = writerContext()
+    const connection = await room.connect(context, 'demoted')
+    connection.socketId = 'demoted'
+    hooks.revocation.track({ connection, context, documentName: ROOM })
+    t.after(() => hooks.revocation.disconnected({ connection }))
+    const message = envelope(clientUpdate(room.document, 'already submitted'))
+    await room.sendEnvelope(connection, message)
+    room.persistence.demote(connection)
+    if (disconnect) await hooks.onDisconnect({ documentName: ROOM, socketId: 'demoted', context })
+    release()
+    await room.persistence.ledger.flush()
+    assert.equal(connection.of('ack').length, disconnect ? 0 : 1)
+  })
+}
