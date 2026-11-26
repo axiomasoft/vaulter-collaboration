@@ -19,7 +19,7 @@ import { FORBIDDEN } from './rooms.js'
 /**
  * What Hocuspocus passes to beforeHandleAwareness, as far as this hook reads it.
  * @typedef {object} AwarenessPayload
- * @property {{ context?: unknown } | undefined} [connection]
+ * @property {{ context?: unknown, socketId?: string } | undefined} [connection]
  * @property {unknown} [context]
  * @property {AwarenessDocument | undefined} [document]
  * @property {unknown} [states] awareness client id → state; changed in place
@@ -43,7 +43,7 @@ function refuse(reason) {
 }
 
 export function createPresenceGuard() {
-  /** Per document: awareness client id → the connection that set it. @type {WeakMap<AwarenessDocument, Map<number, object>>} */
+  /** Per document: awareness client id → the connection that set it. @type {WeakMap<AwarenessDocument, Map<number, { socketId?: string }>>} */
   const owners = new WeakMap()
 
   /** @param {AwarenessDocument} document */
@@ -58,16 +58,15 @@ export function createPresenceGuard() {
 
   /**
    * @param {AwarenessDocument} document
-   * @param {Map<number, object>} map
+   * @param {Map<number, { socketId?: string }>} map
    * @param {number} clientId
-   * @param {object} connection
+   * @param {{ socketId?: string }} connection
    */
-  function claim(document, map, clientId, connection) {
+  function assertAvailable(document, map, clientId, connection) {
     const owner = map.get(clientId)
     if (owner !== undefined && owner !== connection && document.hasConnection?.(owner)) {
       throw refuse(`Awareness client ${clientId} belongs to another connection`)
     }
-    map.set(clientId, connection)
   }
 
   /** @param {AwarenessPayload} payload */
@@ -78,14 +77,27 @@ export function createPresenceGuard() {
     if (principal === null) throw refuse('Awareness from a connection without a verified principal')
 
     const map = ownersOf(document)
-    for (const clientId of removedClients ?? []) claim(document, map, clientId, connection)
+    for (const clientId of removedClients ?? []) assertAvailable(document, map, clientId, connection)
+    for (const clientId of states.keys()) assertAvailable(document, map, clientId, connection)
+
+    for (const clientId of removedClients ?? []) map.delete(clientId)
     for (const [clientId, state] of states) {
-      claim(document, map, clientId, connection)
+      map.set(clientId, connection)
       if (state === null || typeof state !== 'object' || Array.isArray(state)) continue
       const user = state.user !== null && typeof state.user === 'object' && !Array.isArray(state.user) ? state.user : {}
       state.user = { ...user, id: principal.id, type: principal.type }
     }
   }
 
-  return { beforeHandleAwareness }
+  /** @param {{document?: AwarenessDocument, socketId?: string}} payload */
+  function onDisconnect({ document, socketId }) {
+    if (!document || !socketId) return
+    const map = owners.get(document)
+    if (!map) return
+    for (const [clientId, owner] of map) {
+      if (owner.socketId === socketId) map.delete(clientId)
+    }
+  }
+
+  return { beforeHandleAwareness, onDisconnect }
 }

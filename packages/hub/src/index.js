@@ -447,6 +447,7 @@ export function createHooks({ backend = backendModule, log = console, persistenc
 
   async function onDisconnect(payload) {
     limit.unregister(payload?.documentName ?? payload?.connection?.document?.name, payload?.socketId ?? payload?.connection)
+    presence.onDisconnect(payload)
     revoke.disconnected(payload)
     await store.onDisconnect(payload)
   }

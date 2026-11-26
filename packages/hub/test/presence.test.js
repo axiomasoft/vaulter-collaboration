@@ -47,6 +47,23 @@ test('a connection may neither set nor remove an awareness client another live c
   await call(back, 'alice', new Map([[1, { user: { name: 'Alice' } }]]))
 })
 
+test('removal and disconnect release only the departing connection’s awareness ids', async () => {
+  const guard = createPresenceGuard()
+  const first = { socketId: 'first' }
+  const second = { socketId: 'second' }
+  const document = fakeDocument(new Set([first, second]))
+  const context = { principal: { id: 'alice', type: 'user' } }
+  const update = (connection, ids, removed = []) => guard.beforeHandleAwareness({
+    connection, context, document, states: new Map(ids.map(id => [id, {}])), removedClients: removed,
+  })
+  await update(first, [1, 2])
+  await update(first, [], [1])
+  await update(second, [1])
+  guard.onDisconnect({ document, socketId: first.socketId })
+  await update(second, [2])
+  await assert.rejects(update(first, [1]), { code: 4403 })
+})
+
 test('a connection without a verified principal sends no awareness; Redis updates are not checked here', async () => {
   const guard = createPresenceGuard()
   const connection = {}

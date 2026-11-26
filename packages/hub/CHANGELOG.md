@@ -5,6 +5,9 @@ All notable changes to the collaboration hub (`@vaulter/collaboration-hub`, publ
 
 ## Unreleased
 
+- The hub stamps awareness identities from verified tokens and releases client ownership on removal or disconnect.
+- Per connection, `VAULTER_COLLAB_MAX_SYNC_REQUESTS_PER_MINUTE` defaults to 10 sync or awareness queries per minute and `VAULTER_COLLAB_MAX_AWARENESS_BYTES_PER_SECOND` defaults to 65536 awareness bytes per second.
+
 - The pending ledger stays usable with a large backlog: `/metrics` no longer fails past ~125k pending records,
   detaching connections and dropping a past generation are linear instead of quadratic.
 - A strict update that was already proven on a scratch copy is not proven again when it is applied.
