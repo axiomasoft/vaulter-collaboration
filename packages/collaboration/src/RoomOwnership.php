@@ -4,16 +4,20 @@ declare(strict_types=1);
 
 namespace Vaulter\Collaboration;
 
+use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Carbon;
 use LogicException;
 use Packman\Attributes\Internal;
 use Packman\Attributes\Spi;
 use Packman\Attributes\SpiKind;
+use Vaulter\Collaboration\Configuration\CollaborationOptions;
 use Vaulter\Collaboration\Exceptions\CollaborationEpochMismatchException;
 use Vaulter\Collaboration\Persistence\Head;
 use Vaulter\Collaboration\Persistence\LogTables;
 use Vaulter\Collaboration\Persistence\RoomWriteConflict;
+use Vaulter\Collaboration\Revocation\OwnerLeaseChanged;
+use Vaulter\Database\VaulterDatabase;
 use Vaulter\Documents\Contracts\CollaborationProtocolDriver;
 use Vaulter\Documents\Contracts\SupportsCollaboration;
 use Vaulter\Documents\Data\Collaboration\CollaborationMode;
@@ -29,7 +33,14 @@ use Vaulter\Support\Identity;
 final readonly class RoomOwnership
 {
     #[Internal]
-    public function __construct(private DocumentTypeRegistry $types, private Kernel $kernel, private LogTables $log) {}
+    public function __construct(
+        private DocumentTypeRegistry $types,
+        private Kernel $kernel,
+        private LogTables $log,
+        private VaulterDatabase $database,
+        private Dispatcher $events,
+        private CollaborationOptions $config,
+    ) {}
 
     /** Select a profile when the new generation first obtains a head under the document lock. */
     #[Internal]
@@ -86,7 +97,15 @@ final readonly class RoomOwnership
             return $head;
         }
 
-        return $this->setOwner($document, $ownerId, $head->ownerFence + 1, $now->addSeconds(15));
+        $newHead = $this->setOwner($document, $ownerId, $head->ownerFence + 1, $now->addSeconds(15));
+        if ($head->ownerFence > 0) {
+            $event = new OwnerLeaseChanged($this->config->room($document->driveId, $document->nodeId, $document->generation), $head->ownerFence);
+            $this->database->afterCommit(function () use ($event): void {
+                $this->events->dispatch($event);
+            });
+        }
+
+        return $newHead;
     }
 
     #[Internal]
@@ -232,15 +251,13 @@ final readonly class RoomOwnership
     {
         $binding = $document->binding;
         $type = $this->types->find($document->type);
-        $extensions = $this->kernel->extensions();
         if (!$type instanceof SupportsCollaboration || $binding === null
             || $type->collaborationProtocol() !== $binding->protocol
-            || $type->collaborationStateFormat() !== $binding->stateFormat
-            || !in_array($binding->protocol, $extensions->handlerKeys(CollaborationProtocolDriver::class), true)) {
+            || $type->collaborationStateFormat() !== $binding->stateFormat) {
             throw new CollaborationUnavailableException('unsupported_binding', $document->type);
         }
-        $driver = $extensions->handler(CollaborationProtocolDriver::class, $binding->protocol);
-        if ($driver->protocol() !== $binding->protocol
+        $driver = $this->registeredDriver($binding->protocol);
+        if ($driver === null
             || !$driver->supportsState($document->type, $binding->stateFormat, $binding->schemaVersion, $document->collabState !== null, CollaborationMode::Read)) {
             throw new CollaborationUnavailableException('unsupported_binding', $document->type);
         }
@@ -250,6 +267,18 @@ final readonly class RoomOwnership
         }
 
         return $protocol;
+    }
+
+    #[Internal]
+    public function registeredDriver(string $protocol): ?CollaborationProtocolDriver
+    {
+        $extensions = $this->kernel->extensions();
+        if (!in_array($protocol, $extensions->handlerKeys(CollaborationProtocolDriver::class), true)) {
+            return null;
+        }
+        $driver = $extensions->handler(CollaborationProtocolDriver::class, $protocol);
+
+        return $driver->protocol() === $protocol ? $driver : null;
     }
 
     #[Internal]

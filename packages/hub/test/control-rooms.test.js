@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createControlChannel, parseControlMessage, signControl } from '../src/control.js'
+import { EventEmitter } from 'node:events'
+import { createControlChannel, parseControlMessage, POSTGRES_CONTROL_CHANNEL, signControl } from '../src/control.js'
 import { quietLog } from './support/revocation.js'
 
 // Besides revocations the control channel carries room controls (an epoch bump that closes a room
@@ -17,6 +18,45 @@ function signed(body, { secret = SECRET, at = Math.floor(Date.now() / 1000) } = 
 }
 
 const room = (overrides) => JSON.stringify({ v: 1, type: 'epoch_bump_4409', room: 'vaulter:doc:1', ...overrides })
+
+test('PostgreSQL control dispatches only signed room and subject messages on its own channel', async (t) => {
+  const client = new EventEmitter()
+  client.connect = async () => {}
+  client.end = async () => {}
+  client.query = async (sql) => assert.equal(sql, 'LISTEN vaulter_collab_control')
+  const rooms = []
+  const access = []
+  const channel = createControlChannel({
+    revocation: { control: (message, source) => access.push({ message, source }) },
+    rooms: (message) => rooms.push(message),
+    conf: { webhookSecret: SECRET, controlPostgresUrl: 'postgres://test' },
+    postgresFactory: () => client,
+    log: quietLog,
+  })
+  t.after(() => channel.close())
+  await channel.subscribePostgres()
+  assert.equal(channel.postgresReady(), true)
+
+  const notify = (body, secret = SECRET, channel = POSTGRES_CONTROL_CHANNEL) => {
+    const timestamp = String(Math.floor(Date.now() / 1000))
+    const signature = signControl(body, secret, timestamp)
+    client.emit('notification', { channel, payload: JSON.stringify({ body, timestamp, signature }) })
+  }
+  const handoff = room({ type: 'handoff_request', owner_fence: 4 })
+  notify(handoff, 'forged')
+  notify(handoff, SECRET, 'another_channel')
+  notify(handoff)
+  notify(handoff)
+  const subject = { v: 1, type: 'revoke_subject', drive_id: '7', subject_type: 'staff', subject_id: 'actor' }
+  notify(JSON.stringify({ ...subject, subject_id: undefined }))
+  notify(JSON.stringify(subject))
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(rooms, [{ type: 'handoff_request', room: 'vaulter:doc:1', owner_fence: 4 }])
+  assert.equal(access[0].source, 'postgres')
+  assert.equal(access[0].message.subject_id, 'actor')
+  assert.equal(access.length, 1)
+  assert.deepEqual(channel.stats(), { accepted: 2, unauthorized: 1, invalid: 1, replayed: 1 })
+})
 
 test('parseControlMessage reads room controls only with a bounded room name and, for a handoff, a positive fence', () => {
   assert.deepEqual(parseControlMessage(room()), { ok: true, message: { type: 'epoch_bump_4409', room: 'vaulter:doc:1', owner_fence: undefined } })

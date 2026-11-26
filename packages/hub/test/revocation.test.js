@@ -223,6 +223,50 @@ function stepTwoWith(document, text) {
   return state
 }
 
+test('an overlay refresh reaches the room from a writer without entering the journal', async (t) => {
+  const room = await hub(t, {})
+  const writer = await room.connect('writer', 'write')
+  const reader = await room.connect('reader', 'read')
+  const overlay = statelessMessage(ROOM, '{"t":"overlay"}')
+  const invalidations = (client) => client.socket.stateless().filter(({ t }) => t === 'overlay')
+  await reader.send(overlay)
+  await writer.send(statelessMessage(ROOM, '{"t":"overlay","body":"untrusted"}'))
+  assert.deepEqual(invalidations(reader), [])
+  assert.deepEqual(invalidations(writer), [])
+
+  await writer.send(overlay)
+  assert.deepEqual(invalidations(reader), [{ t: 'overlay' }])
+  assert.equal(room.document.getText('t').toString(), 'checkpoint')
+  assert.equal(room.mock.appends().length, 0)
+})
+
+test('a subject recheck reaches only that subject within the addressed drive', async (t) => {
+  const room = await hub(t, {})
+  await room.connect('target', 'write')
+  await room.connect('other', 'read')
+  const message = { type: 'revoke_subject', drive_id: DRIVE, subject_id: 'target', subject_type: 'staff' }
+  await room.hooks.revocation.control({ ...message, subject_type: 'other' })
+  await room.hooks.revocation.control({ ...message, drive_id: 'another-drive' })
+  assert.equal(room.rechecks.length, 0)
+  await room.hooks.revocation.control(message)
+  assert.equal(room.rechecks.length, 1)
+  assert.deepEqual(room.rechecks[0].map(({ token }) => claimsOf(token).sub), ['target'])
+})
+
+test('an epoch bump closes a standard room with 4409 and ignores other room addresses', async (t) => {
+  const room = await hub(t, {})
+  const writer = await room.connect('writer', 'write')
+  const reader = await room.connect('reader', 'read')
+  room.hooks.persistence.strictControl({ type: 'epoch_bump_4409', room: 'vaulter.documents.1.other.0' })
+  room.hooks.persistence.strictControl({ type: 'handoff_request', room: ROOM, owner_fence: 1 })
+  assert.deepEqual(writer.socket.closes, [])
+  assert.deepEqual(reader.socket.closes, [])
+
+  room.hooks.persistence.strictControl({ type: 'epoch_bump_4409', room: ROOM })
+  assert.deepEqual(writer.socket.closes, [{ code: 4409, reason: 'epoch_changed' }])
+  assert.deepEqual(reader.socket.closes, [{ code: 4409, reason: 'epoch_changed' }])
+})
+
 test('scenario 8: a writer rechecked `read` cannot write through update, sync step 2 or envelope but keeps receiving; a reader rechecked `none` is closed 4403', async (t) => {
   const verdicts = {}
   const room = await hub(t, verdicts)

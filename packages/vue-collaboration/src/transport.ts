@@ -1,6 +1,6 @@
 import { validateCollaborationSession } from './session'
 import { ref, type Ref } from 'vue'
-import { HocuspocusProvider } from '@hocuspocus/provider'
+import { HocuspocusProvider, HocuspocusProviderWebsocket } from '@hocuspocus/provider'
 import type { Doc as YDoc } from 'yjs'
 import type { CollaborationSession, Collaborator } from '@vaulter/vue'
 import { uuidV4 } from './envelope'
@@ -59,7 +59,8 @@ export interface AwarenessLike {
  * comes back read-only), or the backend refused the document's state itself
  * (`store_refused` — a renewed session would be refused again).
  */
-export type CollaborationEnd = 'epoch_changed' | 'token_expired' | 'forbidden' | 'store_refused'
+export type CollaborationEnd = 'epoch_changed' | 'token_expired' | 'unauthorized' | 'forbidden'
+  | 'store_refused' | 'handoff' | 'draining' | 'document_gone' | 'too_large' | 'rate_limited' | 'connection_failed'
 
 /** The transport handle a provider factory returns. */
 export interface CollaborationProviderHandle {
@@ -128,6 +129,12 @@ export function sessionEnd(code: number | undefined, reason: string | undefined)
   if (code === FORBIDDEN_CODE || reason === FORBIDDEN_REASON) {
     return 'forbidden'
   }
+  if (code === 4401 || reason === 'unauthorized') return 'unauthorized'
+  if (code === 4412 || reason === 'handoff') return 'handoff'
+  if (code === 4503 || reason === 'draining') return 'draining'
+  if (code === 4404 || reason === 'document_gone') return 'document_gone'
+  if (code === 4413 || reason === 'update_too_large' || reason === 'document_too_large' || reason === 'too_large') return 'too_large'
+  if (code === 4429 || reason === 'rate_limited' || reason === 'too_many_connections' || reason === 'too_many_rooms') return 'rate_limited'
 
   return code === STORE_REFUSED_CODE || reason === STORE_REFUSED_REASON ? 'store_refused' : null
 }
@@ -144,25 +151,69 @@ function defaultHocuspocusProvider(args: {
   const url = new URL(args.url)
   url.searchParams.set('protocol', '2')
 
-  const provider = new HocuspocusProvider({
+  let token = args.token
+  let expiresAt = 0
+  let ended = false
+  const endHandlers = new Set<(end: CollaborationEnd) => void>()
+  const statelessHandlers = new Set<(payload: string) => void>()
+  function endSession(end: CollaborationEnd): void {
+    if (ended) return
+    ended = true
+    websocket.disconnect()
+    for (const handler of endHandlers) handler(end)
+  }
+
+  const websocket = new HocuspocusProviderWebsocket({
     url: url.toString(),
+    autoConnect: false,
+    timeout: 10_000,
+    maxAttempts: 5,
+    onMaxAttemptsFailed: () => endSession('connection_failed'),
+  })
+  const provider = new HocuspocusProvider({
+    websocketProvider: websocket,
     name: args.name,
-    token: args.token,
+    token: () => token,
     document: args.document,
   })
+  provider.on('stateless', ({ payload }: { payload?: string }) => {
+    if (typeof payload !== 'string') return
+    // Consume the private refresh before exposing ordinary stateless messages to the host.
+    if (payload.length <= 8192) {
+      try {
+        const message = JSON.parse(payload)
+        if (message?.t === 'token_refresh') {
+          if (typeof message.token === 'string' && message.token !== ''
+            && Number.isSafeInteger(message.exp) && message.exp > expiresAt) {
+            token = message.token
+            expiresAt = message.exp
+          }
+          return
+        }
+      } catch {
+        // Non-JSON stateless messages are handled by the normal channel.
+      }
+    }
+    for (const handler of statelessHandlers) handler(payload)
+  })
+  provider.on('close', (payload: { event?: { code?: number, reason?: string } }) => {
+    const end = sessionEnd(payload?.event?.code, payload?.event?.reason)
+    if (end) endSession(end)
+  })
+  provider.on('authenticationFailed', (payload: { reason?: string }) => {
+    const end = sessionEnd(undefined, payload?.reason)
+    if (end) endSession(end)
+  })
+  provider.attach()
+  void websocket.connect()
 
   return {
     awareness: provider.awareness as unknown as AwarenessLike | null,
     isConnected: () => provider.isSynced,
     sendStateless: (payload) => provider.sendStateless(payload),
     onStateless: (handler) => {
-      const onMessage = (payload: { payload?: string }): void => {
-        if (typeof payload?.payload === 'string') {
-          handler(payload.payload)
-        }
-      }
-      provider.on('stateless', onMessage)
-      return () => provider.off('stateless', onMessage)
+      statelessHandlers.add(handler)
+      return () => { statelessHandlers.delete(handler) }
     },
     // The provider applies the hub's changes to the document with itself as the transaction origin.
     remoteOrigin: provider,
@@ -177,26 +228,16 @@ function defaultHocuspocusProvider(args: {
       }
     },
     onEnd: (handler) => {
-      const onClose = (payload: { event?: { code?: number, reason?: string } }): void => {
-        const end = sessionEnd(payload?.event?.code, payload?.event?.reason)
-        if (end) {
-          handler(end)
-        }
-      }
-      const onAuthenticationFailed = (payload: { reason?: string }): void => {
-        const end = sessionEnd(undefined, payload?.reason)
-        if (end) {
-          handler(end)
-        }
-      }
-      provider.on('close', onClose)
-      provider.on('authenticationFailed', onAuthenticationFailed)
-      return () => {
-        provider.off('close', onClose)
-        provider.off('authenticationFailed', onAuthenticationFailed)
-      }
+      endHandlers.add(handler)
+      return () => { endHandlers.delete(handler) }
     },
-    destroy: () => provider.destroy(),
+    destroy: () => {
+      ended = true
+      endHandlers.clear()
+      statelessHandlers.clear()
+      provider.destroy()
+      websocket.destroy()
+    },
   }
 }
 

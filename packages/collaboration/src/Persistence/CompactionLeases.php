@@ -12,6 +12,7 @@ use Packman\Attributes\Internal;
 use Packman\Attributes\Spi;
 use Packman\Attributes\SpiKind;
 use Vaulter\Collaboration\Configuration\CollaborationOptions;
+use Vaulter\Collaboration\RoomOwnership;
 use Vaulter\Database\VaulterDatabase;
 use Vaulter\Documents\Exceptions\NotADocumentException;
 use Vaulter\Documents\State\CollaborativeState;
@@ -48,6 +49,7 @@ final readonly class CompactionLeases
         private CollaborativeState $state,
         private UpdateLog $updates,
         private CollaborationOptions $config,
+        private RoomOwnership $rooms,
     ) {}
 
     /**
@@ -93,18 +95,23 @@ final readonly class CompactionLeases
      * @return array{total: int, generations: list<array{document: string, generation: int}>}
      */
     #[Internal]
-    public function pending(int $limit = self::REPORTED): array
+    public function pending(int $limit = self::REPORTED, string $protocol = CollaborationOptions::JWT_PROTOCOL): array
     {
+        $binding = explode('/', $protocol, 2)[0];
+        if ($this->rooms->registeredDriver($binding)?->version() !== $protocol) {
+            return ['total' => 0, 'generations' => []];
+        }
         $now = Carbon::now();
         $total = 0;
         $generations = [];
         $after = null;
         do {
-            $page = $this->database->transaction(fn (): array => $this->state->pendingDocuments(self::PAGE, $after, protocol: 'yjs'));
+            $page = $this->database->transaction(fn (): array => $this->state->pendingDocuments(self::PAGE, $after, protocol: $binding));
             foreach ($page as $marker) {
                 $after = Identity::key($marker->documentId);
                 $head = $this->log->heads($this->log->rows('collaboration_heads', $marker->documentId, $marker->generation))[0] ?? null;
-                if ($head === null || $head->retiredAt !== null || ($head->drainRequestedAt === null && !$this->due($head, $now))) {
+                if ($head === null || $head->protocol !== $protocol || $head->retiredAt !== null
+                    || ($head->drainRequestedAt === null && !$this->due($head, $now))) {
                     continue;
                 }
                 $total++;

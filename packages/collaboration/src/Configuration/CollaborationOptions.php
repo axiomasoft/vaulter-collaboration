@@ -385,8 +385,8 @@ final readonly class CollaborationOptions implements OptionsFactory
     /** The longest a room token may live (seconds): bounds the exposure of a lost control message by it. */
     public const int MAX_TOKEN_TTL = 300;
 
-    /** The control transports: Redis pub/sub, HTTP to every hub's management port, or nothing. */
-    public const array CONTROL_TRANSPORTS = ['redis', 'http', 'none'];
+    /** The control transports: Redis pub/sub, PostgreSQL NOTIFY, signed HTTP, or none. */
+    public const array CONTROL_TRANSPORTS = ['redis', 'postgres', 'http', 'none'];
 
     /**
      * The lifetime of a room token. A hub renews it before it expires, and a renewal checks the rights again, so a
@@ -424,7 +424,7 @@ final readonly class CollaborationOptions implements OptionsFactory
     }
 
     /**
-     * How a change of effective permissions reaches the hubs: `redis`, `http` or `none`.
+     * How control messages reach the hubs: `redis`, `postgres`, `http` or `none`.
      *
      * @throws InvalidConfiguration for any other value
      */
@@ -432,7 +432,7 @@ final readonly class CollaborationOptions implements OptionsFactory
     {
         $value = $this->value(key: 'vaulter-collaboration.control.transport', default: 'none');
         if (!is_string($value) || !in_array($value, self::CONTROL_TRANSPORTS, true)) {
-            throw InvalidConfiguration::forMessage('[Vaulter] vaulter-collaboration.control.transport must be "redis", "http" or "none".');
+            throw InvalidConfiguration::forMessage('[Vaulter] vaulter-collaboration.control.transport must be "redis", "postgres", "http" or "none".');
         }
 
         return $value;

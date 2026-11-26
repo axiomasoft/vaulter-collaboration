@@ -608,7 +608,7 @@ async function boot({ processRef = process, exit = (code) => process.exit(code) 
     },
   })
   const readiness = createReadiness({
-    websocket: () => server.httpServer?.listening === true,
+    websocket: () => server.httpServer?.listening === true && (!config.controlPostgresUrl || control.postgresReady()),
     backend: status,
     redis: config.redisUrl || config.controlRedisUrl ? () => redisClients.length > 0 && redisClients.every((client) => client.status === 'ready') : null,
     draining,
@@ -652,6 +652,7 @@ async function boot({ processRef = process, exit = (code) => process.exit(code) 
       console.error(`Vaulter collab hub: the control subscription failed: ${error?.message ?? error}`)
     })
   }
+  await control.subscribePostgres()
   persistence.start()
   await server.listen()
   // eslint-disable-next-line no-console

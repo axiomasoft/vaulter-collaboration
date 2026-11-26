@@ -260,7 +260,9 @@ it('reports what is still due for compaction whichever hub holds its lease, unti
     $both = app(CompactionLeases::class)->pending();
     expect($both['total'])->toBe(2)
         ->and(array_column($both['generations'], 'document'))->toEqualCanonicalizing([$id, (string) $quiet->getKey()])
-        ->and(app(CompactionLeases::class)->pending(limit: 1)['generations'])->toHaveCount(1);
+        ->and(app(CompactionLeases::class)->pending(limit: 1)['generations'])->toHaveCount(1)
+        ->and(app(CompactionLeases::class)->pending(protocol: 'yjs/1'))->toBe(['total' => 0, 'generations' => []])
+        ->and(app(CompactionLeases::class)->pending(protocol: 'univer-docs/1'))->toBe(['total' => 0, 'generations' => []]);
 
     expect(Compaction::publish($lease)->markerCleared)->toBeTrue()
         ->and(app(CompactionLeases::class)->pending())->toBe(['total' => 1, 'generations' => [['document' => (string) $quiet->getKey(), 'generation' => 0]]]);

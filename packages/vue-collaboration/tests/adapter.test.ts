@@ -15,6 +15,42 @@ function adapterOver(token: ReturnType<typeof vi.fn>, providers: ReturnType<type
 }
 
 describe('createCollaborationAdapter', () => {
+  it.each(['forbidden', 'unauthorized'] as const)('exposes live overlays, awareness and a draft that clears on %s', async (end) => {
+    const first = fakeProvider()
+    const second = fakeProvider()
+    const third = fakeProvider()
+    const awareness = { getStates: () => new Map(), on: vi.fn(), off: vi.fn() }
+    first.handle.awareness = awareness
+    const next = hocuspocusSession({ generation: 1, options: { room: 'vaulter.documents.7.42.1', drive_id: '7' } })
+    const token = vi.fn().mockResolvedValueOnce(hocuspocusSession()).mockResolvedValue(next)
+    const { adapter, client } = adapterOver(token, [first, second, third])
+    const handle = await adapter.open('42', { client })
+    const overlay = vi.fn()
+    const unsubscribe = handle.overlayEvents(overlay)
+    expect(handle.awareness.value).toBe(awareness)
+    handle.invalidateOverlay()
+    expect(first.sent).toEqual([])
+    first.setConnected(true)
+    handle.invalidateOverlay()
+    expect(first.envelopes()).toContainEqual({ t: 'overlay' })
+    first.say({ t: 'overlay' })
+    expect(overlay).toHaveBeenCalledExactlyOnceWith({ t: 'overlay' })
+    ;(handle.doc as Doc).getText('t').insert(0, 'draft')
+    first.end('epoch_changed')
+    await flush()
+    expect(handle.draft.value).toMatchObject({ generation: 0, envelopes: [expect.any(String)] })
+    expect(handle.awareness.value).toBeNull()
+    second.say({ t: 'overlay' })
+    expect(overlay).toHaveBeenCalledTimes(2)
+    unsubscribe()
+    second.say({ t: 'overlay' })
+    expect(overlay).toHaveBeenCalledTimes(2)
+    second.end(end)
+    await flush()
+    expect(handle.draft.value).toBeNull()
+    handle.end()
+  })
+
   it('requests the session of the node with the host client and opens the provider on a fresh document', async () => {
     const hub = fakeProvider()
     const token = vi.fn().mockResolvedValue(hocuspocusSession())

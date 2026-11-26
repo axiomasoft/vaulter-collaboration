@@ -79,6 +79,7 @@
 //                                             (default 300, as the backend's hub.timestamp_tolerance).
 //   VAULTER_COLLAB_CONTROL_REDIS_URL        — the Redis the backend publishes control messages on
 //                                             (vaulter:collab:control); default VAULTER_COLLAB_REDIS_URL.
+//   VAULTER_COLLAB_CONTROL_POSTGRES_URL     — primary PostgreSQL connection for signed LISTEN/NOTIFY control.
 //
 // Scaling / ops:
 //   VAULTER_COLLAB_REDIS_URL      — when set, enables the Redis extension (multi-instance sync).
@@ -260,6 +261,7 @@ export function buildConfig(env = process.env) {
     renewBeforeMs: int('VAULTER_COLLAB_RENEW_BEFORE_MS', 60000, env),
     controlToleranceSeconds: int('VAULTER_COLLAB_CONTROL_TOLERANCE_SECONDS', 300, env),
     controlRedisUrl: str('VAULTER_COLLAB_CONTROL_REDIS_URL', str('VAULTER_COLLAB_REDIS_URL', undefined, env), env),
+    controlPostgresUrl: str('VAULTER_COLLAB_CONTROL_POSTGRES_URL', undefined, env),
 
     // Scaling / ops
     redisUrl: str('VAULTER_COLLAB_REDIS_URL', undefined, env),
@@ -409,7 +411,7 @@ export function validateConfig(conf = config) {
     problems.push(`VAULTER_COLLAB_MODE must be one of ${PERSISTENCE_MODES.join(', ')}.`)
   }
   if (conf.strictProfile && conf.redisUrl) {
-    problems.push('VAULTER_COLLAB_STRICT_PROFILE requires control-only Redis (VAULTER_COLLAB_CONTROL_REDIS_URL).')
+    problems.push('VAULTER_COLLAB_STRICT_PROFILE requires control-only Redis (VAULTER_COLLAB_CONTROL_REDIS_URL) or PostgreSQL control (VAULTER_COLLAB_CONTROL_POSTGRES_URL).')
   }
 
   return [...backendProblems(conf), ...problems]

@@ -7,6 +7,7 @@ import { deriveStatus } from './status'
 import {
   openCollaborationTransport,
   writerBinding,
+  type AwarenessLike,
   type Collaborator,
   type CollaborationEnd,
   type CollaborationTransportHandle,
@@ -31,6 +32,50 @@ export interface CollaborationDraft {
   readonly envelopes: readonly string[]
 }
 
+export interface DraftPersistenceOptions {
+  /** Stable authenticated host identities. Use an actor id qualified by its type. */
+  tenant: string | null
+  actor: string
+}
+
+export interface CollaborationOverlayEvent {
+  readonly t: 'overlay'
+}
+
+/** Drafts are opt-in and scoped to the host identity, resource and retired generation. */
+function indexedDrafts({ tenant, actor }: DraftPersistenceOptions, resource: NodeId) {
+  const prefix = [JSON.stringify(tenant), actor, resource]
+  const range = () => IDBKeyRange.bound([...prefix, 0], [...prefix, Number.MAX_SAFE_INTEGER])
+
+  async function run<T>(mode: IDBTransactionMode, operation: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('vaulter-collaboration-drafts', 1)
+      request.onupgradeneeded = () => { request.result.createObjectStore('drafts') }
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    try {
+      return await new Promise<T>((resolve, reject) => {
+        const transaction = db.transaction('drafts', mode)
+        const request = operation(transaction.objectStore('drafts'))
+        transaction.oncomplete = () => resolve(request.result)
+        transaction.onabort = () => reject(transaction.error ?? request.error)
+      })
+    } finally {
+      db.close()
+    }
+  }
+
+  return {
+    async load(): Promise<CollaborationDraft | null> {
+      const cursor = await run('readonly', store => store.openCursor(range(), 'prev'))
+      return cursor?.value ?? null
+    },
+    save: (draft: CollaborationDraft) => run('readwrite', store => store.put(draft, [...prefix, draft.generation])),
+    clear: () => run('readwrite', store => store.delete(range())),
+  }
+}
+
 export interface UseCollaborationOptions extends CollaborationOptions {
   /** The API client that asks for the session. */
   client: VaulterClient
@@ -42,6 +87,8 @@ export interface UseCollaborationOptions extends CollaborationOptions {
   onEpochChanged?: () => void | Promise<void>
   /** The update queue settings. */
   envelope?: EnvelopeSettings
+  /** Opt into keeping retired-generation drafts in the browser's IndexedDB. */
+  draftPersistence?: DraftPersistenceOptions
 }
 
 export interface UseCollaborationReturn {
@@ -53,6 +100,9 @@ export interface UseCollaborationReturn {
   doc: ShallowRef<YDoc>
   /** The latest retired generation with unacknowledged edits, kept until disposal. */
   draft: Readonly<ShallowRef<CollaborationDraft | null>>
+  awareness: ComputedRef<AwarenessLike | null>
+  overlayEvents: (handler: (event: CollaborationOverlayEvent) => void) => () => void
+  invalidateOverlay: () => void
   /** The resolved backend session descriptor (null until connected). */
   session: ShallowRef<CollaborationSession | null>
   /** The live transport handle (null until connected). */
@@ -107,8 +157,10 @@ export function useCollaboration(nodeId: NodeId, options: UseCollaborationOption
 
   const doc = shallowRef(new YDoc())
   const draft = shallowRef<CollaborationDraft | null>(null)
+  const storedDrafts = options.draftPersistence && indexedDrafts(options.draftPersistence, nodeId)
   const session = shallowRef<CollaborationSession | null>(null)
   const handle = shallowRef<CollaborationTransportHandle | null>(null)
+  const awareness = computed(() => handle.value?.provider.awareness ?? null)
   const connecting = ref(false)
   const connected = ref(false)
   const sessionReadOnly = ref(false)
@@ -130,6 +182,30 @@ export function useCollaboration(nodeId: NodeId, options: UseCollaborationOption
   // The queue belongs to one document of one generation; it outlives the transports of that room.
   let queue: EnvelopeQueue | null = null
   let queueDoc: YDoc | null = null
+  let draftWork = Promise.resolve()
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined
+  let reconnectAttempts = 0
+  const overlayHandlers = new Set<(event: CollaborationOverlayEvent) => void>()
+
+  function persistDraft(action: (store: NonNullable<typeof storedDrafts>) => Promise<unknown>): void {
+    if (!storedDrafts) return
+    const mine = generation
+    draftWork = draftWork.then(async () => {
+      try {
+        await action(storedDrafts)
+      } catch (caught) {
+        if (mine === generation && error.value === null) error.value = caught
+      }
+    })
+  }
+
+  function loadDraft(mine: number): void {
+    if (draft.value !== null) return
+    persistDraft(async (store) => {
+      const restored = await store.load()
+      if (mine === generation && draft.value === null) draft.value = restored
+    })
+  }
 
   function refreshStatus(): void {
     queueFailed.value = queue?.failure != null
@@ -192,6 +268,8 @@ export function useCollaboration(nodeId: NodeId, options: UseCollaborationOption
   }
 
   function teardown(): void {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = undefined
     for (const stop of stopWatchers) {
       stop()
     }
@@ -205,9 +283,11 @@ export function useCollaboration(nodeId: NodeId, options: UseCollaborationOption
     refreshStatus()
   }
 
-  function resetDoc(): void {
-    if (queue !== null && queue.pendingCount > 0) {
-      draft.value = Object.freeze({ generation: queue.generation, envelopes: queue.snapshot() })
+  function resetDoc(keepDraft = true): void {
+    if (keepDraft && queue !== null && queue.pendingCount > 0) {
+      const retired = Object.freeze({ generation: queue.generation, envelopes: queue.snapshot() })
+      draft.value = retired
+      persistDraft(store => store.save(retired))
     }
     dropQueue()
     doc.value.destroy()
@@ -225,12 +305,19 @@ export function useCollaboration(nodeId: NodeId, options: UseCollaborationOption
     stopWatchers.push(
       watch(live.connected, (value) => {
         connected.value = value
+        if (value) reconnectAttempts = 0
         updates.setReady(value)
         refreshStatus()
       }, { flush: 'sync' }),
       watch(live.collaborators, (value) => { collaborators.value = value }),
-      live.onStateless((message) => { updates.receive(message) }),
-      live.onEnd((end) => { void reopen(end) }),
+      live.onStateless((message) => {
+        if (message === '{"t":"overlay"}') {
+          for (const handler of overlayHandlers) handler({ t: 'overlay' })
+          return
+        }
+        updates.receive(message)
+      }),
+      live.onEnd(reopen),
     )
     updates.setReady(connected.value)
     refreshStatus()
@@ -239,40 +326,60 @@ export function useCollaboration(nodeId: NodeId, options: UseCollaborationOption
     return live
   }
 
-  async function reopen(end: CollaborationEnd): Promise<void> {
+  function reopen(end: CollaborationEnd): void {
     const previousRoom = session.value?.options.room
     const previousGeneration = session.value?.generation
     const mine = ++generation
     teardown()
+    const identityRefused = end === 'forbidden' || end === 'unauthorized'
+    if (identityRefused) {
+      draft.value = null
+      sessionReadOnly.value = true
+      persistDraft(store => store.clear())
+    }
     if (end === 'epoch_changed') {
       freshDocPending.value = true
       resetDoc()
       refreshStatus()
     }
 
-    if (end === 'store_refused') {
+    if (end === 'store_refused' || end === 'document_gone' || end === 'too_large' || end === 'connection_failed') {
       refused.value = true
-      error.value = new Error('The collaboration hub could not save this document (the backend refused its state).')
+      const messages = {
+        store_refused: 'The collaboration hub could not save this document (the backend refused its state).',
+        document_gone: 'The collaboration document is no longer available.',
+        too_large: 'The collaboration hub exceeded a document or update size limit.',
+        connection_failed: 'The collaboration hub could not be reached.',
+      }
+      error.value = new Error(messages[end])
       refreshStatus()
       return
     }
 
-    try {
-      const resolved = await resolveSession(mine)
-      if (resolved === null) {
-        return
+    async function rejoin(): Promise<void> {
+      if (mine !== generation) return
+      try {
+        const resolved = await resolveSession(mine)
+        if (resolved === null) return
+        const epochReset = freshDocPending.value
+        const generationChanged = resolved.generation !== previousGeneration
+        if (!epochReset && (resolved.options.room !== previousRoom || generationChanged)) {
+          resetDoc(!identityRefused)
+        }
+        open(resolved)
+        loadDraft(mine)
+        if (epochReset || generationChanged) await options.onEpochChanged?.()
+      } catch (caught) {
+        if (mine === generation) error.value = caught
       }
-      const epochReset = freshDocPending.value
-      const generationChanged = resolved.generation !== previousGeneration
-      if (!epochReset && (resolved.options.room !== previousRoom || generationChanged)) {
-        resetDoc()
-      }
-      open(resolved)
-      if (epochReset || generationChanged) {
-        await options.onEpochChanged?.()
-      }
-    } catch {
-      // error is already set; the editor stays disconnected until the host reconnects.
+    }
+
+    if (end === 'draining' || end === 'rate_limited' || end === 'handoff') {
+      const initialDelay = end === 'rate_limited' ? 2000 : end === 'handoff' ? 250 : 1000
+      const delay = Math.min(30_000, initialDelay * 2 ** Math.min(reconnectAttempts++, 7))
+      reconnectTimer = setTimeout(() => { void rejoin() }, delay)
+    } else {
+      void rejoin()
     }
   }
 
@@ -281,6 +388,7 @@ export function useCollaboration(nodeId: NodeId, options: UseCollaborationOption
     const previousRoom = session.value?.options.room
     const previousGeneration = session.value?.generation
     teardown()
+    reconnectAttempts = 0
     const resolved = await resolveSession(mine)
     if (resolved === null) {
       // Superseded while waiting: whoever took over owns the connection now.
@@ -294,6 +402,7 @@ export function useCollaboration(nodeId: NodeId, options: UseCollaborationOption
       resetDoc()
     }
     const live = open(resolved)
+    loadDraft(mine)
     if (epochReset || generationChanged) {
       await options.onEpochChanged?.()
     }
@@ -310,12 +419,21 @@ export function useCollaboration(nodeId: NodeId, options: UseCollaborationOption
     disconnect()
     dropQueue()
     draft.value = null
+    overlayHandlers.clear()
     refreshStatus()
   }
 
   return {
     doc,
     draft,
+    awareness,
+    overlayEvents: (handler) => {
+      overlayHandlers.add(handler)
+      return () => { overlayHandlers.delete(handler) }
+    },
+    invalidateOverlay: () => {
+      if (connected.value && !readOnly.value) handle.value?.sendStateless('{"t":"overlay"}')
+    },
     session,
     handle,
     connecting,

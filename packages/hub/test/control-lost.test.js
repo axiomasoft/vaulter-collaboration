@@ -119,6 +119,7 @@ test('a granted renewal replaces the token and moves the expiry; nothing closes 
   assert.equal(entry.jti, context.jti)
   assert.equal(revocation.registry.forJti(context.jti)[0], entry)
   assert.equal(revocation.stats().renewals, 1)
+  assert.deepEqual(connection.of('token_refresh'), [{ t: 'token_refresh', token: context.token, exp: context.exp }])
 
   await time.advance(RENEW_BEFORE_MS)
   assert.deepEqual(connection.closed, [], 'the old exp passed: the renewed token still lives')

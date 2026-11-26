@@ -1,8 +1,9 @@
 import { once } from 'node:events'
 import type { IncomingMessage } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { HocuspocusProvider } from '@hocuspocus/provider'
+import { Server } from '@hocuspocus/server'
 import { WebSocketServer } from 'ws'
 import { Doc as YDoc } from 'yjs'
 import { openCollaborationTransport } from '../src/transport'
@@ -87,6 +88,93 @@ describe('defaultHocuspocusProvider announces exactly one protocol=2', () => {
 })
 
 describe('defaultHocuspocusProvider against the real @hocuspocus/provider v4', () => {
+  it('uses the last renewed JWT on the provider authentication path and keeps it private', async () => {
+    const doc = new YDoc()
+    const handle = openCollaborationTransport(unroutable(), { doc })
+    try {
+      const provider = handle.provider.remoteOrigin as HocuspocusProvider
+      const received = vi.fn()
+      handle.onStateless(received)
+      const exp = Math.ceil(Date.now() / 1000) + 300
+      expect(await provider.getToken()).toBe('jwt-token')
+      emitOn(provider, 'stateless', { payload: JSON.stringify({ t: 'token_refresh', token: 'new', exp }) })
+      emitOn(provider, 'stateless', { payload: JSON.stringify({ t: 'token_refresh', token: 'old', exp: exp - 1 }) })
+
+      expect(await provider.getToken()).toBe('new')
+      expect(received).not.toHaveBeenCalled()
+    } finally {
+      handle.destroy()
+      doc.destroy()
+    }
+  })
+
+  it('authenticates a new socket with the refreshed token after the original expires', async () => {
+    const attempts: string[] = []
+    let originalExpired = false
+    const server = new Server({
+      address: '127.0.0.1',
+      port: 0,
+      quiet: true,
+      stopOnSignals: false,
+      async onAuthenticate({ token }) {
+        attempts.push(token)
+        if (token === 'jwt-token' && originalExpired) throw new Error('Collaboration token expired')
+      },
+      async connected({ connection }) {
+        if (attempts.length === 1) {
+          connection.sendStateless(JSON.stringify({ t: 'token_refresh', token: 'renewed', exp: 2_000_000_000 }))
+        }
+      },
+    })
+    const doc = new YDoc()
+    let handle: ReturnType<typeof openCollaborationTransport> | undefined
+    try {
+      await server.listen()
+      handle = openCollaborationTransport(hocuspocusSession({ endpoint: `ws://127.0.0.1:${server.address.port}` }), { doc })
+      const provider = handle.provider.remoteOrigin as HocuspocusProvider
+      const ends = vi.fn()
+      handle.onEnd(ends)
+      await vi.waitFor(async () => expect(await provider.getToken()).toBe('renewed'))
+      originalExpired = true
+      provider.configuration.websocketProvider.webSocket?.close()
+
+      await vi.waitFor(() => expect(attempts).toEqual(['jwt-token', 'renewed']), { timeout: 3500 })
+      expect(ends).not.toHaveBeenCalled()
+    } finally {
+      handle?.destroy()
+      doc.destroy()
+      await server.destroy()
+    }
+  })
+
+  it('closes a socket that never leaves CONNECTING when the provider times out', async () => {
+    vi.useFakeTimers()
+    const close = vi.fn()
+    vi.stubGlobal('WebSocket', class {
+      readonly readyState = 0
+      readonly close = close
+      addEventListener() {}
+      removeEventListener() {}
+    })
+    const doc = new YDoc()
+    const handle = openCollaborationTransport(unroutable(), { doc })
+    try {
+      const end = vi.fn()
+      handle.onEnd(end)
+      await vi.advanceTimersByTimeAsync(9999)
+      expect(end).not.toHaveBeenCalled()
+      expect(close).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(end).toHaveBeenCalledExactlyOnceWith('connection_failed')
+      expect(close).toHaveBeenCalledOnce()
+    } finally {
+      handle.destroy()
+      doc.destroy()
+      vi.unstubAllGlobals()
+      vi.useRealTimers()
+    }
+  })
+
   it('builds a live session through the default (non-mocked) path', () => {
     // No `createHocuspocusProvider` override → the production default factory runs
     // against the real HocuspocusProvider constructor.

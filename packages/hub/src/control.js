@@ -1,11 +1,14 @@
 import crypto from 'node:crypto'
+import pg from 'pg'
 
 // The hub's control channel (revocation): the backend's control consumer publishes
 // `{v: 1, drive_id|null, scope, permissions_version, at}` after a change of effective permissions
-// commits, and the hub rechecks the connections of that drive (src/revocation.js). Two transports,
+// commits, and the hub rechecks the affected connections (src/revocation.js). Transports,
 // as the backend's `vaulter-collaboration.control.transport` chooses:
 //   - redis: the hub SUBSCRIBEs to `vaulter:collab:control` on VAULTER_COLLAB_CONTROL_REDIS_URL
 //     (default VAULTER_COLLAB_REDIS_URL) — Redis is trusted infrastructure, as for document sync;
+//   - postgres: the hub LISTENs on vaulter_collab_control on VAULTER_COLLAB_CONTROL_POSTGRES_URL;
+//     each notification carries the same signed body as HTTP, since PostgreSQL channels have no ACL;
 //   - http: POST /control on the management listener (src/management.js), signed as the hub signs
 //     its own calls: HMAC-SHA256 of "{timestamp}.{rawBody}" keyed by VAULTER_COLLAB_WEBHOOK_SECRET in
 //     X-Vaulter-Collab-Timestamp / X-Vaulter-Collab-Signature. A request without a valid signature,
@@ -15,6 +18,7 @@ import crypto from 'node:crypto'
 // recheck, never the message's.
 
 export const CONTROL_CHANNEL = 'vaulter:collab:control'
+export const POSTGRES_CONTROL_CHANNEL = 'vaulter_collab_control'
 
 /** The control message format this hub reads. */
 export const CONTROL_VERSION = 1
@@ -121,6 +125,12 @@ export function parseControlMessage(raw) {
     return { ok: false, reason: 'permissions_version' }
   }
 
+  if (message.type === 'revoke_subject'
+    && (typeof message.subject_id !== 'string' || message.subject_id.length < 1 || message.subject_id.length > 191
+      || typeof message.subject_type !== 'string' || message.subject_type.length < 1 || message.subject_type.length > 64)) {
+    return { ok: false, reason: 'subject' }
+  }
+
   return {
     ok: true,
     message: {
@@ -129,6 +139,9 @@ export function parseControlMessage(raw) {
       scope,
       permissions_version: message.permissions_version ?? null,
       at: typeof message.at === 'string' ? message.at : null,
+      ...(message.type === 'revoke_subject' ? {
+        type: message.type, subject_id: message.subject_id, subject_type: message.subject_type,
+      } : {}),
     },
   }
 }
@@ -139,7 +152,10 @@ export function parseControlMessage(raw) {
  * subscriber client (ioredis by default); `clock` is injectable. Signatures already seen are kept
  * for the tolerance window, so a replayed request changes nothing.
  */
-export function createControlChannel({ revocation, rooms, verifyCommand, conf = {}, log = console, clock = Date.now, redisFactory = null, maxSeen = 10_000 } = {}) {
+export function createControlChannel({
+  revocation, rooms, verifyCommand, conf = {}, log = console, clock = Date.now,
+  redisFactory = null, postgresFactory = (options) => new pg.Client(options), maxSeen = 10_000,
+} = {}) {
   const toleranceSeconds = Number.isInteger(conf.controlToleranceSeconds) && conf.controlToleranceSeconds > 0
     ? conf.controlToleranceSeconds
     : CONTROL_TOLERANCE_SECONDS
@@ -147,6 +163,9 @@ export function createControlChannel({ revocation, rooms, verifyCommand, conf = 
   const seen = new Map()
   const stats = { accepted: 0, unauthorized: 0, invalid: 0, replayed: 0 }
   let subscriber = null
+  let postgres = null
+  let postgresReady = false
+  let listenRetry = null
 
   function forget(nowMs) {
     for (const [signature, until] of seen) {
@@ -161,7 +180,8 @@ export function createControlChannel({ revocation, rooms, verifyCommand, conf = 
   function dispatch(message, source) {
     stats.accepted += 1
     Promise.resolve()
-      .then(() => message.type === undefined ? revocation.control(message, source) : rooms?.(message))
+      .then(() => message.type === undefined || message.type === 'revoke_subject'
+        ? revocation.control(message, source) : rooms?.(message))
       .catch((error) => log.error?.(`Vaulter collab hub: a control message could not be applied: ${error?.message ?? error}`))
   }
 
@@ -169,7 +189,7 @@ export function createControlChannel({ revocation, rooms, verifyCommand, conf = 
    * POST /control: `{ status, body }`. 401 without a valid signature (nothing changes), 409 for a
    * replayed one, 422 for a message the hub cannot read, 202 once the recheck is under way.
    */
-  function receiveHttp({ headers, rawBody }) {
+  function receiveHttp({ headers, rawBody }, source = 'http') {
     const nowMs = clock()
     const body = typeof rawBody === 'string' ? rawBody : Buffer.from(rawBody ?? '').toString('utf8')
     const signature = header(headers, SIGNATURE_HEADER)
@@ -207,7 +227,7 @@ export function createControlChannel({ revocation, rooms, verifyCommand, conf = 
       return { status: 422, body: { status: 'invalid', reason: parsed.reason } }
     }
 
-    dispatch(parsed.message, 'http')
+    dispatch(parsed.message, source)
 
     return { status: 202, body: { status: 'accepted' } }
   }
@@ -282,10 +302,69 @@ export function createControlChannel({ revocation, rooms, verifyCommand, conf = 
     return subscriber
   }
 
+  function receivePostgres(raw) {
+    let notification
+    try {
+      notification = JSON.parse(raw)
+    } catch {
+      stats.invalid += 1
+      return
+    }
+    if (typeof notification?.body !== 'string') {
+      stats.invalid += 1
+      return
+    }
+    receiveHttp({
+      rawBody: notification.body,
+      headers: { [TIMESTAMP_HEADER]: notification.timestamp, [SIGNATURE_HEADER]: notification.signature },
+    }, 'postgres')
+  }
+
+  /** Own a session-bound LISTEN connection and re-subscribe whenever the session is lost. */
+  async function subscribePostgres(url = conf.controlPostgresUrl) {
+    if (!url || postgres !== null || listenRetry !== null) return
+
+    async function listen() {
+      const client = postgresFactory({ connectionString: url, connectionTimeoutMillis: 5000, keepAlive: true })
+      postgres = client
+      function retry(error) {
+        if (postgres !== client) return
+        postgres = null
+        postgresReady = false
+        log.error?.(`Vaulter collab hub: PostgreSQL control subscription lost: ${error?.code ?? 'connection closed'}`)
+        void client.end().catch(() => {})
+        listenRetry = setTimeout(() => {
+          listenRetry = null
+          void listen()
+        }, 1000)
+        listenRetry.unref?.()
+      }
+      client.on('error', retry)
+      client.on('end', retry)
+      client.on('notification', ({ channel, payload }) => {
+        if (postgres === client && channel === POSTGRES_CONTROL_CHANNEL) receivePostgres(payload)
+      })
+      try {
+        await client.connect()
+        await client.query(`LISTEN ${POSTGRES_CONTROL_CHANNEL}`)
+        if (postgres === client) postgresReady = true
+      } catch (error) {
+        retry(error)
+      }
+    }
+    await listen()
+  }
+
   async function close() {
     const client = subscriber
+    const postgresClient = postgres
 
     subscriber = null
+    postgres = null
+    postgresReady = false
+    clearTimeout(listenRetry)
+    listenRetry = null
+    await postgresClient?.end()
 
     try {
       await client?.quit?.()
@@ -300,6 +379,8 @@ export function createControlChannel({ revocation, rooms, verifyCommand, conf = 
     receiveVerification,
     receiveRedis,
     subscribe,
+    subscribePostgres,
+    postgresReady: () => postgresReady,
     close,
     subscriber: () => subscriber,
     stats: () => ({ ...stats }),

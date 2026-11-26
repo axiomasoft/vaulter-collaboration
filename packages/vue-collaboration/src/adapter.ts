@@ -1,7 +1,7 @@
 import { computed } from 'vue'
 import type { CollaborationAdapter, CollaborationHandle, VaulterClient } from '@vaulter/vue'
 import type { CollaborationTransportOptions } from './transport'
-import { useCollaboration, type EnvelopeSettings } from './useCollaboration'
+import { useCollaboration, type EnvelopeSettings, type UseCollaborationOptions, type UseCollaborationReturn } from './useCollaboration'
 import type { UndoManager } from 'yjs'
 
 export interface CreateCollaborationAdapterOptions {
@@ -11,6 +11,15 @@ export interface CreateCollaborationAdapterOptions {
   providers?: Partial<Omit<CollaborationTransportOptions, 'doc'>>
   /** The update queue settings (1000 updates / 8 MiB by default). */
   envelope?: EnvelopeSettings
+  /** Opt into keeping retired-generation drafts in the browser's IndexedDB. */
+  draftPersistence?: UseCollaborationOptions['draftPersistence']
+}
+
+export type VueCollaborationHandle = CollaborationHandle
+  & Pick<UseCollaborationReturn, 'awareness' | 'overlayEvents' | 'invalidateOverlay' | 'draft'>
+
+export interface VueCollaborationAdapter extends CollaborationAdapter {
+  open(...args: Parameters<CollaborationAdapter['open']>): Promise<VueCollaborationHandle>
 }
 
 /** Set the capture window and bound the undo and redo stacks of the editor's Yjs manager. */
@@ -35,7 +44,7 @@ export function limitCollaborationUndo(manager: UndoManager): () => void {
  * `open()` rejects with the `VaulterApiError` of the session request (a 404 or a 409
  * `collaboration_unavailable` means "not offered here" to the editor).
  */
-export function createCollaborationAdapter(options: CreateCollaborationAdapterOptions = {}): CollaborationAdapter {
+export function createCollaborationAdapter(options: CreateCollaborationAdapterOptions = {}): VueCollaborationAdapter {
   return {
     async open(node, openOptions) {
       const collaboration = useCollaboration(node, {
@@ -44,6 +53,7 @@ export function createCollaborationAdapter(options: CreateCollaborationAdapterOp
         onEpochChanged: openOptions.onEpochChanged,
         providers: options.providers,
         envelope: options.envelope,
+        draftPersistence: options.draftPersistence,
       })
 
       try {
@@ -53,13 +63,17 @@ export function createCollaborationAdapter(options: CreateCollaborationAdapterOp
         throw caught
       }
 
-      const handle: CollaborationHandle = {
+      const handle: VueCollaborationHandle = {
         // The document is replaced when the hub ends the room's generation: always read the current one.
         get doc() { return collaboration.doc.value },
         status: collaboration.status,
         readOnly: collaboration.readOnly,
         connected: collaboration.connected,
         collaborators: collaboration.collaborators,
+        awareness: collaboration.awareness,
+        overlayEvents: collaboration.overlayEvents,
+        invalidateOverlay: collaboration.invalidateOverlay,
+        draft: collaboration.draft,
         schemaOutdated: collaboration.schemaOutdated,
         schemaVersion: computed(() => collaboration.session.value?.schema_version ?? null),
         error: collaboration.error,

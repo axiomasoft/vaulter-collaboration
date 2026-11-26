@@ -8,6 +8,7 @@ use Closure;
 use Illuminate\Contracts\Auth\Access\Authorizable;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Contracts\Container\Container;
+use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\Facades\Broadcast;
 use Illuminate\Support\Facades\Log;
@@ -18,9 +19,12 @@ use Vaulter\Collaboration\Contracts\HostUserResolver;
 use Vaulter\Collaboration\Drain\BackoffDrainWaiter;
 use Vaulter\Collaboration\Drain\DrainWaiter;
 use Vaulter\Collaboration\HostUserResolver as DefaultHostUserResolver;
+use Vaulter\Collaboration\Revocation\ControlConsumer;
 use Vaulter\Collaboration\Revocation\ControlTransport;
+use Vaulter\Collaboration\Revocation\OwnerLeaseChanged;
 use Vaulter\Collaboration\Revocation\Transports\HttpControlTransport;
 use Vaulter\Collaboration\Revocation\Transports\NoControlTransport;
+use Vaulter\Collaboration\Revocation\Transports\PostgresListenNotifyTransport;
 use Vaulter\Collaboration\Revocation\Transports\RedisControlTransport;
 use Vaulter\Configuration\CompiledOptionsCache;
 use Vaulter\Configuration\ScheduleFrequency;
@@ -58,6 +62,7 @@ final class CollaborationRegistrar implements ModuleBindings
         // How a control message reaches the hubs (control.transport); a test binds a recording transport here.
         $app->bind(ControlTransport::class, static fn (Container $app): ControlTransport => match ($app->make(CollaborationOptions::class)->controlTransport()) {
             'redis' => $app->make(RedisControlTransport::class),
+            'postgres' => $app->make(PostgresListenNotifyTransport::class),
             'http' => $app->make(HttpControlTransport::class),
             default => new NoControlTransport,
         });
@@ -78,6 +83,7 @@ final class CollaborationRegistrar implements ModuleBindings
         }
 
         self::registerBroadcastChannel();
+        $app->make(Dispatcher::class)->listen(OwnerLeaseChanged::class, [ControlConsumer::class, 'handoff']);
     }
 
     /**

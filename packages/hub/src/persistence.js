@@ -621,6 +621,14 @@ export function createPersistence({
     closeRoom(instance, documentName, close)
   }
 
+  function closeDirectConnections(documentName) {
+    for (const connection of [...(directConnections.get(documentName) ?? [])]) {
+      connection.disconnect().catch((error) => {
+        log.warn?.(`Vaulter collab hub: a direct connection of ${documentName} did not close: ${error?.message ?? error}`)
+      })
+    }
+  }
+
   /**
    * A record the room took (an envelope applied before its commit, a server change) was refused for
    * good: the room and every client now hold an update its log never will, and later updates may
@@ -651,11 +659,7 @@ export function createPersistence({
       }
     }
 
-    for (const connection of [...(directConnections.get(entry.documentName) ?? [])]) {
-      connection.disconnect().catch((error) => {
-        log.warn?.(`Vaulter collab hub: a direct connection of ${entry.documentName} did not close: ${error?.message ?? error}`)
-      })
-    }
+    closeDirectConnections(entry.documentName)
   }
 
   function reportProtocolMismatch() {
@@ -1147,7 +1151,7 @@ export function createPersistence({
     return undefined
   }
 
-  /** onStateless: envelopes are JSON objects with t:"u"; any other stateless message is not ours. */
+  /** Overlay invalidations and envelopes share the stateless channel. */
   async function onStateless({ connection, documentName, document, payload, instance: hocuspocus }) {
     bind(hocuspocus)
 
@@ -1169,6 +1173,14 @@ export function createPersistence({
 
     if (message?.t === 'u') {
       await handleEnvelope(connection, documentName, document, message)
+    } else if (message?.t === 'overlay' && Object.keys(message).length === 1) {
+      const context = contexts.get(connection)
+      const room = rooms.get(documentName)
+      if (room && room.document === document && roomOf.get(connection) === documentName && isWriter(context)
+        && (!room.strict || context.boundClientId) && !fenced.has(documentName) && !writesStopped
+        && limit.admitWrite(documentName, 'envelope')) {
+        document.broadcastStateless('{"t":"overlay"}')
+      }
     }
   }
 
@@ -1400,11 +1412,12 @@ export function createPersistence({
     stopStrict: strictRooms.stop,
     strictControl(message) {
       if (message.type === 'wakeup') return strictRooms.wake()
-      const strict = rooms.get(message.room)?.strict
-      if (!strict) return
-      if (message.type === 'handoff_request' && strict.fence !== message.owner_fence) return
+      const room = rooms.get(message.room)
+      if (!room && !instance?.documents?.has(message.room)) return
+      if (message.type === 'handoff_request' && room?.strict?.fence !== message.owner_fence) return
       fence(message.room, message.type === 'handoff_request' ? HANDOFF : EPOCH_CHANGED)
-      return strictRooms.close(strict)
+      closeDirectConnections(message.room)
+      if (room?.strict) return strictRooms.close(room.strict)
     },
     ledger,
     limits: limit,
