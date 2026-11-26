@@ -5,4 +5,6 @@ This file is independent of the root `CHANGELOG.md`, which belongs to the public
 
 ## Unreleased
 
+- Install the same version of the base Vaulter packages as the collaboration package.
+
 - Use native Packman facets, closed-schema CollaborationOptions, coded errors and schema sets while preserving opt-in activation and secret diagnostics.
