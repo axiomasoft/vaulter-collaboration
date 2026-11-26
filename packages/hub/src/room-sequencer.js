@@ -5,7 +5,10 @@ import { getSchema } from '@tiptap/core'
 import { updateYFragment } from 'y-prosemirror'
 import * as Y from 'yjs'
 import { COMMITTED_ORIGIN, LOAD_ORIGIN, sha256Hex } from './persistence.js'
-import { extensionsFor, FIELD, lostAttributes } from './schema.js'
+import { validReviewUpdate } from './review-validation.js'
+import { checkReviewMarks, extensionsFor, FIELD, isRecord, isReviewMark, lostAttributes, REVIEW_STRUCTURE, REVIEW_SUGGESTION } from './schema.js'
+
+const IMPORT = 'exchange.apply_import'
 
 export function refusal(code) {
   return Object.assign(new Error(code), { code })
@@ -189,6 +192,7 @@ export function prepareOnCopy(base, intent, clientId, commandId, type = 'vaulter
 
 function prepareReviewReplacement(schema, before, effect) {
   try {
+    for (const original of [before, effect.expected, effect.replacement]) checkReviewMarks(original)
     const expected = schema.nodeFromJSON(effect.expected)
     const replacement = schema.nodeFromJSON(effect.replacement)
     const current = schema.nodeFromJSON(before)
@@ -200,6 +204,40 @@ function prepareReviewReplacement(schema, before, effect) {
         lostAttributes(before, current.toJSON()).length > 0 || !current.eq(expected)) {
       throw refusal('precondition_failed')
     }
+    return replacement
+  } catch {
+    throw refusal('precondition_failed')
+  }
+}
+
+function checkImportJSON(schema, node) {
+  const check = (value, fields, spec) => {
+    if (!isRecord(value) || !spec || Object.keys(value).some((key) => !fields.includes(key)) ||
+        (Object.hasOwn(value, 'attrs') && (!isRecord(value.attrs) ||
+          Object.keys(value.attrs).some((key) => !Object.hasOwn(spec.attrs ?? {}, key))))) {
+      throw refusal('precondition_failed')
+    }
+  }
+  check(node, node?.type === 'text' ? ['type', 'text', 'marks'] : ['type', 'attrs', 'marks', 'content'],
+    schema.nodes[node?.type]?.spec)
+  for (const name of ['marks', 'content']) {
+    if (Object.hasOwn(node, name) && !Array.isArray(node[name])) throw refusal('precondition_failed')
+  }
+  for (const mark of node.marks ?? []) {
+    check(mark, ['type', 'attrs'], schema.marks[mark?.type]?.spec)
+    if (mark.type === REVIEW_SUGGESTION && !isReviewMark(mark.attrs)) throw refusal('precondition_failed')
+  }
+  for (const child of node.content ?? []) checkImportJSON(schema, child)
+}
+
+function prepareImportReplacement(schema, intent) {
+  const effect = intent.atomic_effects[0]
+  if (intent.atomic_effects.length !== 1 || effect?.effect !== IMPORT) throw refusal('invalid_intent')
+  try {
+    checkImportJSON(schema, effect.replacement)
+    const replacement = schema.nodeFromJSON(effect.replacement)
+    replacement.check()
+    if (replacement.type !== schema.topNodeType) throw refusal('precondition_failed')
     return replacement
   } catch {
     throw refusal('precondition_failed')
@@ -222,8 +260,10 @@ function prepareCommand(base, intent, clientId, commandId, type, maxBytes) {
   const vector = Y.encodeStateVector(copy)
   copy.clientID = clientId
   try {
-    const schema = getSchema(extensionsFor(type))
     const before = TiptapTransformer.fromYdoc(copy, FIELD)
+    const schema = getSchema(extensionsFor(type, before,
+      ...intent.atomic_effects.flatMap((effect) => [effect?.expected, effect?.replacement]),
+    ))
     for (const condition of intent.preconditions ?? []) {
       const block = blockOf(copy, condition.block_id)
       if (condition.expected_block) {
@@ -246,7 +286,18 @@ function prepareCommand(base, intent, clientId, commandId, type, maxBytes) {
     }
     const ranges = []
     let replacement = null
+    let clearedRecords = false
     copy.transact(() => {
+      if (intent.operation === IMPORT) {
+        replacement = prepareImportReplacement(schema, intent)
+        updateYFragment(copy, copy.getXmlFragment(FIELD), replacement, { mapping: new Map(), isOMark: new Map() })
+        if (copy.share.has(REVIEW_STRUCTURE)) {
+          const records = copy.getMap(REVIEW_STRUCTURE)
+          clearedRecords = records.size > 0
+          records.clear()
+        }
+        return
+      }
       intent.atomic_effects.forEach((effect, index) => {
         if (effect.effect === 'replace_review_document' && intent.operation === 'review.suggestion.accept' &&
             intent.decision === 'accepted' && intent.atomic_effects.length === 1 && type === 'vaulter/rich-text') {
@@ -276,7 +327,7 @@ function prepareCommand(base, intent, clientId, commandId, type, maxBytes) {
       if (!block) throw refusal('postcondition_failed')
       range.block = block
     }
-    const bytes = isDeepStrictEqual(before, after) ? null : Buffer.from(Y.encodeStateAsUpdate(copy, vector))
+    const bytes = !clearedRecords && isDeepStrictEqual(before, after) ? null : Buffer.from(Y.encodeStateAsUpdate(copy, vector))
     if (bytes !== null) {
       if (Y.encodeStateAsUpdateV2(copy).length > maxBytes) throw refusal('document_too_large')
       const replay = cloneRoom(base)
@@ -287,6 +338,7 @@ function prepareCommand(base, intent, clientId, commandId, type, maxBytes) {
         if (replacement === null ? !isDeepStrictEqual(replayed, after) : !schema.nodeFromJSON(replayed).eq(afterNode)) {
           throw refusal(replacement === null ? 'postcondition_failed' : 'precondition_failed')
         }
+        if (clearedRecords && replay.getMap(REVIEW_STRUCTURE).size !== 0) throw refusal('precondition_failed')
       } finally {
         replay.destroy()
       }
@@ -304,7 +356,7 @@ function recordBytes(record) {
 }
 
 /** One serial queue for browser updates, trusted server writes, command settlement and replay. */
-export function createRoomSequencer({ room, generation, load, append, onBypass = () => {}, maxBytes = Infinity }) {
+export function createRoomSequencer({ room, generation, type = 'vaulter/rich-text', load, append, onBypass = () => {}, maxBytes = Infinity }) {
   let appliedSeq = -1
   let stopped = false
   let applying = false
@@ -404,7 +456,7 @@ export function createRoomSequencer({ room, generation, load, append, onBypass =
   async function submitUpdate(update) {
     return enqueue(async () => {
       await catchUp()
-      const { boundClientId, bytes } = update
+      const { boundClientId, bytes, subject, ...envelope } = update
       if (!Number.isInteger(boundClientId) || boundClientId < 0x80000000 || boundClientId > 0xffffffff) {
         throw refusal('client_id_conflict')
       }
@@ -422,6 +474,7 @@ export function createRoomSequencer({ room, generation, load, append, onBypass =
         try {
           Y.applyUpdate(copy, bytes, LOAD_ORIGIN)
           complete(copy)
+          if (!validReviewUpdate(room, copy, subject, type)) throw refusal('invalid_update')
           if (Number.isFinite(maxBytes) && (decoded.structs.length > 0 || decoded.ds.clients.size === 0)
             && Y.encodeStateAsUpdateV2(copy).length > maxBytes) {
             throw refusal('document_too_large')
@@ -434,7 +487,7 @@ export function createRoomSequencer({ room, generation, load, append, onBypass =
         verified = { from: appliedSeq, sha256: sha256Hex(bytes) }
       }
       // A repeated update can overlap known clocks only when SQL already has its exact receipt.
-      const ack = await append({ ...update, baseSeq: appliedSeq, receiptOnly: overlaps })
+      const ack = await append({ ...envelope, boundClientId, bytes, baseSeq: appliedSeq, receiptOnly: overlaps })
       assertOpen()
       await catchUp(ack.seq)
       return ack
@@ -473,11 +526,15 @@ export function createRoomSequencer({ room, generation, load, append, onBypass =
       for (let attempt = 0; attempt < 3; attempt++) {
         await catchUp()
         let prepared
+        const importing = command.intent?.operation === IMPORT
         try {
+          if (importing && (command.intent.base_generation !== generation || command.intent.base_position !== appliedSeq)) {
+            throw refusal('precondition_failed')
+          }
           prepared = prepareCommand(room, command.intent, clientId, command.command_id, type, maxBytes)
         } catch (error) {
-          const legacyReviewIntent = command.intent?.operation === 'review.suggestion.accept' && error?.code === 'invalid_intent'
-          if (error?.code !== 'precondition_failed' && error?.code !== 'document_too_large' && !legacyReviewIntent) throw error
+          const invalidCommand = error?.code === 'invalid_intent' && (importing || command.intent?.operation === 'review.suggestion.accept')
+          if (error?.code !== 'precondition_failed' && error?.code !== 'document_too_large' && !invalidCommand) throw error
           // The command settlement endpoint uses precondition_failed for hub rejections.
           prepared = { reason: 'precondition_failed' }
         }

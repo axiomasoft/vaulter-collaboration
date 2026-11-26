@@ -1,7 +1,7 @@
 import * as Y from 'yjs'
 import { TiptapTransformer } from '@hocuspocus/transformer'
 import { replayLog, sha256Hex } from './persistence.js'
-import { extensionsFor, FIELD, lostAttributes } from './schema.js'
+import { checkReviewMarks, extensionsFor, FIELD, lostAttributes } from './schema.js'
 
 // The hub's compaction: PHP neither merges nor projects Yjs, so the hub
 // turns a generation's log into its next checkpoint. A compaction lease entry (src/backend.js
@@ -143,26 +143,30 @@ export function mergeLog(entry) {
  * survive (lostAttributes), or a node or mark the schema does not know, is a loss.
  */
 export function projectionOf(document, type) {
+  const original = TiptapTransformer.fromYdoc(document, FIELD)
   let extensions
 
   try {
-    extensions = extensionsFor(type)
+    extensions = extensionsFor(type, original)
   } catch (error) {
     throw new CompactionError(REFUSAL.UNKNOWN_TYPE, error.message)
   }
 
-  const content = TiptapTransformer.fromYdoc(document, FIELD)
   let normalized
 
   try {
-    const carried = TiptapTransformer.toYdoc(content, FIELD, extensions)
-    normalized = TiptapTransformer.fromYdoc(carried, FIELD)
-    carried.destroy()
+    checkReviewMarks(original)
+    const carried = TiptapTransformer.toYdoc(original, FIELD, extensions)
+    try {
+      normalized = TiptapTransformer.fromYdoc(carried, FIELD)
+    } finally {
+      carried.destroy()
+    }
   } catch (error) {
     throw new CompactionError(REFUSAL.PROJECTION_LOSS, `The hub's TipTap schema for ${type} cannot read the document: ${error?.message ?? error}`)
   }
 
-  const lost = lostAttributes(content, normalized)
+  const lost = lostAttributes(original, normalized)
 
   if (lost.length > 0) {
     throw new CompactionError(
@@ -172,7 +176,7 @@ export function projectionOf(document, type) {
     )
   }
 
-  return content
+  return original
 }
 
 /**

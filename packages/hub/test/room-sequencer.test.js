@@ -27,6 +27,147 @@ function textOf(doc) {
   return doc.getXmlFragment(field).get(0).get(0)
 }
 
+test('strict review updates bind new marks and structural records to the authenticated subject', async (t) => {
+  const base = fixture()
+  const room = new Y.Doc()
+  const checkpoint = Buffer.from(Y.encodeStateAsUpdate(base)).toString('base64')
+  const log = { generation: 3, checkpoint, checkpoint_seq: 1, head_seq: 1, tail: [] }
+  const sequence = createRoomSequencer({
+    room, generation: 3, load: async () => log,
+    append: async (update) => {
+      log.tail.push({ seq: ++log.head_seq, payload: update.payload, sha256: update.sha256 })
+      return { seq: log.head_seq }
+    },
+  })
+  t.after(() => { sequence.close(); room.destroy(); base.destroy() })
+  await sequence.catchUp()
+  const submit = async (subject, change) => {
+    const client = new Y.Doc()
+    Y.applyUpdate(client, Y.encodeStateAsUpdate(room))
+    client.clientID = browserId
+    const vector = Y.encodeStateVector(client)
+    change(client)
+    const bytes = Y.encodeStateAsUpdate(client, vector)
+    client.destroy()
+    return sequence.submitUpdate({ bytes, boundClientId: browserId, subject,
+      payload: Buffer.from(bytes).toString('base64'), sha256: sha256Hex(bytes) })
+  }
+  const recordName = 'vaulter:reviewStructure:default'
+  const mark = { suggestionId: 'proposal', groupId: 'group', author: 'alice', kind: 'insert' }
+  const entry = { order: 1, record: {
+    suggestionId: 'structure', groupId: 'group', author: 'alice', blockId: 'terms', kind: 'attr_change',
+    from: 0, to: 0, parentId: null, conflicted: false, conflictReason: null, conflictWithId: null,
+    payload: { attr: 'textAlign', oldValue: null, newValue: 'center' },
+  } }
+  const marked = (doc, attrs = mark) => textOf(doc).format(0, 3, { reviewSuggestion: attrs })
+  const recorded = (doc, key = 'structure', value = entry) => doc.getMap(recordName).set(key, value)
+  for (const [subject, change] of [
+    ['bob', marked], ['bob', recorded], [null, marked],
+    ['alice', (doc) => marked(doc, { ...mark, kind: 'invalid' })],
+    ['alice', (doc) => recorded(doc, 'wrong-key')],
+    ['alice', (doc) => recorded(doc, 'structure', { ...entry, order: '1' })],
+  ]) {
+    await assert.rejects(submit(subject, change), { code: 'invalid_update' })
+    assert.equal(log.head_seq, 1)
+  }
+
+  await submit('alice', (doc) => { marked(doc); recorded(doc) })
+  await submit('bob', (doc) => textOf(doc).insert(0, '!', {}))
+  await assert.rejects(submit('bob', (doc) => marked(doc, { ...mark, author: 'bob' })), { code: 'invalid_update' })
+  await assert.rejects(submit('bob', (doc) => recorded(doc, 'structure', {
+    ...entry, record: { ...entry.record, author: 'bob' },
+  })), { code: 'invalid_update' })
+  assert.equal(log.head_seq, 3)
+  assert.deepEqual(room.getMap(recordName).get('structure'), entry)
+})
+
+test('structural review replacement carries overlapping marks and leaves the shared records intact', (t) => {
+  const expected = { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Review', marks: [
+    { type: 'reviewSuggestion', attrs: { suggestionId: 'one', kind: 'insert', author: 'alice', groupId: 'group' } },
+    { type: 'reviewSuggestion', attrs: { suggestionId: 'two', kind: 'delete', author: 'bob', groupId: 'another' } },
+  ] }] }] }
+  const replacement = structuredClone(expected)
+  replacement.content[0].content[0].text = 'Updated'
+  const base = TiptapTransformer.toYdoc(expected, field, extensionsFor('vaulter/rich-text', expected))
+  t.after(() => base.destroy())
+  const records = base.getMap('vaulter:reviewStructure:default')
+  const record = { order: 1, record: { suggestionId: 'structural', author: 'alice' } }
+  records.set('structural', record)
+  const { bytes } = prepareOnCopy(base, { operation: 'review.suggestion.accept', decision: 'accepted',
+    atomic_effects: [{ effect: 'replace_review_document', expected, replacement }],
+  }, 2, 'review')
+
+  Y.applyUpdate(base, bytes)
+  const projected = TiptapTransformer.fromYdoc(base, field)
+  assert.equal(projected.content[0].content[0].text, 'Updated')
+  assert.deepEqual(projected.content[0].content[0].marks.map(mark => mark.attrs.suggestionId), ['one', 'two'])
+  assert.deepEqual(records.get('structural'), record)
+})
+
+test('journal import replaces the document only at its registered generation and position', async (t) => {
+  const type = 'vaulter/rich-text'
+  const base = fixture()
+  base.getMap('vaulter:reviewStructure:default').set('old', { order: 1, record: { suggestionId: 'old' } })
+  const room = new Y.Doc()
+  const checkpoint = Buffer.from(Y.encodeStateAsUpdate(base)).toString('base64')
+  const log = { generation: 3, checkpoint, checkpoint_seq: 5, head_seq: 5, tail: [] }
+  const sequence = createRoomSequencer({ room, generation: 3, load: async () => log })
+  t.after(() => { sequence.close(); room.destroy(); base.destroy() })
+  const replacement = { type: 'doc', content: [{ type: 'paragraph', attrs: { blockId: 'imported' },
+    content: [{ type: 'text', text: 'Imported DOCX' }] }] }
+  const run = (intent, settle) => sequence.runCommand({ id: 'row', command_id: 'import', fingerprint: 'fingerprint',
+    intent: { operation: 'exchange.apply_import', base_generation: 3, base_position: 5,
+      atomic_effects: [{ effect: 'exchange.apply_import', replacement }], ...intent },
+  }, 2, type, settle)
+  const reject = async (request) => {
+    assert.equal(request.kind, 'reject')
+    assert.equal(request.reason, 'precondition_failed')
+    assert.deepEqual(request.updates, [])
+    return { state: 'rejected' }
+  }
+  await run({ base_generation: 2 }, reject)
+  await run({ base_position: 4 }, reject)
+  for (const bad of [{ type: 'paragraph' }, { type: 'doc', content: [{ type: 'text', text: 'wrong child' }] },
+    { type: 'doc', content: [{ type: 'paragraph', attrs: { undeclared: null } }] }]) {
+    await run({ atomic_effects: [{ effect: 'exchange.apply_import', replacement: bad }] }, reject)
+  }
+  const receipt = await run({}, async (request) => {
+    assert.equal(request.base_seq, 5)
+    assert.equal(request.kind, 'commit')
+    assert.match(textOf(room).toString(), /Pay in 15 days/)
+    assert.equal(request.updates.length, 1)
+    log.tail.push({ seq: ++log.head_seq, ...request.updates[0] })
+    return { state: 'committed', receipt_id: 'receipt', to_seq: 6 }
+  })
+  assert.equal(receipt.receipt_id, 'receipt')
+  assert.deepEqual(TiptapTransformer.fromYdoc(room, field), replacement)
+  assert.equal(room.getMap('vaulter:reviewStructure:default').size, 0)
+  await run({}, reject)
+  assert.equal(log.head_seq, 6)
+
+  const competing = structuredClone(replacement)
+  competing.content[0].content[0].text = 'Another import'
+  let attempts = 0
+  await run({ base_position: 6, atomic_effects: [{ effect: 'exchange.apply_import', replacement: competing }] }, (request) => {
+    if (++attempts === 2) {
+      assert.equal(request.base_seq, 7)
+      return reject(request)
+    }
+    assert.equal(request.kind, 'commit')
+    assert.equal(request.updates.length, 1)
+    const interleaving = new Y.Doc()
+    Y.applyUpdate(interleaving, Y.encodeStateAsUpdate(room))
+    const vector = Y.encodeStateVector(interleaving)
+    textOf(interleaving).insert(0, 'Concurrent edit. ')
+    const bytes = Buffer.from(Y.encodeStateAsUpdate(interleaving, vector))
+    interleaving.destroy()
+    log.tail.push({ seq: ++log.head_seq, payload: bytes.toString('base64'), sha256: sha256Hex(bytes) })
+    throw Object.assign(new Error('base_moved'), { code: 'base_moved' })
+  })
+  assert.equal(attempts, 2)
+  assert.match(textOf(room).toString(), /^Concurrent edit/)
+})
+
 test('keeps a browser update private until append and replays the committed bytes', async () => {
   const base = fixture()
   const room = new Y.Doc()

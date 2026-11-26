@@ -9,7 +9,7 @@ import { createLedger } from './ledger.js'
 import { createLimits, envelopeIdOf, isWriteMessage, LIMIT, readMessageHeader, readVarUint } from './limits.js'
 import { retryPolicy } from './retry.js'
 import { closeConnection, closeRoom, DOCUMENT_GONE, EPOCH_CHANGED, FORBIDDEN, HANDOFF, TOKEN_EXPIRED } from './rooms.js'
-import { extensionsFor, FIELD, lostAttributes } from './schema.js'
+import { checkReviewMarks, extensionsFor, FIELD, lostAttributes } from './schema.js'
 import { createStrictRooms } from './strict-rooms.js'
 
 export { isWriteMessage }
@@ -192,27 +192,29 @@ export function replayLog(document, { checkpoint = null, tail = [] } = {}, origi
  * the names of what would be lost, never seeded in a cut form.
  */
 export function buildSeed(loaded, clientId = null) {
-  const extensions = extensionsFor(loaded.type)
-  const seed = clientId === null ? TiptapTransformer.toYdoc(loaded.content, FIELD, extensions) : new Y.Doc()
-  if (clientId !== null) {
-    seed.clientID = clientId
-    prosemirrorJSONToYXmlFragment(getSchema(extensions), loaded.content, seed.getXmlFragment(FIELD))
+  if (clientId !== null && (!Number.isInteger(clientId) || clientId < 1 || clientId >= 0x80000000)) {
+    throw new RangeError('Invalid server client ID for collaboration seed')
   }
-  const projection = TiptapTransformer.fromYdoc(seed, FIELD)
-  const lost = lostAttributes(loaded.content, projection)
+  const original = loaded.content
+  const schema = getSchema(extensionsFor(loaded.type, original))
+  const seed = new Y.Doc()
+  try {
+    if (clientId !== null) seed.clientID = clientId
+    checkReviewMarks(original)
+    prosemirrorJSONToYXmlFragment(schema, original, seed.getXmlFragment(FIELD))
+    const projection = TiptapTransformer.fromYdoc(seed, FIELD)
+    const lost = lostAttributes(original, projection)
 
-  if (lost.length > 0) {
+    if (lost.length > 0) {
+      throw new Error(
+        `Collaboration seed refused: the hub's TipTap schema would drop ${lost.join(', ')} from the document. `
+        + 'Add the extension that declares them to packages/hub/src/schema.js (see the README).',
+      )
+    }
+    return Y.encodeStateAsUpdate(seed)
+  } finally {
     seed.destroy()
-    throw new Error(
-      `Collaboration seed refused: the hub's TipTap schema would drop ${lost.join(', ')} from the document. `
-      + 'Add the extension that declares them to packages/hub/src/schema.js (see the README).',
-    )
   }
-
-  const update = Y.encodeStateAsUpdate(seed)
-  seed.destroy()
-
-  return update
 }
 
 /**
@@ -1069,7 +1071,7 @@ export function createPersistence({
         const ack = await room.strict.submitUpdate({
           token: context.token, room: documentName, updateId: id, sha256, payload: message.b, bytes,
           boundClientId: context.boundClientId, clientSession: context.clientSession,
-        })
+        }, context.principal)
         send(connection, { t: 'ack', id, g: ack.generation, seq: ack.seq, h: ack.sha256 })
       } catch (failure) {
         const code = failure?.code ?? 'backend_unavailable'

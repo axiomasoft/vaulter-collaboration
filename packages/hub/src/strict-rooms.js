@@ -34,6 +34,7 @@ export function createStrictRooms({ backend, backendOptions, conf, log, enabled 
     const seq = createRoomSequencer({
       room: doc,
       generation,
+      type,
       maxBytes: conf.maxDocumentBytes,
       onBypass: () => onFailure(refusal('journal_bypass')),
       load: async (afterSeq) => {
@@ -90,7 +91,9 @@ export function createStrictRooms({ backend, backendOptions, conf, log, enabled 
             await seq.runCommand(command, clientId, type, (request) => backend.settleCommand({ ...credentials, ...request }, backendOptions))
           }
         },
-        submitUpdate: seq.submitUpdate,
+        submitUpdate(update, principal) {
+          return seq.submitUpdate({ ...update, subject: principal?.id })
+        },
         serverWrite(change, request) {
           return seq.serverUpdate(change, clientId, async (update) => {
             const result = await backend.append({

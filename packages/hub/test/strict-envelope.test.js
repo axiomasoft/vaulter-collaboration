@@ -39,7 +39,7 @@ async function strictRoom(t, { admitWrite } = {}) {
     },
   })
   const document = new Y.Doc()
-  const context = writerContext({ profile: 'strict', clientSession: crypto.randomUUID() })
+  const context = writerContext({ profile: 'strict', clientSession: crypto.randomUUID(), principal: { type: 'user', id: 'alice' } })
   const instance = { documents: new Map([[ROOM, { getConnections: () => [] }]]) }
   t.after(async () => {
     await persistence.stopStrict()
@@ -72,4 +72,24 @@ test('a strict room applies the per-room write rate to envelopes before the jour
 
   assert.partialDeepStrictEqual(await send(envelope()), { code: NACK.RATE_LIMITED, retry: true })
   assert.equal(appends.length, 0)
+})
+
+test('strict envelopes use the authenticated subject for review authorship', async (t) => {
+  const { appends, send } = await strictRoom(t)
+  const write = async (author) => {
+    const client = new Y.Doc()
+    client.clientID = BOUND
+    client.getMap('vaulter:reviewStructure:default').set('suggestion', { order: 1, record: {
+      suggestionId: 'suggestion', groupId: 'group', parentId: null, author, kind: 'attr_change', blockId: 'block',
+      from: 0, to: 0, conflicted: false, conflictReason: null, conflictWithId: null, payload: {},
+    } })
+    const bytes = Buffer.from(Y.encodeStateAsUpdate(client))
+    client.destroy()
+    return send(envelope({ h: sha256(bytes), b: bytes.toString('base64'), author }))
+  }
+
+  assert.partialDeepStrictEqual(await write('bob'), { code: NACK.INVALID_UPDATE, retry: false })
+  assert.equal(appends.length, 0)
+  assert.partialDeepStrictEqual(await write('alice'), { code: 'append_failed' })
+  assert.equal(appends.length, 1)
 })
