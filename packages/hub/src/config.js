@@ -253,6 +253,7 @@ export function buildConfig(env = process.env) {
     maxConnectionsPerRoom: int('VAULTER_COLLAB_MAX_CONNECTIONS_PER_ROOM', 100, env),
     maxUpdatesPerSecondPerRoom: int('VAULTER_COLLAB_MAX_UPDATES_PER_SECOND_PER_ROOM', 200, env),
     maxSyncRequestsPerMinute: int('VAULTER_COLLAB_MAX_SYNC_REQUESTS_PER_MINUTE', 10, env),
+    maxAwarenessClientsPerSocket: int('VAULTER_COLLAB_MAX_AWARENESS_CLIENTS_PER_SOCKET', LIMIT_DEFAULTS.maxAwarenessClientsPerSocket, env),
     maxAwarenessBytesPerSecond: int('VAULTER_COLLAB_MAX_AWARENESS_BYTES_PER_SECOND', 64 * 1024, env),
 
     // Revocation
@@ -310,6 +311,7 @@ const NUMERIC = Object.freeze([
   { key: 'maxConnectionsPerRoom', env: 'VAULTER_COLLAB_MAX_CONNECTIONS_PER_ROOM', min: 1 },
   { key: 'maxUpdatesPerSecondPerRoom', env: 'VAULTER_COLLAB_MAX_UPDATES_PER_SECOND_PER_ROOM', min: 1 },
   { key: 'maxSyncRequestsPerMinute', env: 'VAULTER_COLLAB_MAX_SYNC_REQUESTS_PER_MINUTE', min: 1 },
+  { key: 'maxAwarenessClientsPerSocket', env: 'VAULTER_COLLAB_MAX_AWARENESS_CLIENTS_PER_SOCKET', min: 1 },
   { key: 'maxAwarenessBytesPerSecond', env: 'VAULTER_COLLAB_MAX_AWARENESS_BYTES_PER_SECOND', min: 1 },
   { key: 'maxPayloadBytes', env: 'VAULTER_COLLAB_MAX_PAYLOAD_BYTES', min: 1 },
   { key: 'throttle', env: 'VAULTER_COLLAB_THROTTLE', min: 1 },

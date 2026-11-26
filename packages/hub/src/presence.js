@@ -12,14 +12,16 @@
 //     reconnecting provider keeps its awareness client id.
 // Updates from Redis (other hub instances) carry no connection and were checked where they came in.
 
-import { FORBIDDEN } from './rooms.js'
+import { LIMIT_DEFAULTS } from './limits.js'
+import { FORBIDDEN, RATE_LIMITED } from './rooms.js'
 
 /** @typedef {{ type: string, id: string }} Principal the token's sub_type and sub, as onAuthenticate verified them */
-/** @typedef {{ hasConnection?: (connection: object) => boolean }} AwarenessDocument */
+/** @typedef {{ context?: unknown, socketId?: string, webSocket?: object }} Peer */
+/** @typedef {{ hasConnection?: (connection: object) => boolean, getClients?: (connection: object) => Set<number>, awareness?: { getStates(): Map<number, unknown> } }} AwarenessDocument */
 /**
  * What Hocuspocus passes to beforeHandleAwareness, as far as this hook reads it.
  * @typedef {object} AwarenessPayload
- * @property {{ context?: unknown, socketId?: string } | undefined} [connection]
+ * @property {Peer | undefined} [connection]
  * @property {unknown} [context]
  * @property {AwarenessDocument | undefined} [document]
  * @property {unknown} [states] awareness client id → state; changed in place
@@ -42,9 +44,23 @@ function refuse(reason) {
   return Object.assign(new Error(reason), { code: FORBIDDEN.code, reason: FORBIDDEN.reason })
 }
 
-export function createPresenceGuard() {
-  /** Per document: awareness client id → the connection that set it. @type {WeakMap<AwarenessDocument, Map<number, { socketId?: string }>>} */
+/** @param {number} [maxClients] @param {() => void} [countRejection] */
+export function createPresenceGuard(maxClients = LIMIT_DEFAULTS.maxAwarenessClientsPerSocket, countRejection = () => {}) {
+  /** Per document: awareness client id → the connection that set it. @type {WeakMap<AwarenessDocument, Map<number, Peer>>} */
   const owners = new WeakMap()
+  /** Multiplexed document connections share one WebSocket. @type {WeakMap<object, number>} */
+  const counts = new WeakMap()
+
+  /** @param {Map<number, Peer>} map @param {number} id */
+  function release(map, id) {
+    const owner = map.get(id)
+    if (!owner) return
+    map.delete(id)
+    const socket = owner.webSocket ?? owner
+    const remaining = (counts.get(socket) ?? 1) - 1
+    if (remaining === 0) counts.delete(socket)
+    else counts.set(socket, remaining)
+  }
 
   /** @param {AwarenessDocument} document */
   function ownersOf(document) {
@@ -58,13 +74,15 @@ export function createPresenceGuard() {
 
   /**
    * @param {AwarenessDocument} document
-   * @param {Map<number, { socketId?: string }>} map
+   * @param {Map<number, Peer>} map
    * @param {number} clientId
-   * @param {{ socketId?: string }} connection
+   * @param {Peer} connection
    */
   function assertAvailable(document, map, clientId, connection) {
     const owner = map.get(clientId)
-    if (owner !== undefined && owner !== connection && document.hasConnection?.(owner)) {
+    const otherLocal = owner !== undefined && owner !== connection && document.hasConnection?.(owner)
+    const otherVisible = document.awareness?.getStates().has(clientId) && !document.getClients?.(connection).has(clientId)
+    if (otherLocal || otherVisible) {
       throw refuse(`Awareness client ${clientId} belongs to another connection`)
     }
   }
@@ -78,26 +96,50 @@ export function createPresenceGuard() {
 
     const map = ownersOf(document)
     for (const clientId of removedClients ?? []) assertAvailable(document, map, clientId, connection)
-    for (const clientId of states.keys()) assertAvailable(document, map, clientId, connection)
+    const socket = connection.webSocket ?? connection
+    let projected = counts.get(socket) ?? 0
+    for (const clientId of states.keys()) {
+      assertAvailable(document, map, clientId, connection)
+      const owner = map.get(clientId)
+      if (!owner || (owner.webSocket ?? owner) !== socket) projected++
+    }
+    if (projected > maxClients) {
+      countRejection()
+      throw Object.assign(new Error(RATE_LIMITED.reason), RATE_LIMITED)
+    }
 
-    for (const clientId of removedClients ?? []) map.delete(clientId)
     for (const [clientId, state] of states) {
-      map.set(clientId, connection)
+      if (map.get(clientId) !== connection) {
+        release(map, clientId)
+        map.set(clientId, connection)
+        counts.set(socket, (counts.get(socket) ?? 0) + 1)
+      }
       if (state === null || typeof state !== 'object' || Array.isArray(state)) continue
       const user = state.user !== null && typeof state.user === 'object' && !Array.isArray(state.user) ? state.user : {}
       state.user = { ...user, id: principal.id, type: principal.type }
     }
   }
 
-  /** @param {{document?: AwarenessDocument, socketId?: string}} payload */
-  function onDisconnect({ document, socketId }) {
-    if (!document || !socketId) return
+  // Yjs can ignore an older removal. Release a slot only after a state change really applied.
+  /** @param {{ document: AwarenessDocument, removed: number[], added: number[], updated: number[] }} payload */
+  function onAwarenessUpdate({ document, removed, added, updated }) {
     const map = owners.get(document)
     if (!map) return
-    for (const [clientId, owner] of map) {
-      if (owner.socketId === socketId) map.delete(clientId)
+    for (const clientId of [...removed, ...added, ...updated]) {
+      const owner = map.get(clientId)
+      if (owner && !document.getClients?.(owner).has(clientId)) release(map, clientId)
     }
   }
 
-  return { beforeHandleAwareness, onDisconnect }
+  /** @param {{document?: AwarenessDocument, socketId?: string, connection?: Peer}} payload */
+  function onDisconnect({ document, socketId, connection } = {}) {
+    if (!document || (!connection && !socketId)) return
+    const map = owners.get(document)
+    if (!map) return
+    for (const [clientId, owner] of map) {
+      if (connection ? owner === connection : owner.socketId === socketId) release(map, clientId)
+    }
+  }
+
+  return { beforeHandleAwareness, onAwarenessUpdate, onDisconnect }
 }

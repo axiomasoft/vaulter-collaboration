@@ -233,7 +233,7 @@ export function createHooks({ backend = backendModule, log = console, persistenc
     log,
     ...revocationOptions,
   })
-  const presence = createPresenceGuard()
+  const presence = createPresenceGuard(limit.settings?.maxAwarenessClientsPerSocket, () => limit.count(LIMIT.AWARENESS_CLIENTS))
 
   /**
    * The upgrade gate, ahead of authentication: nothing gets in while the hub drains; then the Origin
@@ -463,6 +463,7 @@ export function createHooks({ backend = backendModule, log = console, persistenc
     connected,
     beforeHandleMessage,
     beforeHandleAwareness: presence.beforeHandleAwareness,
+    onAwarenessUpdate: presence.onAwarenessUpdate,
     onLoadDocument: store.onLoadDocument,
     onStateless,
     onDisconnect,
@@ -526,6 +527,7 @@ async function buildServer({ hooks = null, backend = backendModule, draining = (
     onAuthenticate: serverHooks.onAuthenticate,
     connected: serverHooks.connected,
     beforeHandleMessage: serverHooks.beforeHandleMessage,
+    ...(serverHooks.onAwarenessUpdate ? { onAwarenessUpdate: serverHooks.onAwarenessUpdate } : {}),
     ...(serverHooks.beforeHandleAwareness ? { beforeHandleAwareness: serverHooks.beforeHandleAwareness } : {}),
     onLoadDocument: serverHooks.onLoadDocument,
     onStateless: serverHooks.onStateless,

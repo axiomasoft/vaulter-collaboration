@@ -58,6 +58,7 @@ test('removal and disconnect release only the departing connection’s awareness
   })
   await update(first, [1, 2])
   await update(first, [], [1])
+  guard.onAwarenessUpdate({ document, added: [], updated: [], removed: [1] })
   await update(second, [1])
   guard.onDisconnect({ document, socketId: first.socketId })
   await update(second, [2])
@@ -78,7 +79,7 @@ async function presenceServer() {
     port: 0,
     stopOnSignals: false,
     onAuthenticate: async ({ token }) => ({ principal: { type: 'user', id: token } }),
-    beforeHandleAwareness: guard.beforeHandleAwareness,
+    ...guard,
   })
   server.configuration.port = 0
   await server.listen()
@@ -141,4 +142,43 @@ test('the hub hooks stamp awareness with the principal onAuthenticate verified',
   await hooks.beforeHandleAwareness({ connection, context: { principal: { type: 'user', id: '1' } }, document: fakeDocument(new Set([connection])), states, removedClients: new Set() })
 
   assert.deepEqual(states.get(3).user, { id: '1', type: 'user', name: 'N' })
+})
+
+test('a socket shares its awareness limit across documents and recovers capacity after an applied removal or disconnect', async () => {
+  let rejected = 0
+  const guard = createPresenceGuard(2, () => rejected++)
+  const webSocket = {}
+  const a = { webSocket }
+  const b = { webSocket }
+  const da = fakeDocument(new Set([a]))
+  const db = fakeDocument(new Set([b]))
+  const context = { principal: { type: 'user', id: 'alice' } }
+  const send = (connection, document, ids, removedClients = []) => guard.beforeHandleAwareness({
+    connection, document, context, states: new Map(ids.map(id => [id, {}])), removedClients,
+  })
+  await send(a, da, [1])
+  await send(b, db, [2])
+  await send(a, da, [1])
+  await send(a, da, [], [1])
+  await assert.rejects(send(b, db, [3]), { code: 4429 })
+  assert.equal(rejected, 1)
+  guard.onAwarenessUpdate({ document: da, added: [], updated: [], removed: [1] })
+  await send(b, db, [3])
+  guard.onDisconnect({ document: db, connection: b })
+  guard.onDisconnect()
+  await send(a, da, [4, 5])
+})
+
+test('a local connection can claim a known remote awareness id only after its state disappears', async () => {
+  const remote = new Map([[5, {}]])
+  const connection = {}
+  const document = { awareness: { getStates: () => remote }, getClients: () => new Set() }
+  const guard = createPresenceGuard()
+  const call = (states, removedClients = []) => guard.beforeHandleAwareness({
+    connection, document, states, removedClients, context: { principal: { type: 'user', id: 'alice' } },
+  })
+  await assert.rejects(call(new Map([[5, {}]])), { code: 4403 })
+  await assert.rejects(call(new Map(), [5]), { code: 4403 })
+  remote.delete(5)
+  await call(new Map([[5, {}]]))
 })

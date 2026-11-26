@@ -231,8 +231,9 @@ test('the limits come from the hub config with safe defaults', () => {
     VAULTER_COLLAB_MAX_UPDATES_PER_SECOND_PER_ROOM: '7',
     VAULTER_COLLAB_MAX_SYNC_REQUESTS_PER_MINUTE: '8',
     VAULTER_COLLAB_MAX_AWARENESS_BYTES_PER_SECOND: '9',
+    VAULTER_COLLAB_MAX_AWARENESS_CLIENTS_PER_SOCKET: '3',
   })
-  assert.deepEqual(createLimits(custom).settings, { maxUpdateBytes: 2048, maxDocumentBytes: 4096, maxRequestBytes: 8192, maxRoomsPerTenant: 5, maxConnectionsPerRoom: 6, maxUpdatesPerSecondPerRoom: 7, maxSyncRequestsPerMinute: 8, maxAwarenessBytesPerSecond: 9 })
+  assert.deepEqual(createLimits(custom).settings, { maxUpdateBytes: 2048, maxDocumentBytes: 4096, maxRequestBytes: 8192, maxRoomsPerTenant: 5, maxConnectionsPerRoom: 6, maxUpdatesPerSecondPerRoom: 7, maxSyncRequestsPerMinute: 8, maxAwarenessBytesPerSecond: 9, maxAwarenessClientsPerSocket: 3 })
   assert.equal(custom.maxPayloadBytes, 4096 + 1024, 'the default frame follows the limits')
   assert.deepEqual(validateConfig(custom), [])
 

@@ -155,6 +155,7 @@ Checked before anything is decoded; a refusal is counted in `collab_limit_reject
 | `VAULTER_COLLAB_MAX_UPDATES_PER_SECOND_PER_ROOM` | `200` | Writes one room takes per second. |
 | `VAULTER_COLLAB_MAX_SYNC_REQUESTS_PER_MINUTE` | `10` | Sync step 1 and awareness queries one connection may send per minute (a read-only one too); the next closes it `4429 rate_limited`. Each answer carries the room's state, so without this bound a viewer could make the hub send megabytes for every few bytes it sends. A client sends one when it connects; keep the provider's `forceSyncInterval` above `60000 / limit` ms if you use it. |
 | `VAULTER_COLLAB_MAX_AWARENESS_BYTES_PER_SECOND` | `65536` | Awareness update bytes (cursors, selections, user names) one connection may send per second; the next update closes it `4429 rate_limited`. The room sends each update on to every peer and keeps it for those who join later, so this also bounds what one peer costs the others. A larger single update never passes. |
+| `VAULTER_COLLAB_MAX_AWARENESS_CLIENTS_PER_SOCKET` | `8` | Maximum active awareness client IDs per physical WebSocket, shared across its document connections. Above the limit the hub refuses the update with `4429 rate_limited`. To replace a client ID at capacity, send its removal before the new state. |
 
 ### Security
 
@@ -272,7 +273,9 @@ Give your orchestrator a grace period above the flush and destroy limits togethe
   `user.id` and `user.type` to the principal the backend verified for the connection (the room token's `sub` and
   `sub_type`), over whatever the client wrote there; the rest of `user` (name, colour) is the client's and is display only,
   so resolve a name to show from `user.id`. A connection that sets or removes the awareness state of a client id another live
-  connection of the room owns is closed `4403 forbidden`, so a peer can neither take over nor erase someone else's cursor.
+  connection of the room owns is closed `4403 forbidden`. The hub also protects active states it has already received
+  from Redis. Simultaneous first claims on different hubs have no distributed lock, and a reconnect may need to
+  wait for the old state to clear. Authorize operations against the verified backend principal.
 
 Minimal nginx upgrade block (note the IP headers — they are load-bearing for the throttle):
 

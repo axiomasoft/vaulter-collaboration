@@ -28,6 +28,7 @@ export const LIMIT_DEFAULTS = Object.freeze({
   maxUpdatesPerSecondPerRoom: 200,
   maxSyncRequestsPerMinute: 10,
   maxAwarenessBytesPerSecond: 64 * 1024,
+  maxAwarenessClientsPerSocket: 8,
 })
 
 /** The limit names: the `limit` label of collab_limit_rejections_total. */
@@ -43,6 +44,7 @@ export const LIMIT = Object.freeze({
   UPDATES_PER_SECOND: 'updates_per_second',
   SYNC_REQUESTS: 'sync_requests',
   AWARENESS_BYTES: 'awareness_bytes',
+  AWARENESS_CLIENTS: 'awareness_clients',
 })
 
 /** @typedef {typeof LIMIT[keyof typeof LIMIT]} LimitName */
@@ -268,6 +270,7 @@ export function createLimits(conf = {}, { clock = Date.now } = {}) {
     maxUpdatesPerSecondPerRoom: setting(conf, 'maxUpdatesPerSecondPerRoom'),
     maxSyncRequestsPerMinute: setting(conf, 'maxSyncRequestsPerMinute'),
     maxAwarenessBytesPerSecond: setting(conf, 'maxAwarenessBytesPerSecond'),
+    maxAwarenessClientsPerSocket: setting(conf, 'maxAwarenessClientsPerSocket'),
   })
   /** @type {Record<string, number>} */
   const rejections = Object.fromEntries(Object.values(LIMIT).map((limit) => [limit, 0]))
