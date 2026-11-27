@@ -12,6 +12,7 @@ use Packman\Attributes\Internal;
 use Packman\Attributes\Spi;
 use Packman\Attributes\SpiKind;
 use Vaulter\Collaboration\Configuration\CollaborationOptions;
+use Vaulter\Collaboration\RoomOwnership;
 use Vaulter\Database\VaulterDatabase;
 use Vaulter\Documents\Exceptions\NotADocumentException;
 use Vaulter\Documents\State\CollaborativeState;
@@ -48,6 +49,7 @@ final readonly class CompactionLeases
         private CollaborativeState $state,
         private UpdateLog $updates,
         private CollaborationOptions $config,
+        private RoomOwnership $rooms,
     ) {}
 
     /**
@@ -93,18 +95,23 @@ final readonly class CompactionLeases
      * @return array{total: int, generations: list<array{document: string, generation: int}>}
      */
     #[Internal]
-    public function pending(int $limit = self::REPORTED): array
+    public function pending(int $limit = self::REPORTED, string $protocol = CollaborationOptions::JWT_PROTOCOL): array
     {
+        $binding = explode('/', $protocol, 2)[0];
+        if ($this->rooms->registeredDriver($binding)?->version() !== $protocol) {
+            return ['total' => 0, 'generations' => []];
+        }
         $now = Carbon::now();
         $total = 0;
         $generations = [];
         $after = null;
         do {
-            $page = $this->database->transaction(fn (): array => $this->state->pendingDocuments(self::PAGE, $after, protocol: 'yjs'));
+            $page = $this->database->transaction(fn (): array => $this->state->pendingDocuments(self::PAGE, $after, protocol: $binding));
             foreach ($page as $marker) {
                 $after = Identity::key($marker->documentId);
                 $head = $this->log->heads($this->log->rows('collaboration_heads', $marker->documentId, $marker->generation))[0] ?? null;
-                if ($head === null || $head->retiredAt !== null || ($head->drainRequestedAt === null && !$this->due($head, $now))) {
+                if ($head === null || $head->protocol !== $protocol || $head->retiredAt !== null
+                    || ($head->drainRequestedAt === null && !$this->due($head, $now))) {
                     continue;
                 }
                 $total++;
@@ -191,16 +198,9 @@ final readonly class CompactionLeases
             return true;
         }
 
-        $tail = $this->log->rows('collaboration_updates', $head->documentId, $head->generation)
-            ->where('seq', '>', $head->checkpointSeq)
-            ->selectRaw(($strict ? 'max' : 'min').'(created_at) as trigger_time, sum(length(payload)) as stored_bytes')
-            ->first();
-        $stored = $tail?->stored_bytes;
-        // A payload is stored base64: four stored bytes for every three of the update.
-        $bytes = is_numeric($stored) ? intdiv((int) $stored * 3, 4) : 0;
-        $triggerTime = LogTables::time($tail?->trigger_time);
+        $triggerTime = $strict ? $head->tailLatestAt : $head->tailOldestAt;
 
-        return $bytes >= ($strict ? 256 * 1024 : $this->config->compactionTriggerBytes())
+        return $head->tailBytes >= ($strict ? 256 * 1024 : $this->config->compactionTriggerBytes())
             || ($triggerTime !== null && $triggerTime->lessThanOrEqualTo($now->copy()->subSeconds($strict ? 60 : $this->config->compactionTriggerAge())));
     }
 
@@ -226,7 +226,7 @@ final readonly class CompactionLeases
                 return null;
             }
             $pending = $locked->pending !== null && $locked->pending->generation === $locked->generation;
-            if (!$pending && $head->drainRequestedAt === null) {
+            if ($head->drainRequestedAt === null && (!$pending || !$this->due($head, Carbon::now()))) {
                 return null;
             }
             // Measured before the tail is read: a generation over the budget is never loaded into memory here.
@@ -261,21 +261,10 @@ final readonly class CompactionLeases
 
     /**
      * The bytes the entry of `$head` would carry, as CompactionLease::bytes() counts them (the checkpoint's binary size,
-     * the tail as stored), read under the document and head locks without loading either.
+     * the base64 tail), read under the document and head locks without loading either.
      */
     private function size(LockedDocumentState $locked, Head $head): int
     {
-        $documentId = $locked->documentId;
-        $checkpoint = $locked->collabStateSize;
-        // Locking reads, row by row: on MySQL a plain read would miss the appends committed since this transaction's
-        // first read (UpdateLog::read()), and PostgreSQL locks no rows for an aggregate.
-        $stored = $this->log->rows('collaboration_updates', $documentId, $head->generation)
-            ->where('seq', '>', $head->checkpointSeq)
-            ->where('seq', '<=', $head->headSeq)
-            ->selectRaw('length(payload) as stored_bytes')
-            ->lockForUpdate()
-            ->pluck('stored_bytes');
-
-        return $stored->reduce(static fn (int $bytes, mixed $size): int => $bytes + (is_numeric($size) ? (int) $size : 0), $checkpoint ?? 0);
+        return ($locked->collabStateSize ?? 0) + $head->tailWireBytes;
     }
 }

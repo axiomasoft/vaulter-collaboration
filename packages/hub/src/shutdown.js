@@ -10,26 +10,36 @@ import { documentIdOf } from './rooms.js'
 //      Hocuspocus drops their sync step 2 and updates, and every new envelope is nacked
 //      `writes_stopped` retry:true — the client keeps it for the hub it reconnects to. Established
 //      connections stay open (reading) meanwhile: a 503 readiness alone closes nothing;
-//   3. the pending ledger is flushed until it is empty or VAULTER_COLLAB_SHUTDOWN_FLUSH_MS (30 s)
+//   3. the pending ledger is flushed until it is empty or VAULTER_COLLAB_SHUTDOWN_FLUSH_MS (25 s)
 //      passed; the compaction worker stops alongside;
 //   4. every connection is closed 4503 `draining` (the client reconnects to another hub);
 //   5. Hocuspocus' destroy() runs in a race with VAULTER_COLLAB_SHUTDOWN_DESTROY_MS (5 s);
-//   6. what the ledger still holds is the unflushed count: an error log
+//   6. persistence.stop() runs in a race with 8 s and the management listener closes within 1 s
+//      (total worst-case budget 25 + 5 + 8 + 1 = 39 s <= 39 s cap, leaving 1 s headroom before 40 s grace);
+//   7. what the ledger still holds is the unflushed count: an error log
 //      `{unflushed, documents, rooms}` and exit 1, or exit 0 when nothing is left.
 // A second signal while draining changes nothing (the deadlines already bound the run).
 //
 // Time (clock, delay) and exit are injectable, so tests drive the coordinator with fakes and call
 // its handler directly instead of signalling the test runner.
 
-export const SHUTDOWN_DEFAULTS = Object.freeze({ flushMs: 30_000, destroyMs: 5_000 })
+export const SHUTDOWN_DEFAULTS = Object.freeze({ flushMs: 25_000, destroyMs: 5_000 })
 
 export const SHUTDOWN_SIGNALS = Object.freeze(['SIGTERM', 'SIGINT'])
 
 /** How long the flush waits before it repeats records whose retry series ended without a commit. */
 export const FLUSH_PAUSE_MS = 200
 
-/** How long the management listener may take to close before the process exits. */
-const MANAGEMENT_CLOSE_MS = 1000
+/** Compose stop_grace_period (40s) and the >= 1 s headroom reserved so bounded drain exits before SIGKILL. */
+export const SHUTDOWN_GRACE_PERIOD_MS = 40_000
+export const SHUTDOWN_HEADROOM_MS = 1_000
+
+/** Hard upper bound across flush + destroy + persistence.stop() + management close (39 s, leaving 1 s headroom). */
+export const SHUTDOWN_TOTAL_BUDGET_MS = SHUTDOWN_GRACE_PERIOD_MS - SHUTDOWN_HEADROOM_MS
+
+/** How long persistence.stop() and the management listener may take to close before the process exits. */
+export const MANAGEMENT_CLOSE_MS = 1000
+export const PERSISTENCE_STOP_MS = 8_000
 
 /** A delay that can be cancelled once the race it bounds is decided (so no timer outlives it). */
 export function delay(ms) {
@@ -71,6 +81,9 @@ export function createShutdown({
 } = {}) {
   const flushMs = Number.isInteger(conf.shutdownFlushMs) ? conf.shutdownFlushMs : SHUTDOWN_DEFAULTS.flushMs
   const destroyMs = Number.isInteger(conf.shutdownDestroyMs) ? conf.shutdownDestroyMs : SHUTDOWN_DEFAULTS.destroyMs
+  const stopMs = Number.isInteger(conf.shutdownStopMs) ? conf.shutdownStopMs : PERSISTENCE_STOP_MS
+  const managementMs = Number.isInteger(conf.shutdownManagementMs) ? Math.max(0, conf.shutdownManagementMs) : MANAGEMENT_CLOSE_MS
+  const totalBudgetMs = Number.isInteger(conf.shutdownTotalMs) ? Math.max(0, conf.shutdownTotalMs) : SHUTDOWN_TOTAL_BUDGET_MS
   let phase = 'running'
   let run = null
   const installed = []
@@ -137,6 +150,8 @@ export function createShutdown({
   }
 
   async function drain(signal) {
+    const totalDeadline = clock() + totalBudgetMs
+    const reservedManagementMs = Math.min(managementMs, totalBudgetMs)
     phase = 'draining'
     log.warn?.(`Vaulter collab hub: ${signal} received — draining: /readyz answers 503, no new connection or write is admitted`)
 
@@ -149,9 +164,9 @@ export function createShutdown({
     const workerStopped = attempt(stopWorker, 'stopping the compaction worker')
 
     phase = 'flushing'
-    const flushDeadline = clock() + flushMs
+    const flushDeadline = Math.min(clock() + Math.max(0, flushMs), Math.max(clock(), totalDeadline - reservedManagementMs))
     const flushed = await flushLedger(flushDeadline)
-    await race(workerStopped, flushDeadline - clock(), 'stopping the compaction worker')
+    await race(workerStopped, Math.max(0, flushDeadline - clock()), 'stopping the compaction worker')
 
     phase = 'closing'
     try {
@@ -161,17 +176,23 @@ export function createShutdown({
     }
 
     phase = 'destroying'
-    const destroyed = await race(attempt(destroy, 'destroy()'), destroyMs, 'destroy()')
+    const effectiveDestroyMs = Math.min(Math.max(0, destroyMs), Math.max(0, totalDeadline - clock() - reservedManagementMs))
+    const destroyed = await race(attempt(destroy, 'destroy()'), effectiveDestroyMs, 'destroy()')
 
     if (destroyed === 'timeout') {
-      log.warn?.(`Vaulter collab hub: destroy() did not settle within ${destroyMs} ms; exiting without it`)
+      log.warn?.(`Vaulter collab hub: destroy() did not settle within ${effectiveDestroyMs} ms; exiting without it`)
     }
 
     // Counted after destroy: an append that committed meanwhile is not unflushed.
     const left = unflushedOf(persistence.ledger.entries())
     onUnflushed(left.unflushed)
-    persistence.stop?.()
-    await race(attempt(closeManagement, 'closing the management listener'), MANAGEMENT_CLOSE_MS, 'closing the management listener')
+    const effectiveStopMs = Math.min(Math.max(0, stopMs), Math.max(0, totalDeadline - clock() - reservedManagementMs))
+    const stopped = await race(attempt(() => persistence.stop?.(), 'stopping persistence'), effectiveStopMs, 'stopping persistence')
+    if (stopped === 'timeout') {
+      log.warn?.(`Vaulter collab hub: persistence.stop() did not settle within ${effectiveStopMs} ms; exiting without it`)
+    }
+    const effectiveManagementMs = Math.min(managementMs, Math.max(0, totalDeadline - clock()))
+    await race(attempt(closeManagement, 'closing the management listener'), effectiveManagementMs, 'closing the management listener')
 
     const code = left.unflushed > 0 ? 1 : 0
 

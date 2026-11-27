@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
 import { watch } from 'vue'
 import { Doc as YDoc, UndoManager, applyUpdate, encodeStateAsUpdate, decodeUpdate } from 'yjs'
 import type { CollaborationSession } from '@vaulter/vue'
@@ -58,6 +59,11 @@ describe('openCollaborationTransport', () => {
     expect(sessionEnd(4403, 'forbidden')).toBe('forbidden')
     expect(sessionEnd(undefined, 'forbidden')).toBe('forbidden')
     expect(sessionEnd(4422, 'store_refused')).toBe('store_refused')
+    expect(sessionEnd(4412, '')).toBe('handoff')
+    expect(sessionEnd(1000, 'draining')).toBe('draining')
+    expect(sessionEnd(4404, '')).toBe('document_gone')
+    expect(sessionEnd(1000, 'document_too_large')).toBe('too_large')
+    expect(sessionEnd(1000, 'too_many_rooms')).toBe('rate_limited')
     expect(sessionEnd(1006, '')).toBeNull()
     expect(sessionEnd(undefined, 'permission-denied')).toBeNull()
   })
@@ -66,6 +72,102 @@ describe('openCollaborationTransport', () => {
 // ─── useCollaboration ─────────────────────────────────────────────────────
 
 describe('useCollaboration', () => {
+  it('restores a retired draft after reload within its IndexedDB identity and clears it on forbidden', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    vi.stubGlobal('IDBKeyRange', IDBKeyRange)
+    const scope = { tenant: 'tenant-a', actor: 'user:7' }
+    const next = hocuspocusSession({ generation: 1, options: { room: 'vaulter.documents.7.42.1', drive_id: '7' } })
+    const sessions: ReturnType<typeof collaboration>[] = []
+    function readStored(): Promise<unknown[]> {
+      return new Promise((resolve, reject) => {
+        const connection = indexedDB.open('vaulter-collaboration-drafts')
+        connection.onerror = () => reject(connection.error)
+        connection.onsuccess = () => {
+          const db = connection.result
+          const rows = db.transaction('drafts').objectStore('drafts').getAll()
+          rows.onsuccess = () => resolve(rows.result)
+          rows.onerror = () => reject(rows.error)
+          db.close()
+        }
+      })
+    }
+    function open(actor: string, firstSession = next) {
+      const provider = fakeProvider()
+      const token = vi.fn().mockResolvedValueOnce(firstSession).mockResolvedValue(next)
+      const factory = vi.fn().mockReturnValueOnce(provider.handle).mockReturnValue(fakeProvider().handle)
+      const vm = collaboration(token, { draftPersistence: { ...scope, actor }, providers: { createHocuspocusProvider: factory } })
+      sessions.push(vm)
+      return { vm, provider }
+    }
+    try {
+      const first = open(scope.actor, hocuspocusSession())
+      await first.vm.connect()
+      first.vm.doc.value.getText('t').insert(0, 'unsaved')
+      first.provider.end('epoch_changed')
+      await flush()
+      const draft = first.vm.draft.value
+      expect(draft).toMatchObject({ generation: 0, envelopes: [expect.any(String)] })
+      await vi.waitFor(async () => expect(await readStored()).toEqual([draft]))
+      first.vm.dispose()
+
+      const reload = open(scope.actor)
+      await reload.vm.connect()
+      await vi.waitFor(() => expect(reload.vm.draft.value).toEqual(draft))
+      const other = open('user:8')
+      await other.vm.connect()
+      expect(await readStored()).toEqual([draft])
+      expect(other.vm.draft.value).toBeNull()
+
+      reload.provider.end('forbidden')
+      expect(reload.vm.draft.value).toBeNull()
+      await flush()
+      const cleared = open(scope.actor)
+      await cleared.vm.connect()
+      await vi.waitFor(async () => expect(await readStored()).toEqual([]))
+      expect(cleared.vm.draft.value).toBeNull()
+    } finally {
+      for (const vm of sessions) vm.dispose()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it.each(['document_gone', 'too_large'] as const)('stops after %s', async (end) => {
+    const provider = fakeProvider()
+    const token = vi.fn().mockResolvedValue(hocuspocusSession())
+    const vm = collaboration(token, { providers: { createHocuspocusProvider: () => provider.handle } })
+    await vm.connect()
+    provider.end(end)
+    await flush()
+
+    expect(token).toHaveBeenCalledOnce()
+    expect(provider.destroy).toHaveBeenCalledOnce()
+    expect(vm.status.value).toBe('error')
+    expect(vm.readOnly.value).toBe(true)
+    vm.dispose()
+  })
+
+  it.each([['handoff', 250], ['draining', 1000], ['rate_limited', 2000]] as const)('delays a %s reconnect and retains the room document', async (end, delay) => {
+    vi.useFakeTimers()
+    const first = fakeProvider()
+    const second = fakeProvider()
+    const token = vi.fn().mockResolvedValue(hocuspocusSession())
+    const factory = vi.fn().mockReturnValueOnce(first.handle).mockReturnValueOnce(second.handle)
+    const vm = collaboration(token, { providers: { createHocuspocusProvider: factory } })
+    try {
+      await vm.connect()
+      const doc = vm.doc.value
+      first.end(end)
+      await vi.advanceTimersByTimeAsync(delay - 1)
+      expect(token).toHaveBeenCalledOnce()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(token).toHaveBeenCalledTimes(2)
+      expect(vm.doc.value).toBe(doc)
+    } finally {
+      vm.dispose()
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps a strict writer read-only until its allocated Yjs id is bound and reuses the writer session', async () => {
     const provider = fakeProvider()
     const factory = vi.fn().mockReturnValue(provider.handle)

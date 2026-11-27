@@ -8,9 +8,10 @@ import { config as defaultConfig } from './config.js'
 import { createLedger } from './ledger.js'
 import { createLimits, envelopeIdOf, isWriteMessage, LIMIT, readMessageHeader, readVarUint } from './limits.js'
 import { retryPolicy } from './retry.js'
-import { closeConnection, closeRoom, DOCUMENT_GONE, EPOCH_CHANGED, FORBIDDEN, HANDOFF, TOKEN_EXPIRED } from './rooms.js'
-import { extensionsFor, FIELD, lostAttributes } from './schema.js'
+import { closeConnection, DOCUMENT_GONE, EPOCH_CHANGED, FORBIDDEN, HANDOFF, TOKEN_EXPIRED, TOO_MANY_ROOMS } from './rooms.js'
+import { checkReviewMarks, extensionsFor, FIELD, lostAttributes } from './schema.js'
 import { createStrictRooms } from './strict-rooms.js'
+import { activeTraceparent, initHubTracing, normalizeTraceparent, withoutTraceContext, withTraceparent } from './backend.js'
 
 export { isWriteMessage }
 
@@ -91,6 +92,7 @@ const MEASURE_STEP_BYTES = 64 * 1024
 
 /** How many times a seed is rebuilt after a seed conflict before the load gives up. */
 const SEED_ATTEMPTS = 3
+const HEAP_CHECK_INTERVAL_MS = 1000
 
 const OWN = Symbol('vaulter.collab.own-origin')
 
@@ -168,11 +170,16 @@ export function originKind(origin, { redisOrigins = [] } = {}) {
  * held anything (a generation that needs no seed). The compaction worker rebuilds a document the
  * same way.
  */
-export function replayLog(document, { checkpoint = null, tail = [] } = {}, origin = LOAD_ORIGIN) {
+export function applyCheckpoint(document, bytes, format, origin) {
+  const apply = format === 'yjs-update-v2' ? Y.applyUpdateV2 : Y.applyUpdate
+  apply(document, bytes, origin)
+}
+
+export function replayLog(document, { checkpoint = null, state_format, tail = [] } = {}, origin = LOAD_ORIGIN) {
   let applied = false
 
   if (typeof checkpoint === 'string' && checkpoint !== '') {
-    Y.applyUpdate(document, Buffer.from(checkpoint, 'base64'), origin)
+    applyCheckpoint(document, Buffer.from(checkpoint, 'base64'), state_format, origin)
     applied = true
   }
 
@@ -192,27 +199,29 @@ export function replayLog(document, { checkpoint = null, tail = [] } = {}, origi
  * the names of what would be lost, never seeded in a cut form.
  */
 export function buildSeed(loaded, clientId = null) {
-  const extensions = extensionsFor(loaded.type)
-  const seed = clientId === null ? TiptapTransformer.toYdoc(loaded.content, FIELD, extensions) : new Y.Doc()
-  if (clientId !== null) {
-    seed.clientID = clientId
-    prosemirrorJSONToYXmlFragment(getSchema(extensions), loaded.content, seed.getXmlFragment(FIELD))
+  if (clientId !== null && (!Number.isInteger(clientId) || clientId < 1 || clientId >= 0x80000000)) {
+    throw new RangeError('Invalid server client ID for collaboration seed')
   }
-  const projection = TiptapTransformer.fromYdoc(seed, FIELD)
-  const lost = lostAttributes(loaded.content, projection)
+  const original = loaded.content
+  const schema = getSchema(extensionsFor(loaded.type, original))
+  const seed = new Y.Doc()
+  try {
+    if (clientId !== null) seed.clientID = clientId
+    checkReviewMarks(original)
+    prosemirrorJSONToYXmlFragment(schema, original, seed.getXmlFragment(FIELD))
+    const projection = TiptapTransformer.fromYdoc(seed, FIELD)
+    const lost = lostAttributes(original, projection)
 
-  if (lost.length > 0) {
+    if (lost.length > 0) {
+      throw new Error(
+        `Collaboration seed refused: the hub's TipTap schema would drop ${lost.join(', ')} from the document. `
+        + 'Add the extension that declares them to packages/hub/src/schema.js (see the README).',
+      )
+    }
+    return Y.encodeStateAsUpdate(seed)
+  } finally {
     seed.destroy()
-    throw new Error(
-      `Collaboration seed refused: the hub's TipTap schema would drop ${lost.join(', ')} from the document. `
-      + 'Add the extension that declares them to packages/hub/src/schema.js (see the README).',
-    )
   }
-
-  const update = Y.encodeStateAsUpdate(seed)
-  seed.destroy()
-
-  return update
 }
 
 /**
@@ -416,17 +425,56 @@ export function createPersistence({
   serverToken = null,
   uuid = () => crypto.randomUUID(),
   limits = null,
+  heapUsed = () => process.memoryUsage().heapUsed,
 } = {}) {
   const mode = conf.mode === 'durable' ? 'durable' : 'buffered'
   const policy = retryPolicy(conf)
   const limit = limits ?? createLimits(conf, { clock })
   const strictCapable = conf.strictProfile === true && !conf.redisUrl && redisOrigins.length === 0
-  const strictRooms = createStrictRooms({ backend, backendOptions, conf, log, enabled: strictCapable })
+  const maxHeapBytes = (conf.maxHeapMb ?? Infinity) * 1024 * 1024
+  const strictState = { casAttempts: 0, baseMovedRetries: 0, handoffs4412: 0 }
+  const handoffClosed = new WeakSet()
+  let observeCatchUp = null
+  let tracing = null
+  let stopPromise = null
+  const strictBackend = {
+    ...backend,
+    append: async (entry, opts = {}) => {
+      const traceparent = entry?.traceparent === null || opts?.traceparent === null
+        ? null
+        : (normalizeTraceparent(entry?.traceparent) ?? normalizeTraceparent(opts?.traceparent) ?? activeTraceparent())
+      const nextOpts = { ...opts, traceparent }
+      return await backend.append(entry, nextOpts)
+    },
+    settleCommand: typeof backend?.settleCommand === 'function'
+      ? async (body, opts = {}) => {
+          const traceparent = opts?.traceparent === null
+            ? null
+            : (normalizeTraceparent(opts?.traceparent) ?? activeTraceparent())
+          const nextOpts = { ...opts, traceparent }
+          return await backend.settleCommand(body, nextOpts)
+        }
+      : backend?.settleCommand,
+  }
+  const strictRooms = createStrictRooms({
+    backend: strictBackend,
+    backendOptions,
+    conf,
+    log,
+    enabled: strictCapable,
+    canLoad: () => heapUsed() < maxHeapBytes,
+    onCatchUp: (seconds) => observeCatchUp?.(seconds),
+    onCasAttempt: () => { strictState.casAttempts++ },
+    onBaseMovedRetry: () => { strictState.baseMovedRetries++ },
+  })
   /**
    * documentName → the loaded room: { generation, document, exact (its measured state bytes, null
    * before the first measure), growth (bytes of the updates since), full (at MAX_DOCUMENT_BYTES) }.
    */
   const rooms = new Map()
+  let heapTimer = null
+  let eviction = null
+  let activity = 0
   /**
    * documentName → the close of a room whose generation ended, whose document is gone or whose state
    * holds an update its log never will: nothing of theirs is appended any more, and a connection
@@ -458,16 +506,22 @@ export function createPersistence({
   let capturing = null
 
   const ledger = createLedger({
-    append: (entry, { token, timeoutMs }) => backend.append({
-      token,
-      room: entry.documentName,
-      generation: entry.generation,
-      updateId: entry.updateId,
-      sha256: entry.sha256,
-      payload: entry.payload,
-      origin: entry.origin,
-      seedStateVersion: entry.seedStateVersion,
-    }, { ...backendOptions, timeoutMs }),
+    append: (entry, { token, timeoutMs }) => {
+      const traceparent = entry.traceparent === undefined ? activeTraceparent() : normalizeTraceparent(entry.traceparent)
+      const opts = { ...backendOptions, timeoutMs, traceparent }
+      const sendAppend = () => backend.append({
+        token,
+        room: entry.documentName,
+        generation: entry.generation,
+        updateId: entry.updateId,
+        sha256: entry.sha256,
+        payload: entry.payload,
+        origin: entry.origin,
+        seedStateVersion: entry.seedStateVersion,
+      }, opts)
+
+      return traceparent ? withTraceparent(traceparent, sendAppend) : withoutTraceContext(sendAppend)
+    },
     credentials: (entry) => credentialsOf(entry),
     policy,
     clock,
@@ -512,6 +566,38 @@ export function createPersistence({
     }
   }
 
+  function touch(documentName) {
+    const room = rooms.get(documentName)
+    if (room) room.lastUsed = ++activity
+  }
+
+  function relieveHeap() {
+    if (eviction !== null || !instance?.unloadDocument || heapUsed() < maxHeapBytes) return eviction
+    eviction = (async () => {
+      const oldestFirst = [...rooms.entries()].sort(([, a], [, b]) => a.lastUsed - b.lastUsed)
+      for (const [name, room] of oldestFirst) {
+        if (heapUsed() < maxHeapBytes) break
+        if (instance.documents.get(name) !== room.document || !instance.shouldUnloadDocument(room.document)
+          || limit.connectionCount(name) > 0 || ledger.pendingCount(name) > 0) continue
+        if (room.strict && !room.strict.pause()) continue
+        room.evicting = true
+        try {
+          await instance.unloadDocument(room.document)
+        } finally {
+          room.evicting = false
+          room.strict?.resume()
+        }
+      }
+    })().finally(() => { eviction = null })
+    return eviction
+  }
+
+  async function admitHeap() {
+    if (heapUsed() < maxHeapBytes) return
+    await relieveHeap()
+    if (heapUsed() >= maxHeapBytes) throw Object.assign(new Error(TOO_MANY_ROOMS.reason), TOO_MANY_ROOMS)
+  }
+
   /**
    * Keep the direct connections of the instance (openDirectConnection): a room that diverged closes
    * them with its WebSockets, or one held open would keep the room loaded — and fenced — for good.
@@ -536,6 +622,7 @@ export function createPersistence({
       connection.disconnect = function closeDirectConnection() {
         if (closing === null) {
           directConnections.get(documentName)?.delete(connection)
+          touch(documentName)
           closing = Promise.resolve().then(() => disconnect.call(connection))
         }
 
@@ -557,6 +644,7 @@ export function createPersistence({
       }
 
       directConnections.get(documentName).add(connection)
+      touch(documentName)
 
       return connection
     }
@@ -614,9 +702,41 @@ export function createPersistence({
     return writerToken(entry.documentName)
   }
 
+  function closeWithAccounting(connection, close) {
+    const emitted = closeConnection(connection, close)
+    if (emitted && close.code === HANDOFF.code && !handoffClosed.has(connection)) {
+      handoffClosed.add(connection)
+      strictState.handoffs4412++
+    }
+
+    return emitted
+  }
+
   function fence(documentName, close) {
     fenced.set(documentName, close)
-    closeRoom(instance, documentName, close)
+    const roomConnections = documentConnections(documentName)
+    if (roomConnections.length === 0) {
+      if (typeof instance?.closeConnections === 'function') {
+        instance.closeConnections(documentName)
+      }
+      for (const connection of allConnections(documentName)) {
+        closeWithAccounting(connection, close)
+      }
+
+      return
+    }
+
+    for (const connection of roomConnections) {
+      closeWithAccounting(connection, close)
+    }
+  }
+
+  function closeDirectConnections(documentName) {
+    for (const connection of [...(directConnections.get(documentName) ?? [])]) {
+      connection.disconnect().catch((error) => {
+        log.warn?.(`Vaulter collab hub: a direct connection of ${documentName} did not close: ${error?.message ?? error}`)
+      })
+    }
   }
 
   /**
@@ -649,11 +769,7 @@ export function createPersistence({
       }
     }
 
-    for (const connection of [...(directConnections.get(entry.documentName) ?? [])]) {
-      connection.disconnect().catch((error) => {
-        log.warn?.(`Vaulter collab hub: a direct connection of ${entry.documentName} did not close: ${error?.message ?? error}`)
-      })
-    }
+    closeDirectConnections(entry.documentName)
   }
 
   function reportProtocolMismatch() {
@@ -869,6 +985,7 @@ export function createPersistence({
       bytes: bytes.length,
       origin: 'server',
       token: (origin && typeof origin === 'object' ? (origin.token ?? origin.context?.token) : null) ?? null,
+      traceparent: activeTraceparent(),
     })
 
     capturing?.push(entry)
@@ -924,6 +1041,7 @@ export function createPersistence({
         bytes: update.length,
         origin: 'server',
         token: context.token,
+        traceparent: normalizeTraceparent(context?.traceparent) ?? activeTraceparent(),
         seedStateVersion: current.state_version,
       })
       // The seed's series told whether the backend answers (durable writes follow it).
@@ -968,17 +1086,21 @@ export function createPersistence({
   }
 
   /** onLoadDocument: replay the room's log (or seed it), then follow its server changes. */
-  async function onLoadDocument({ documentName, document, context, instance: hocuspocus }) {
+  async function onLoadDocument({ documentName, document, context, requestHeaders, instance: hocuspocus }) {
     bind(hocuspocus)
+    await admitHeap()
     // The bytes the room takes while it loads: the first estimate of its state.
     let loadedBytes = 0
     const countLoaded = (update) => { loadedBytes += update.length }
     let generation
+    const loadTraceparent = normalizeTraceparent(context?.traceparent)
+      ?? normalizeTraceparent(typeof requestHeaders?.get === 'function' ? requestHeaders.get('traceparent') : requestHeaders?.traceparent)
 
     document.on('update', countLoaded)
     let strict = null
 
     try {
+      const loadStarted = process.hrtime.bigint()
       const snapshot = await loadLog(context, documentName)
       if (snapshot.profile === 'strict' || context?.profile === 'strict') {
         if (!strictCapable || snapshot.profile !== 'strict' || context?.profile !== 'strict') {
@@ -987,6 +1109,8 @@ export function createPersistence({
         document.flushDelay = 80
         try {
           strict = await strictRooms.open(snapshot, document, {
+            traceparent: loadTraceparent,
+            startedAtNs: loadStarted,
             onFailure: (failure) => {
               const close = ['stale_owner', 'owner_busy'].includes(failure?.code) ? HANDOFF : EPOCH_CHANGED
               fence(documentName, close)
@@ -994,7 +1118,9 @@ export function createPersistence({
             },
           })
         } catch (error) {
-          if (['stale_owner', 'owner_busy'].includes(error?.code)) throw Object.assign(new Error(HANDOFF.reason), HANDOFF)
+          if (['stale_owner', 'owner_busy'].includes(error?.code)) {
+            throw Object.assign(new Error(HANDOFF.reason), HANDOFF)
+          }
           throw error
         }
         generation = snapshot.generation
@@ -1009,11 +1135,15 @@ export function createPersistence({
           }
         }
       }
+      await admitHeap()
+    } catch (error) {
+      if (strict) await strictRooms.close(strict)
+      throw error
     } finally {
       document.off('update', countLoaded)
     }
 
-    const room = { generation, document, strict, exact: null, growth: loadedBytes, full: false }
+    const room = { generation, document, strict, exact: null, growth: loadedBytes, full: false, lastUsed: ++activity, evicting: false }
     rooms.set(documentName, room)
 
     if (exceeds(room, 0)) {
@@ -1059,6 +1189,7 @@ export function createPersistence({
     }
 
     const sha256 = message.h.toLowerCase()
+    const traceparent = normalizeTraceparent(message.tp ?? message.traceparent) ?? normalizeTraceparent(context?.traceparent)
     if (room.strict) {
       if (!context.boundClientId || !context.clientSession) return reply('client_id_conflict', false)
       if (writesStopped) return reply(NACK.WRITES_STOPPED, true)
@@ -1066,10 +1197,14 @@ export function createPersistence({
       const bytes = Buffer.from(message.b, 'base64')
       if (bytes.length === 0 || sha256Hex(bytes) !== sha256) return reply(NACK.UPDATE_MISMATCH, false)
       try {
-        const ack = await room.strict.submitUpdate({
+        const submit = () => room.strict.submitUpdate({
           token: context.token, room: documentName, updateId: id, sha256, payload: message.b, bytes,
           boundClientId: context.boundClientId, clientSession: context.clientSession,
-        })
+          traceparent: traceparent ?? null,
+        }, context.principal)
+        const ack = await (traceparent
+          ? withTraceparent(traceparent, submit, 'hub.strict.update', { 'vaulter.collab.update_id': id })
+          : withoutTraceContext(submit))
         send(connection, { t: 'ack', id, g: ack.generation, seq: ack.seq, h: ack.sha256 })
       } catch (failure) {
         const code = failure?.code ?? 'backend_unavailable'
@@ -1087,65 +1222,73 @@ export function createPersistence({
       }
       return
     }
-    const pending = ledger.find(documentName, id)
+    const handleLegacy = () => {
+      const pending = ledger.find(documentName, id)
 
-    // Repeated while still pending (a reconnect): it waits once, and both connections get the ack.
-    if (pending) {
-      if (pending.sha256 !== sha256) {
+      // Repeated while still pending (a reconnect): it waits once, and both connections get the ack.
+      if (pending) {
+        if (pending.sha256 !== sha256) {
+          return reply(NACK.UPDATE_MISMATCH, false)
+        }
+
+        ledger.enqueue({ documentName, updateId: id, connection })
+
+        return undefined
+      }
+
+      if (writesStopped) {
+        return reply(NACK.WRITES_STOPPED, true)
+      }
+
+      if (!limit.admitWrite(documentName, 'envelope')) {
+        return reply(NACK.RATE_LIMITED, true)
+      }
+
+      const bytes = Buffer.from(message.b, 'base64')
+
+      if (bytes.length === 0 || sha256Hex(bytes) !== sha256) {
         return reply(NACK.UPDATE_MISMATCH, false)
       }
 
-      ledger.enqueue({ documentName, updateId: id, connection })
+      // At the size limit only an update the room already holds (its sync message came first) or one
+      // that only deletes is taken: nothing that adds content.
+      if ((room.full || exceeds(room, bytes.length)) && !holdsUpdate(room.document, bytes)) {
+        limit.count(LIMIT.DOCUMENT_BYTES)
+        markFull(documentName, room)
+
+        return reply(NACK.DOCUMENT_TOO_LARGE, false)
+      }
+
+      try {
+        Y.applyUpdate(document ?? room.document, bytes, envelopeOrigin(connection))
+      } catch {
+        return reply(NACK.INVALID_UPDATE, false)
+      }
+
+      const entryTraceparent = traceparent ? (activeTraceparent() ?? traceparent) : null
+      ledger.enqueue({
+        documentName,
+        generation: room.generation,
+        updateId: id,
+        sha256,
+        payload: message.b,
+        bytes: bytes.length,
+        origin: 'client',
+        token: context.token,
+        clientId: message.id,
+        connection,
+        traceparent: entryTraceparent,
+      })
 
       return undefined
     }
 
-    if (writesStopped) {
-      return reply(NACK.WRITES_STOPPED, true)
-    }
-
-    if (!limit.admitWrite(documentName, 'envelope')) {
-      return reply(NACK.RATE_LIMITED, true)
-    }
-
-    const bytes = Buffer.from(message.b, 'base64')
-
-    if (bytes.length === 0 || sha256Hex(bytes) !== sha256) {
-      return reply(NACK.UPDATE_MISMATCH, false)
-    }
-
-    // At the size limit only an update the room already holds (its sync message came first) or one
-    // that only deletes is taken: nothing that adds content.
-    if ((room.full || exceeds(room, bytes.length)) && !holdsUpdate(room.document, bytes)) {
-      limit.count(LIMIT.DOCUMENT_BYTES)
-      markFull(documentName, room)
-
-      return reply(NACK.DOCUMENT_TOO_LARGE, false)
-    }
-
-    try {
-      Y.applyUpdate(document ?? room.document, bytes, envelopeOrigin(connection))
-    } catch {
-      return reply(NACK.INVALID_UPDATE, false)
-    }
-
-    ledger.enqueue({
-      documentName,
-      generation: room.generation,
-      updateId: id,
-      sha256,
-      payload: message.b,
-      bytes: bytes.length,
-      origin: 'client',
-      token: context.token,
-      clientId: message.id,
-      connection,
-    })
-
-    return undefined
+    return traceparent
+      ? withTraceparent(traceparent, handleLegacy, 'hub.legacy.update', { 'vaulter.collab.update_id': id })
+      : withoutTraceContext(handleLegacy)
   }
 
-  /** onStateless: envelopes are JSON objects with t:"u"; any other stateless message is not ours. */
+  /** Overlay invalidations and envelopes share the stateless channel. */
   async function onStateless({ connection, documentName, document, payload, instance: hocuspocus }) {
     bind(hocuspocus)
 
@@ -1167,6 +1310,14 @@ export function createPersistence({
 
     if (message?.t === 'u') {
       await handleEnvelope(connection, documentName, document, message)
+    } else if (message?.t === 'overlay' && Object.keys(message).length === 1) {
+      const context = contexts.get(connection)
+      const room = rooms.get(documentName)
+      if (room && room.document === document && roomOf.get(connection) === documentName && isWriter(context)
+        && (!room.strict || context.boundClientId) && !fenced.has(documentName) && !writesStopped
+        && limit.admitWrite(documentName, 'envelope')) {
+        document.broadcastStateless('{"t":"overlay"}')
+      }
     }
   }
 
@@ -1183,11 +1334,13 @@ export function createPersistence({
 
     if (room !== undefined) {
       roomOf.set(connection, room)
+      touch(room)
     }
 
     // The fenced room is not loaded again until Hocuspocus unloads it: a late joiner gets its close.
     if (fenced.has(room)) {
-      closeConnection(connection, fenced.get(room))
+      const close = fenced.get(room)
+      closeWithAccounting(connection, close)
 
       return
     }
@@ -1247,6 +1400,7 @@ export function createPersistence({
   }
 
   async function onDisconnect({ connection, documentName, socketId }) {
+    touch(documentName)
     const room = writers.get(documentName)
     const known = room?.get(socketId ?? connection)?.connection ?? connection
 
@@ -1323,10 +1477,15 @@ export function createPersistence({
       throw Object.assign(new Error(`Collaboration writes are stopped (${stopReasonFor(documentName)}); the server change was not applied`), { code })
     }
 
-    const strict = rooms.get(documentName)?.strict
+    const room = rooms.get(documentName)
+    const strict = room?.strict
     if (strict) {
       const writer = token ?? context.token ?? await writerToken(documentName)
       if (!writer) throw Object.assign(new Error(FORBIDDEN.reason), FORBIDDEN)
+      if (room.evicting || rooms.get(documentName) !== room) {
+        throw Object.assign(new Error(TOO_MANY_ROOMS.reason), TOO_MANY_ROOMS)
+      }
+      touch(documentName)
       return strict.serverWrite(change, { token: writer, room: documentName })
     }
 
@@ -1387,23 +1546,51 @@ export function createPersistence({
     revokedStillConnected,
     attach: bind,
     start() {
+      stopPromise = null
+      tracing ??= initHubTracing()
       ledger.start()
       strictRooms.start()
+      if (heapTimer === null && Number.isFinite(maxHeapBytes)) {
+        heapTimer = setInterval(() => {
+          relieveHeap()?.catch((failure) => log.warn?.('Vaulter collaboration: idle room eviction failed', failure?.name))
+        }, HEAP_CHECK_INTERVAL_MS)
+        heapTimer.unref?.()
+      }
     },
     stop() {
+      if (stopPromise) return stopPromise
       ledger.stop()
-      return strictRooms.stop()
+      clearInterval(heapTimer)
+      heapTimer = null
+      stopPromise = (async () => {
+        try {
+          await Promise.allSettled([
+            strictRooms.stop(),
+            Promise.resolve(eviction),
+          ])
+        } finally {
+          try {
+            await tracing?.shutdown()
+          } finally {
+            tracing = null
+          }
+        }
+      })()
+      return stopPromise
     },
     strictCapable,
     stopStrict: strictRooms.stop,
     strictControl(message) {
-      if (message.type === 'wakeup') return strictRooms.wake()
-      const strict = rooms.get(message.room)?.strict
-      if (!strict) return
-      if (message.type === 'handoff_request' && strict.fence !== message.owner_fence) return
+      if (message.type === 'wakeup') return strictRooms.wake(normalizeTraceparent(message.traceparent ?? message.tp))
+      const room = rooms.get(message.room)
+      if (!room && !instance?.documents?.has(message.room)) return
+      if (message.type === 'handoff_request' && room?.strict?.fence !== message.owner_fence) return
       fence(message.room, message.type === 'handoff_request' ? HANDOFF : EPOCH_CHANGED)
-      return strictRooms.close(strict)
+      closeDirectConnections(message.room)
+      if (room?.strict) return strictRooms.close(room.strict)
     },
+    strictStats: () => ({ ...strictState, queueDepth: strictRooms.queueDepth() }),
+    setCatchUpObserver: (fn) => { observeCatchUp = typeof fn === 'function' ? fn : null },
     ledger,
     limits: limit,
     mode,

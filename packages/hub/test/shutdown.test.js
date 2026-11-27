@@ -2,10 +2,18 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { readdirSync, readFileSync } from 'node:fs'
-import { buildConfig, validateConfig } from '../src/config.js'
+import { buildConfig, loadConfig, validateConfig } from '../src/config.js'
 import { createBackendStatus, createManagement, createReadiness } from '../src/management.js'
 import { documentIdOf } from '../src/rooms.js'
-import { createShutdown, SHUTDOWN_DEFAULTS, SHUTDOWN_SIGNALS, unflushedOf } from '../src/shutdown.js'
+import {
+  createShutdown,
+  SHUTDOWN_DEFAULTS,
+  SHUTDOWN_GRACE_PERIOD_MS,
+  SHUTDOWN_HEADROOM_MS,
+  SHUTDOWN_SIGNALS,
+  SHUTDOWN_TOTAL_BUDGET_MS,
+  unflushedOf,
+} from '../src/shutdown.js'
 
 // The shutdown coordinator (packages/collaboration/docs/guides/hub.md#graceful-shutdown-sigterm, collaboration scenarios 10 and 16): the one handler of
 // SIGTERM/SIGINT. Draining starts at once — /readyz 503, no connection and no write admitted —,
@@ -80,7 +88,7 @@ function recordingLog() {
   }
 }
 
-function harness({ ledger = fakeLedger(), destroy = async () => {}, conf = { shutdownFlushMs: 30_000, shutdownDestroyMs: 5_000 }, time = virtualTime(), overrides = {} } = {}) {
+function harness({ ledger = fakeLedger(), destroy = async () => {}, conf = { shutdownFlushMs: 25_000, shutdownDestroyMs: 5_000 }, time = virtualTime(), overrides = {} } = {}) {
   const steps = []
   const { logs, log } = recordingLog()
   const persistence = {
@@ -179,7 +187,7 @@ test('(c) a ledger that does not flush ends at SHUTDOWN_FLUSH_MS with an error l
   const result = await coordinator.shutdown('SIGTERM')
 
   assert.equal(result.code, 1)
-  assert.equal(time.elapsed(), 30_000, 'the flush deadline, then destroy (which settled at once)')
+  assert.equal(time.elapsed(), 25_000, 'the flush deadline, then destroy (which settled at once)')
   assert.deepEqual(steps, ['stopWrites:draining', 'stopWorker', 'close 4503', 'destroy', 'unflushed:3', 'ledger.stop', 'closeManagement', 'exit:1'])
   assert.equal(logs.error.length, 1)
   assert.match(logs.error[0][0], /3 unflushed update\(s\)/)
@@ -298,14 +306,144 @@ test('unflushedOf names every room once and the document id of each', () => {
   assert.deepEqual(unflushedOf([]), { unflushed: 0, documents: [], rooms: [] })
 })
 
-test('the deadlines come from the hub config: 30 s flush and 5 s destroy by default', () => {
+function stalledPhaseHarness(conf, time = virtualTime()) {
+  const phases = []
+  const stalled = (name) => () => {
+    phases.push(name)
+
+    return never()
+  }
+  const ledger = fakeLedger([entry(ROOM, 'u1')], stalled('flush'))
+  const steps = []
+  const base = harness({
+    ledger,
+    destroy: stalled('destroy'),
+    conf,
+    time,
+    overrides: {
+      persistence: {
+        ledger,
+        stopWrites: (reason) => steps.push(`stopWrites:${reason}`),
+        stop: stalled('persistence.stop'),
+      },
+      stopWorker: stalled('stopWorker'),
+      closeManagement: stalled('closeManagement'),
+      exit: (code) => steps.push(`exit:${code}`),
+    },
+  })
+
+  return { ...base, steps, phases }
+}
+
+test('the deadlines come from the hub config: 25 s flush and 5 s destroy by default, total <= 39 s (< 40 s grace)', async () => {
+  assert.equal(SHUTDOWN_GRACE_PERIOD_MS, 40_000)
+  assert.ok(SHUTDOWN_HEADROOM_MS >= 1_000)
+  assert.ok(SHUTDOWN_TOTAL_BUDGET_MS <= 39_000)
+  assert.ok(SHUTDOWN_GRACE_PERIOD_MS - SHUTDOWN_TOTAL_BUDGET_MS >= 1_000)
+
   const defaults = buildConfig({ NODE_ENV: 'test' })
 
-  assert.deepEqual([defaults.shutdownFlushMs, defaults.shutdownDestroyMs], [30_000, 5_000])
-  assert.deepEqual(SHUTDOWN_DEFAULTS, { flushMs: 30_000, destroyMs: 5_000 })
+  assert.deepEqual([defaults.shutdownFlushMs, defaults.shutdownDestroyMs, defaults.shutdownStopMs, defaults.shutdownManagementMs], [25_000, 5_000, 8_000, 1_000])
+  assert.deepEqual(SHUTDOWN_DEFAULTS, { flushMs: 25_000, destroyMs: 5_000 })
   assert.deepEqual([buildConfig({ NODE_ENV: 'test', VAULTER_COLLAB_SHUTDOWN_FLUSH_MS: '0' }).shutdownFlushMs], [0])
   assert.ok(validateConfig(buildConfig({ NODE_ENV: 'test', VAULTER_COLLAB_SHUTDOWN_FLUSH_MS: '-1' })).some((problem) => problem.includes('VAULTER_COLLAB_SHUTDOWN_FLUSH_MS')))
   assert.ok(validateConfig(buildConfig({ NODE_ENV: 'test', VAULTER_COLLAB_SHUTDOWN_DESTROY_MS: 'soon' })).some((problem) => problem.includes('VAULTER_COLLAB_SHUTDOWN_DESTROY_MS')))
+
+  // Worst-case default shutdown (all 4 stalled phases timing out) exits strictly before the 40 s container grace period.
+  const defaultShutdown = stalledPhaseHarness(defaults)
+  const result = await defaultShutdown.coordinator.shutdown('SIGTERM')
+  assert.equal(result.code, 1)
+  assert.equal(defaultShutdown.coordinator.phase(), 'exited')
+  assert.equal(defaultShutdown.steps.at(-1), 'exit:1')
+  assert.deepEqual(defaultShutdown.phases, ['stopWorker', 'flush', 'destroy', 'persistence.stop', 'closeManagement'])
+  assert.equal(defaultShutdown.time.elapsed(), 39_000)
+  assert.ok(defaultShutdown.time.elapsed() <= 39_000)
+  assert.ok(defaultShutdown.time.elapsed() < 40_000)
+  assert.ok(40_000 - defaultShutdown.time.elapsed() >= 1_000)
+  assert.ok(defaultShutdown.logs.warn.some(([message]) => /persistence\.stop\(\) did not settle within 8000 ms/.test(message)))
+
+  // Legacy VAULTER_COLLAB_SHUTDOWN_FLUSH_MS=30000 is accepted at boot and rebalanced so
+  // flush + destroy + persistence.stop() + management close reserves >= 1000 ms headroom (<= 39000 ms < 40000 ms).
+  const legacy = loadConfig({ NODE_ENV: 'test', VAULTER_COLLAB_SHUTDOWN_FLUSH_MS: '30000' })
+  assert.deepEqual(
+    [legacy.shutdownFlushMs, legacy.shutdownDestroyMs, legacy.shutdownStopMs, legacy.shutdownManagementMs],
+    [30_000, 5_000, 3_000, 1_000],
+  )
+  const legacyBudgetSum = legacy.shutdownFlushMs + legacy.shutdownDestroyMs + legacy.shutdownStopMs + legacy.shutdownManagementMs
+  assert.ok(legacyBudgetSum <= 39_000)
+  assert.ok(legacyBudgetSum < 40_000)
+
+  const zeroDestroy = loadConfig({ NODE_ENV: 'test', VAULTER_COLLAB_SHUTDOWN_FLUSH_MS: '32000', VAULTER_COLLAB_SHUTDOWN_DESTROY_MS: '0' })
+  assert.deepEqual(
+    [zeroDestroy.shutdownFlushMs, zeroDestroy.shutdownDestroyMs, zeroDestroy.shutdownStopMs, zeroDestroy.shutdownManagementMs],
+    [32_000, 0, 6_000, 1_000],
+  )
+
+  const loweredDestroy = loadConfig({ NODE_ENV: 'test', VAULTER_COLLAB_SHUTDOWN_FLUSH_MS: '30000', VAULTER_COLLAB_SHUTDOWN_DESTROY_MS: '1000' })
+  assert.deepEqual(
+    [loweredDestroy.shutdownFlushMs, loweredDestroy.shutdownDestroyMs, loweredDestroy.shutdownStopMs, loweredDestroy.shutdownManagementMs],
+    [30_000, 1_000, 7_000, 1_000],
+  )
+
+  const overBudget = loadConfig({ NODE_ENV: 'test', VAULTER_COLLAB_SHUTDOWN_FLUSH_MS: '50000' })
+  assert.ok(overBudget.shutdownFlushMs > 0 && overBudget.shutdownDestroyMs > 0)
+  assert.ok(overBudget.shutdownStopMs >= 1_000)
+  assert.equal(overBudget.shutdownManagementMs, 1_000)
+  assert.equal(
+    overBudget.shutdownFlushMs + overBudget.shutdownDestroyMs + overBudget.shutdownStopMs + overBudget.shutdownManagementMs,
+    39_000,
+  )
+  assert.throws(() => loadConfig({ NODE_ENV: 'test', VAULTER_COLLAB_SHUTDOWN_FLUSH_MS: '-1' }), /VAULTER_COLLAB_SHUTDOWN_FLUSH_MS/)
+  assert.throws(() => loadConfig({ NODE_ENV: 'test', VAULTER_COLLAB_SHUTDOWN_DESTROY_MS: 'soon' }), /VAULTER_COLLAB_SHUTDOWN_DESTROY_MS/)
+
+  // Worst-case shutdown with rebalanced legacy VAULTER_COLLAB_SHUTDOWN_FLUSH_MS=30000 completes all 4 stalled phases and exits < 40 s.
+  const legacyShutdown = stalledPhaseHarness(legacy)
+  const legacyResult = await legacyShutdown.coordinator.shutdown('SIGTERM')
+  assert.equal(legacyResult.code, 1)
+  assert.equal(legacyShutdown.coordinator.phase(), 'exited')
+  assert.equal(legacyShutdown.steps.at(-1), 'exit:1')
+  assert.deepEqual(legacyShutdown.phases, ['stopWorker', 'flush', 'destroy', 'persistence.stop', 'closeManagement'])
+  assert.equal(legacyShutdown.time.elapsed(), 39_000)
+  assert.ok(legacyShutdown.time.elapsed() <= 39_000)
+  assert.ok(legacyShutdown.time.elapsed() < 40_000)
+  assert.ok(40_000 - legacyShutdown.time.elapsed() >= 1_000)
+  assert.ok(legacyShutdown.logs.warn.some(([message]) => /persistence\.stop\(\) did not settle within 3000 ms/.test(message)))
+
+  // Worst-case shutdown with over-budget VAULTER_COLLAB_SHUTDOWN_FLUSH_MS=50000 also completes all 4 stalled phases and exits < 40 s.
+  const overrun = stalledPhaseHarness(overBudget)
+  const overrunResult = await overrun.coordinator.shutdown('SIGTERM')
+  assert.equal(overrunResult.code, 1)
+  assert.equal(overrun.coordinator.phase(), 'exited')
+  assert.equal(overrun.steps.at(-1), 'exit:1')
+  assert.deepEqual(overrun.phases, ['stopWorker', 'flush', 'destroy', 'persistence.stop', 'closeManagement'])
+  assert.equal(overrun.time.elapsed(), 39_000)
+  assert.ok(overrun.time.elapsed() <= 39_000)
+  assert.ok(overrun.time.elapsed() < 40_000)
+  assert.ok(overrun.logs.warn.some(([message]) => new RegExp(`persistence\\.stop\\(\\) did not settle within ${overBudget.shutdownStopMs} ms`).test(message)))
+
+  // Un-rebalanced legacy budgets passed directly to createShutdown still complete all 4 stalled phases and exit < 40 s.
+  const directLegacy = stalledPhaseHarness({ shutdownFlushMs: 30_000, shutdownDestroyMs: 5_000 })
+  const directResult = await directLegacy.coordinator.shutdown('SIGTERM')
+  assert.equal(directResult.code, 1)
+  assert.equal(directLegacy.coordinator.phase(), 'exited')
+  assert.equal(directLegacy.steps.at(-1), 'exit:1')
+  assert.deepEqual(directLegacy.phases, ['stopWorker', 'flush', 'destroy', 'persistence.stop', 'closeManagement'])
+  assert.equal(directLegacy.time.elapsed(), 39_000)
+  assert.ok(directLegacy.time.elapsed() < 40_000)
+
+  // Real timers with all 4 phases stalled: every phase runs, times out within budget, and exits cleanly.
+  const startedAt = Date.now()
+  const realStalled = stalledPhaseHarness(
+    { shutdownFlushMs: 50, shutdownDestroyMs: 30, shutdownStopMs: 20, shutdownManagementMs: 10, shutdownTotalMs: 110 },
+    realTime,
+  )
+  const realResult = await realStalled.coordinator.shutdown('SIGTERM')
+  const took = Date.now() - startedAt
+  assert.equal(realResult.code, 1)
+  assert.equal(realStalled.coordinator.phase(), 'exited')
+  assert.equal(realStalled.steps.at(-1), 'exit:1')
+  assert.deepEqual(realStalled.phases, ['stopWorker', 'flush', 'destroy', 'persistence.stop', 'closeManagement'])
+  assert.ok(took >= 90 && took < 1000, `took ${took} ms`)
 })
 
 test('the coordinator is the only signal handler: Hocuspocus runs with stopOnSignals: false and no other module listens', () => {

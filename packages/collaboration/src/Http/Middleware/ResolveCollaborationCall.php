@@ -32,9 +32,7 @@ final class ResolveCollaborationCall
      */
     public const string ATTRIBUTE = 'vaulter_collaboration_call';
 
-    public function __construct(
-        private readonly CollaborationCallResolver $resolver,
-    ) {}
+    public function __construct(private readonly CollaborationCallResolver $resolver) {}
 
     /** @param Closure(Request): Response $next */
     public function handle(Request $request, Closure $next): Response

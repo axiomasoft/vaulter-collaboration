@@ -234,16 +234,37 @@ export function createHubMetrics() {
   const registry = createRegistry()
   const appendLatency = registry.histogram('collab_append_latency_seconds', 'Round trip of one append attempt to the backend, in seconds.', { buckets: APPEND_LATENCY_BUCKETS })
   const compactionSeconds = registry.histogram('collab_compaction_seconds', 'Duration of one compaction merge (checkpoint plus tail), in seconds.', { buckets: COMPACTION_BUCKETS })
+  const catchUpSeconds = registry.histogram('collab_catchup_duration_seconds', 'Duration of strict room catchUp log replays against the backend, in seconds.', { buckets: APPEND_LATENCY_BUCKETS })
   const shutdownUnflushed = registry.gauge('collab_shutdown_unflushed', 'Pending updates the shutdown deadline left unflushed (0 until a shutdown ends with some).')
   shutdownUnflushed.set(0)
 
-  function bind({ rooms = () => ({ rooms: 0, connections: 0 }), persistence = null, worker = null, limits = null, readiness = null, draining = () => false, revocation = null } = {}) {
+  function bind({ rooms = () => ({ rooms: 0, connections: 0 }), persistence = null, worker = null, limits = null, readiness = null, draining = () => false, revocation = null, heapUsed = () => process.memoryUsage().heapUsed } = {}) {
     const ledger = () => persistence?.state?.()?.ledger ?? {}
+    const strictStats = () => persistence?.strictStats?.() ?? {}
     const workerStats = () => worker?.stats?.() ?? {}
     const revocationStats = () => revocation?.stats?.() ?? {}
+    persistence?.setCatchUpObserver?.((seconds) => catchUpSeconds.observe(seconds))
 
     registry.gauge('collab_active_rooms', 'Rooms loaded on this hub.', { collect: () => rooms().rooms })
     registry.gauge('collab_active_connections', 'WebSocket connections of the rooms on this hub.', { collect: () => rooms().connections })
+    registry.gauge('collab_heap_bytes_per_room', 'Average V8 heap bytes per active room on this hub (0 when empty).', {
+      collect: () => {
+        const active = rooms().rooms
+        return active > 0 ? Math.round(heapUsed() / active) : 0
+      },
+    })
+    registry.gauge('collab_sequencer_queue_depth', 'Pending and active operations in strict room sequencers across open rooms.', {
+      collect: () => strictStats().queueDepth ?? 0,
+    })
+    registry.counter('collab_cas_attempts_total', 'Total strict room CAS append and command settlement attempts.', {
+      collect: () => strictStats().casAttempts ?? 0,
+    })
+    registry.counter('collab_base_moved_retries_total', 'Strict room CAS append and command attempts retried after base_moved conflicts.', {
+      collect: () => strictStats().baseMovedRetries ?? 0,
+    })
+    registry.counter('collab_handoffs_4412_total', 'Connections closed with 4412 handoff.', {
+      collect: () => strictStats().handoffs4412 ?? 0,
+    })
     registry.gauge('collab_pending_updates', 'Updates in the pending ledger, not yet committed by the backend.', { collect: () => ledger().pending ?? 0 })
     registry.gauge('collab_pending_bytes', 'Bytes of the updates in the pending ledger.', { collect: () => ledger().pendingBytes ?? 0 })
     registry.gauge('collab_pending_oldest_seconds', 'Age of the oldest pending update, in seconds (0 when none is pending).', {
@@ -291,5 +312,5 @@ export function createHubMetrics() {
     registry.gauge('collab_ready', '1 while /readyz answers 200.', { collect: () => (readiness?.().ready ? 1 : 0) })
   }
 
-  return { registry, appendLatency, compactionSeconds, shutdownUnflushed, bind, render: () => registry.render() }
+  return { registry, appendLatency, compactionSeconds, catchUpSeconds, shutdownUnflushed, bind, render: () => registry.render() }
 }

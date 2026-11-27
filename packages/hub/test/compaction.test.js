@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import * as Y from 'yjs'
 import { TiptapTransformer } from '@hocuspocus/transformer'
 import { compactLease, CompactionError, REFUSAL } from '../src/compaction.js'
+import { buildSeed } from '../src/persistence.js'
 import { extensionsFor, FIELD } from '../src/schema.js'
 
 // The compaction of one lease entry: a new Y.Doc gets the checkpoint C, then
@@ -99,6 +100,28 @@ function refusedWith(reason, pattern = null) {
     return true
   }
 }
+
+test('seeding and compaction preserve review marks and checkpoint the shared structural records', (t) => {
+  const content = paragraphs('Marked')
+  const mark = { type: 'reviewSuggestion', attrs: {
+    suggestionId: 'suggestion', kind: 'mark_change', author: '42', groupId: 'group', parentId: 'parent',
+    markName: 'bold', markAttrs: {}, operation: 'added',
+  } }
+  content.content[0].content[0].marks = [mark]
+  const document = documentOf(buildSeed({ type: TYPE, content }, 123))
+  t.after(() => document.destroy())
+  const records = 'vaulter:reviewStructure:default'
+  const entry = { order: 1, record: {
+    suggestionId: 'suggestion', groupId: 'group', author: '42', blockId: 'block',
+    kind: 'mark_change', payload: { markName: 'bold', markAttrs: {}, operation: 'added' },
+  } }
+  document.getMap(records).set('suggestion', entry)
+  const compacted = compactLease(lease({ checkpoint: b64(Y.encodeStateAsUpdate(document)) }))
+  const checkpoint = documentOf(Buffer.from(compacted.state, 'base64'))
+  t.after(() => checkpoint.destroy())
+  assert.deepEqual(compacted.content.content[0].content[0].marks, [mark])
+  assert.deepEqual(checkpoint.getMap(records).get('suggestion'), entry)
+})
 
 test('merges the checkpoint and three clients\' updates from their own Y.Docs into the state Y.mergeUpdates gives', () => {
   const base = stateOf(paragraphs('Stored one', 'Stored two'))

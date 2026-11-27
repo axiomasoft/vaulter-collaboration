@@ -20,6 +20,7 @@ use Vaulter\Documents\Data\Collaboration\CollaborationAccessDecision;
 use Vaulter\Documents\Data\Collaboration\CollaborationMode;
 use Vaulter\Documents\Exceptions\CollaborationUnavailableException;
 use Vaulter\Documents\Exceptions\NotADocumentException;
+use Vaulter\Documents\State\CollaborationStateBinding;
 use Vaulter\Documents\State\CollaborativeState;
 use Vaulter\Documents\State\LockedDocumentState;
 use Vaulter\Documents\Types\DocumentTypeRegistry;
@@ -120,7 +121,8 @@ final readonly class CollaborationHub
         if ($grant->generation !== $ref->epoch) {
             throw new CollaborationEpochMismatchException(expected: $ref->epoch, actual: $grant->generation);
         }
-        if ($grant->protocol !== $call->protocol || $grant->stateFormat !== $call->stateFormat || $grant->schemaVersion !== $call->schemaVersion) {
+        if ($grant->protocol !== $call->protocol || $grant->schemaVersion !== $call->schemaVersion
+            || !CollaborationStateBinding::acceptsFormat($grant->protocol, $call->stateFormat, $grant->stateFormat)) {
             throw new CollaborationUnavailableException('unsupported_binding', $grant->documentType);
         }
 

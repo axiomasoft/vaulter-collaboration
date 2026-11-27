@@ -35,37 +35,66 @@ export function documentIdOf(documentName) {
   return parts.length >= 4 ? parts[parts.length - 2] : String(documentName)
 }
 
-/** Close one connection with both the reason and the numeric code. */
+const WS_OPEN = 1
+
+/** Close one connection with both the reason and the numeric code; returns true when a close was emitted. */
 export function closeConnection(connection, { code, reason }) {
+  if (!connection || typeof connection !== 'object') {
+    return false
+  }
+
+  let protocolClosed = false
   try {
-    connection.close({ code, reason })
+    if (typeof connection.close === 'function') {
+      connection.close({ code, reason })
+      protocolClosed = true
+    }
   } catch {
     // Already closed: the transport close below is the best effort.
   }
 
-  try {
-    connection.webSocket?.close?.(code, reason)
-  } catch {
-    // The socket is already closing; the protocol close message above was the best effort.
+  const ws = connection.webSocket
+  if (ws !== undefined && ws !== null) {
+    if (typeof ws.readyState === 'number' && ws.readyState !== WS_OPEN) {
+      return false
+    }
+
+    try {
+      if (typeof ws.close === 'function') {
+        ws.close(code, reason)
+        return true
+      }
+    } catch {
+      // The socket is already closing; the protocol close message above was the best effort.
+    }
+
+    return false
   }
+
+  return protocolClosed
 }
 
 /**
  * Close every local connection of a room with the given code. Hocuspocus' own closeConnections()
  * takes no code, and the client needs one to tell "reopen with a new Y.Doc" from an ordinary
- * disconnect.
+ * disconnect. Returns the number of connections on which a close was emitted.
  */
 export function closeRoom(instance, documentName, { code, reason }) {
   const document = instance?.documents?.get?.(documentName)
   const connections = typeof document?.getConnections === 'function' ? document.getConnections() : []
+  let closed = 0
 
   for (const connection of connections) {
-    closeConnection(connection, { code, reason })
+    if (closeConnection(connection, { code, reason })) {
+      closed++
+    }
   }
 
   if (connections.length === 0 && typeof instance?.closeConnections === 'function') {
     instance.closeConnections(documentName)
   }
+
+  return closed
 }
 
 /** Close every connection of every room with the given code; returns how many rooms were closed. */

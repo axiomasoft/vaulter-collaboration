@@ -13,6 +13,7 @@ use JsonException;
 use Packman\Attributes\Internal;
 use Vaulter\Collaboration\Configuration\CollaborationOptions;
 use Vaulter\Collaboration\Exceptions\CollaborationUpdateTooLargeException;
+use Vaulter\Collaboration\HocuspocusCollaborationDriver;
 use Vaulter\Collaboration\Http\Support\HubProtocol;
 use Vaulter\Collaboration\Persistence\CommandJournal;
 use Vaulter\Collaboration\Persistence\Head;
@@ -36,6 +37,7 @@ final readonly class HubCommandController
         private CommandJournal $journal,
         private UpdateLog $updates,
         private CollaborationOptions $options,
+        private HocuspocusCollaborationDriver $driver,
     ) {}
 
     public function __invoke(Request $request): JsonResponse
@@ -156,7 +158,7 @@ final readonly class HubCommandController
         $envelopes = array_map(fn (mixed $row): UpdateEnvelope => $this->envelope($row, $generation), $updates);
 
         return HubProtocol::mark(new JsonResponse(
-            $this->journal->settle($id, $owner, $fence, $generation, $base, $fingerprint, $envelopes, $evidence, $reason, protocol: 'yjs/2'),
+            $this->journal->settle($id, $owner, $fence, $generation, $base, $fingerprint, $envelopes, $evidence, $reason, protocol: $this->driver->version()),
         ));
     }
 
@@ -172,7 +174,7 @@ final readonly class HubCommandController
         $result = $this->db->transaction(function () use ($document, $generation, $operation): array {
             $locked = $this->state->lockByDocumentId($document) ?? throw new RoomWriteConflict('resource_unavailable');
             $this->rooms->assertGeneration($locked, $generation);
-            if ($this->rooms->protocol($locked) !== 'yjs/2') {
+            if ($this->rooms->protocol($locked) !== $this->driver->version()) {
                 throw new RoomWriteConflict('unsupported_protocol');
             }
 
@@ -204,6 +206,7 @@ final readonly class HubCommandController
         return [
             'generation' => $log->generation, 'state_version' => $log->stateVersion, 'type' => $log->type,
             'schema_version' => $log->schemaVersion, 'profile' => $log->profile, 'checkpoint_seq' => $log->checkpointSeq,
+            'state_format' => $log->binding->stateFormat,
             'head_seq' => $log->headSeq, 'checkpoint' => $log->checkpoint === null ? null : base64_encode($log->checkpoint),
             'content' => $log->checkpoint === null ? $log->content : null, 'tail' => $log->tail,
         ];

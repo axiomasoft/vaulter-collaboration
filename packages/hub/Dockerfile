@@ -48,8 +48,8 @@ USER node
 EXPOSE 1234
 
 # SIGTERM drains the hub (src/shutdown.js): writes stop, the pending ledger flushes for up to
-# VAULTER_COLLAB_SHUTDOWN_FLUSH_MS (30 s), then destroy() for up to VAULTER_COLLAB_SHUTDOWN_DESTROY_MS
-# (5 s) — give `docker stop -t` / terminationGracePeriodSeconds more than their sum.
+# VAULTER_COLLAB_SHUTDOWN_FLUSH_MS (25 s), then destroy() for up to VAULTER_COLLAB_SHUTDOWN_DESTROY_MS
+# (5 s), persistence stop (8 s) and listener close (1 s) — give `docker stop -t` / terminationGracePeriodSeconds >= 40 s.
 STOPSIGNAL SIGTERM
 
 # Liveness for compose/orchestrator: /livez of the management listener (never the WS port). It

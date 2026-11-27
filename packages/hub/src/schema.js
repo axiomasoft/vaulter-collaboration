@@ -1,4 +1,4 @@
-import { Extension } from '@tiptap/core'
+import { Extension, Mark } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
 import Link from '@tiptap/extension-link'
 import Image from '@tiptap/extension-image'
@@ -28,6 +28,55 @@ const BlockIdentity = Extension.create({
   },
 })
 
+export const REVIEW_SUGGESTION = 'reviewSuggestion'
+export const REVIEW_STRUCTURE_PREFIX = 'vaulter:reviewStructure:'
+export const REVIEW_STRUCTURE = REVIEW_STRUCTURE_PREFIX + FIELD
+
+export function isReviewId(value) {
+  return typeof value === 'string' && value.trim() !== ''
+}
+
+export function isRecord(value) {
+  return value !== null && typeof value === 'object' &&
+    [Object.prototype, null].includes(Object.getPrototypeOf(value))
+}
+
+const optionalId = (value) => value === null || isReviewId(value)
+const reviewAttributes = {
+  suggestionId: isReviewId,
+  kind: (value) => ['insert', 'delete', 'mark_change'].includes(value),
+  parentId: optionalId,
+  groupId: optionalId,
+  author: optionalId,
+  markName: optionalId,
+  markAttrs: (value) => value === null || isRecord(value),
+  operation: (value) => value === null || ['added', 'removed'].includes(value),
+}
+
+export function isReviewMark(attrs) {
+  return isRecord(attrs) && Object.keys(attrs).every((name) => Object.hasOwn(reviewAttributes, name))
+    && Object.entries(reviewAttributes).every(([name, validate]) => validate(attrs[name] ?? null))
+}
+
+const ReviewSuggestion = Mark.create({
+  name: REVIEW_SUGGESTION,
+  inclusive: false,
+  excludes: '',
+  keepOnSplit: false,
+  addAttributes() {
+    return Object.fromEntries(Object.entries(reviewAttributes).map(([name, validate]) => [name, {
+      default: null,
+      validate(value) {
+        if (!validate(value)) throw new RangeError(`Invalid reviewSuggestion.${name}`)
+      },
+    }]))
+  },
+})
+
+const OPTIONAL_MARKS = {
+  'vaulter/rich-text': [ReviewSuggestion],
+}
+
 const TYPES = {
   // StarterKit (with Underline), Link, Image, Table.
   'vaulter/rich-text': () => [
@@ -49,15 +98,30 @@ const TYPES = {
 
 export const SUPPORTED_TYPES = Object.freeze(Object.keys(TYPES))
 
-/** The extensions of a document type; throws for a type the hub cannot seed. */
-export function extensionsFor(type) {
-  const build = TYPES[type]
-
-  if (!build) {
+/** Activate optional marks only when one of the original documents uses them. */
+export function extensionsFor(type, ...originals) {
+  if (!Object.hasOwn(TYPES, type)) {
     throw new Error(`The hub has no TipTap schema for document type "${type}"`)
   }
 
-  return build()
+  const extensions = TYPES[type]()
+  for (const extension of OPTIONAL_MARKS[type] ?? []) {
+    if (originals.some((document) => !marksIn(document, extension.name).next().done)) extensions.push(extension)
+  }
+  return extensions
+}
+
+function* marksIn(node, name) {
+  for (const mark of Array.isArray(node?.marks) ? node.marks : []) {
+    if (mark?.type === name) yield mark
+  }
+  for (const child of Array.isArray(node?.content) ? node.content : []) yield* marksIn(child, name)
+}
+
+export function checkReviewMarks(original) {
+  for (const mark of marksIn(original, REVIEW_SUGGESTION)) {
+    if (!isReviewMark(mark.attrs)) throw new RangeError('Invalid reviewSuggestion attributes')
+  }
 }
 
 /**

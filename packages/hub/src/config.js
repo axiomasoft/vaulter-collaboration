@@ -55,9 +55,11 @@
 //                                             is the heartbeat, so it must exceed the compaction interval).
 //
 // Shutdown (src/shutdown.js) — SIGTERM/SIGINT drain the hub:
-//   VAULTER_COLLAB_SHUTDOWN_FLUSH_MS        — how long the pending ledger may flush (default 30000).
-//   VAULTER_COLLAB_SHUTDOWN_DESTROY_MS      — how long Hocuspocus' destroy() may take after that (default 5000). The
-//                                             orchestrator's grace period must exceed their sum.
+//   VAULTER_COLLAB_SHUTDOWN_FLUSH_MS        — how long the pending ledger may flush (default 25000).
+//   VAULTER_COLLAB_SHUTDOWN_DESTROY_MS      — how long Hocuspocus' destroy() may take after that (default 5000). If
+//                                             flush + destroy + persistence stop (8000) + listener close (1000) exceeds
+//                                             39000 ms (reserving 1000 ms headroom before Compose's 40000 ms
+//                                             stop_grace_period), config.js rebalances the phase budgets to <= 39000 ms.
 //
 // Limits (src/limits.js) — checked before anything is decoded:
 //   VAULTER_COLLAB_MAX_UPDATE_BYTES         — one Yjs update (default 1 MiB, as the backend's limits.update_bytes).
@@ -65,6 +67,7 @@
 //   VAULTER_COLLAB_MAX_REQUEST_BYTES        — one backend request body (default 2 MiB, as limits.request_bytes; a
 //                                             checkpoint may carry the base64 state on top).
 //   VAULTER_COLLAB_MAX_ROOMS_PER_TENANT     — rooms of one tenant open on this hub (default 1000).
+//   VAULTER_COLLAB_MAX_HEAP_MB             — process heap budget for room admission and idle eviction (default 512 MiB).
 //   VAULTER_COLLAB_MAX_CONNECTIONS_PER_ROOM — connections of one room on this hub (default 100).
 //   VAULTER_COLLAB_MAX_UPDATES_PER_SECOND_PER_ROOM — writes one room takes per second (default 200).
 //   VAULTER_COLLAB_MAX_SYNC_REQUESTS_PER_MINUTE — sync step 1 and awareness queries one connection sends per
@@ -79,6 +82,7 @@
 //                                             (default 300, as the backend's hub.timestamp_tolerance).
 //   VAULTER_COLLAB_CONTROL_REDIS_URL        — the Redis the backend publishes control messages on
 //                                             (vaulter:collab:control); default VAULTER_COLLAB_REDIS_URL.
+//   VAULTER_COLLAB_CONTROL_POSTGRES_URL     — primary PostgreSQL connection for signed LISTEN/NOTIFY control.
 //
 // Scaling / ops:
 //   VAULTER_COLLAB_REDIS_URL      — when set, enables the Redis extension (multi-instance sync).
@@ -91,6 +95,86 @@
 // the JWT signing secret — it only relays the token to the webhook (which verifies it).
 
 import { appendRequestBytes, envelopeLength, LIMIT_DEFAULTS } from './limits.js'
+import { MANAGEMENT_CLOSE_MS, PERSISTENCE_STOP_MS, SHUTDOWN_TOTAL_BUDGET_MS } from './shutdown.js'
+
+const MIN_PERSISTENCE_STOP_MS = 1000
+
+/**
+ * Clamp/rebalance the shutdown phase budgets so flush + destroy + persistence stop + management close
+ * always fits within SHUTDOWN_TOTAL_BUDGET_MS (39000 ms, reserving 1000 ms headroom before Compose's
+ * 40000 ms stop_grace_period) without rejecting legacy env values like VAULTER_COLLAB_SHUTDOWN_FLUSH_MS=30000
+ * at boot. Negative or non-integer values are preserved as-is so validateConfig() still reports the offending env var.
+ */
+function rebalanceShutdownBudgets(flushMs, destroyMs) {
+  const shutdownManagementMs = Math.min(MANAGEMENT_CLOSE_MS, SHUTDOWN_TOTAL_BUDGET_MS)
+  if (!Number.isInteger(flushMs) || flushMs < 0 || !Number.isInteger(destroyMs) || destroyMs < 0) {
+    return {
+      shutdownFlushMs: flushMs,
+      shutdownDestroyMs: destroyMs,
+      shutdownStopMs: PERSISTENCE_STOP_MS,
+      shutdownManagementMs,
+    }
+  }
+
+  const availableAfterManagement = SHUTDOWN_TOTAL_BUDGET_MS - shutdownManagementMs
+  if (flushMs + destroyMs + PERSISTENCE_STOP_MS <= availableAfterManagement) {
+    return {
+      shutdownFlushMs: flushMs,
+      shutdownDestroyMs: destroyMs,
+      shutdownStopMs: PERSISTENCE_STOP_MS,
+      shutdownManagementMs,
+    }
+  }
+
+  const minStopMs = Math.min(PERSISTENCE_STOP_MS, MIN_PERSISTENCE_STOP_MS)
+  if (flushMs + destroyMs <= availableAfterManagement - minStopMs) {
+    return {
+      shutdownFlushMs: flushMs,
+      shutdownDestroyMs: destroyMs,
+      shutdownStopMs: availableAfterManagement - flushMs - destroyMs,
+      shutdownManagementMs,
+    }
+  }
+
+  const shutdownStopMs = minStopMs
+  const userBudget = Math.max(0, availableAfterManagement - shutdownStopMs)
+  if (flushMs === 0) {
+    return {
+      shutdownFlushMs: 0,
+      shutdownDestroyMs: Math.min(destroyMs, userBudget),
+      shutdownStopMs,
+      shutdownManagementMs,
+    }
+  }
+  if (destroyMs === 0) {
+    return {
+      shutdownFlushMs: Math.min(flushMs, userBudget),
+      shutdownDestroyMs: 0,
+      shutdownStopMs,
+      shutdownManagementMs,
+    }
+  }
+
+  const totalUser = flushMs + destroyMs
+  let clampedFlush = Math.floor(userBudget * (flushMs / totalUser))
+  let clampedDestroy = userBudget - clampedFlush
+  if (userBudget >= 2) {
+    if (clampedFlush === 0) {
+      clampedFlush = 1
+      clampedDestroy = userBudget - 1
+    } else if (clampedDestroy === 0) {
+      clampedDestroy = 1
+      clampedFlush = userBudget - 1
+    }
+  }
+
+  return {
+    shutdownFlushMs: clampedFlush,
+    shutdownDestroyMs: clampedDestroy,
+    shutdownStopMs,
+    shutdownManagementMs,
+  }
+}
 
 function str(name, fallback = undefined, env = process.env) {
   const value = env[name]
@@ -199,6 +283,11 @@ export function buildConfig(env = process.env) {
     Number.isInteger(maxDocumentBytes) && maxDocumentBytes > 0 ? maxDocumentBytes : LIMIT_DEFAULTS.maxDocumentBytes,
   )
 
+  const shutdownBudgets = rebalanceShutdownBudgets(
+    int('VAULTER_COLLAB_SHUTDOWN_FLUSH_MS', 25000, env),
+    int('VAULTER_COLLAB_SHUTDOWN_DESTROY_MS', 5000, env),
+  )
+
   return {
     port: int('VAULTER_COLLAB_PORT', 1234, env),
     webhookBase: resolveWebhookBase(env),
@@ -242,14 +331,14 @@ export function buildConfig(env = process.env) {
     readyBackendTtlMs: int('VAULTER_COLLAB_READY_BACKEND_TTL_MS', 30000, env),
 
     // Shutdown
-    shutdownFlushMs: int('VAULTER_COLLAB_SHUTDOWN_FLUSH_MS', 30000, env),
-    shutdownDestroyMs: int('VAULTER_COLLAB_SHUTDOWN_DESTROY_MS', 5000, env),
+    ...shutdownBudgets,
 
     // Limits
     maxUpdateBytes,
     maxDocumentBytes,
     maxRequestBytes: int('VAULTER_COLLAB_MAX_REQUEST_BYTES', 2 * 1024 * 1024, env),
     maxRoomsPerTenant: int('VAULTER_COLLAB_MAX_ROOMS_PER_TENANT', 1000, env),
+    maxHeapMb: int('VAULTER_COLLAB_MAX_HEAP_MB', 512, env),
     maxConnectionsPerRoom: int('VAULTER_COLLAB_MAX_CONNECTIONS_PER_ROOM', 100, env),
     maxUpdatesPerSecondPerRoom: int('VAULTER_COLLAB_MAX_UPDATES_PER_SECOND_PER_ROOM', 200, env),
     maxSyncRequestsPerMinute: int('VAULTER_COLLAB_MAX_SYNC_REQUESTS_PER_MINUTE', 10, env),
@@ -260,6 +349,7 @@ export function buildConfig(env = process.env) {
     renewBeforeMs: int('VAULTER_COLLAB_RENEW_BEFORE_MS', 60000, env),
     controlToleranceSeconds: int('VAULTER_COLLAB_CONTROL_TOLERANCE_SECONDS', 300, env),
     controlRedisUrl: str('VAULTER_COLLAB_CONTROL_REDIS_URL', str('VAULTER_COLLAB_REDIS_URL', undefined, env), env),
+    controlPostgresUrl: str('VAULTER_COLLAB_CONTROL_POSTGRES_URL', undefined, env),
 
     // Scaling / ops
     redisUrl: str('VAULTER_COLLAB_REDIS_URL', undefined, env),
@@ -308,6 +398,7 @@ const NUMERIC = Object.freeze([
   { key: 'maxDocumentBytes', env: 'VAULTER_COLLAB_MAX_DOCUMENT_BYTES', min: 1 },
   { key: 'maxRequestBytes', env: 'VAULTER_COLLAB_MAX_REQUEST_BYTES', min: 1, backend: true },
   { key: 'maxRoomsPerTenant', env: 'VAULTER_COLLAB_MAX_ROOMS_PER_TENANT', min: 1 },
+  { key: 'maxHeapMb', env: 'VAULTER_COLLAB_MAX_HEAP_MB', min: 1 },
   { key: 'maxConnectionsPerRoom', env: 'VAULTER_COLLAB_MAX_CONNECTIONS_PER_ROOM', min: 1 },
   { key: 'maxUpdatesPerSecondPerRoom', env: 'VAULTER_COLLAB_MAX_UPDATES_PER_SECOND_PER_ROOM', min: 1 },
   { key: 'maxSyncRequestsPerMinute', env: 'VAULTER_COLLAB_MAX_SYNC_REQUESTS_PER_MINUTE', min: 1 },
@@ -409,7 +500,7 @@ export function validateConfig(conf = config) {
     problems.push(`VAULTER_COLLAB_MODE must be one of ${PERSISTENCE_MODES.join(', ')}.`)
   }
   if (conf.strictProfile && conf.redisUrl) {
-    problems.push('VAULTER_COLLAB_STRICT_PROFILE requires control-only Redis (VAULTER_COLLAB_CONTROL_REDIS_URL).')
+    problems.push('VAULTER_COLLAB_STRICT_PROFILE requires control-only Redis (VAULTER_COLLAB_CONTROL_REDIS_URL) or PostgreSQL control (VAULTER_COLLAB_CONTROL_POSTGRES_URL).')
   }
 
   return [...backendProblems(conf), ...problems]
@@ -428,6 +519,20 @@ export function validateCompactConfig(conf = config) {
   }
 
   return [...problems, ...numericProblems(conf, NUMERIC.filter((entry) => entry.backend === true))]
+}
+
+/**
+ * Build and validate the hub configuration from `env`, throwing if any boot guard fails.
+ */
+export function loadConfig(env = process.env) {
+  const loaded = buildConfig(env)
+  const problems = validateConfig(loaded)
+
+  if (problems.length > 0) {
+    throw new Error(`Vaulter collab hub: invalid configuration:\n - ${problems.join('\n - ')}`)
+  }
+
+  return loaded
 }
 
 export const config = buildConfig()

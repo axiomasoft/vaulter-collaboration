@@ -96,7 +96,7 @@ export function createRevocation({
   /** Rechecks running per control key (a drive, or '*'): another message while one runs runs it once more. */
   const running = new Map()
   const stats = {
-    control: { redis: 0, http: 0, other: 0 },
+    control: { redis: 0, postgres: 0, http: 0, other: 0 },
     rechecks: 0,
     recheckFailures: 0,
     renewals: 0,
@@ -299,6 +299,11 @@ export function createRevocation({
       downgrade(entry, 'renewal')
     }
 
+    try {
+      entry.connection.sendStateless?.(JSON.stringify({ t: 'token_refresh', token: renewed.token, exp: renewed.exp }))
+    } catch {
+      // The reconnect can use the preceding token while it is still live.
+    }
     arm(entry)
   }
 
@@ -438,6 +443,12 @@ export function createRevocation({
       : String(message.drive_id)
 
     registry.noteControl(driveId)
+
+    if (message?.type === 'revoke_subject') {
+      const { subject_id: id, subject_type: type } = message
+      return coalesced(JSON.stringify([driveId, type, id]), () => recheck(registry.forSubject(id)
+        .filter((entry) => entry.subjectType === type && (driveId === null || entry.driveId === driveId))))
+    }
 
     return coalesced(driveId === null ? '*' : `drive:${driveId}`, () => recheck(registry.forDrive(driveId)))
   }

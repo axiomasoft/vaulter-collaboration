@@ -1,7 +1,219 @@
 import crypto from 'node:crypto'
+import { context, defaultTextMapGetter, defaultTextMapSetter, propagation, ROOT_CONTEXT, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api'
+import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks'
+import { W3CTraceContextPropagator } from '@opentelemetry/core'
+import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
+import { resourceFromAttributes } from '@opentelemetry/resources'
+import { BatchSpanProcessor, TracerProvider } from '@opentelemetry/sdk-trace'
 import { config as defaultConfig } from './config.js'
 import { requestLimit } from './limits.js'
 import { parseRetryAfter } from './retry.js'
+
+const TRACEPARENT_RE = /^00-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/i
+const propagator = new W3CTraceContextPropagator()
+const TRACER_NAME = 'vaulter-collaboration-hub'
+
+let contextManagerInstalled = false
+
+function ensureContextAndPropagator() {
+  if (!contextManagerInstalled) {
+    try {
+      context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable())
+    } catch {
+      // A host or test already installed a global context manager.
+    }
+    try {
+      propagation.setGlobalPropagator(propagator)
+    } catch {
+      // A host or test already installed a global propagator.
+    }
+    contextManagerInstalled = true
+  }
+}
+
+/**
+ * Validates and normalizes a W3C traceparent header (`00-<32hex>-<16hex>-<2hex>`).
+ * Returns null for invalid headers or all-zero trace/span identifiers.
+ *
+ * @param {unknown} raw
+ * @returns {string | null}
+ */
+export function normalizeTraceparent(raw) {
+  if (typeof raw !== 'string') {
+    return null
+  }
+  const value = raw.trim().toLowerCase()
+  const match = TRACEPARENT_RE.exec(value)
+  if (!match) {
+    return null
+  }
+  if (match[1] === '00000000000000000000000000000000' || match[2] === '0000000000000000') {
+    return null
+  }
+
+  return value
+}
+
+/**
+ * Extracts the active W3C `traceparent` from the current OTel async context, if valid.
+ *
+ * @returns {string | null}
+ */
+export function activeTraceparent() {
+  ensureContextAndPropagator()
+  const carrier = {}
+  propagator.inject(context.active(), carrier, defaultTextMapSetter)
+
+  return normalizeTraceparent(carrier.traceparent)
+}
+
+/**
+ * Executes `fn` in a detached root OpenTelemetry context so untraced work never inherits an ambient trace.
+ *
+ * @template T
+ * @param {() => T} fn
+ * @returns {T}
+ */
+export function withoutTraceContext(fn) {
+  ensureContextAndPropagator()
+
+  return context.with(ROOT_CONTEXT, fn)
+}
+
+/**
+ * Executes `fn` inside an extracted W3C `traceparent` parent context and optional server/consumer span.
+ *
+ * @template T
+ * @param {string | null} traceparent
+ * @param {() => T} fn
+ * @param {string | null} [spanName]
+ * @param {Record<string, string | number | boolean>} [attributes]
+ * @returns {T}
+ */
+export function withTraceparent(traceparent, fn, spanName = null, attributes = {}) {
+  ensureContextAndPropagator()
+  const normalized = normalizeTraceparent(traceparent)
+  const parentContext = normalized
+    ? propagator.extract(ROOT_CONTEXT, { traceparent: normalized }, defaultTextMapGetter)
+    : ROOT_CONTEXT
+
+  if (!spanName) {
+    return context.with(parentContext, fn)
+  }
+
+  return trace.getTracer(TRACER_NAME).startActiveSpan(
+    spanName,
+    { kind: SpanKind.SERVER, attributes },
+    parentContext,
+    (span) => runSpan(span, () => fn()),
+  )
+}
+
+/**
+ * Executes an outgoing HTTP call inside a CLIENT span and passes the active child W3C `traceparent`.
+ *
+ * @template T
+ * @param {string} spanName
+ * @param {(traceparent: string | null) => Promise<T>} fn
+ * @param {{ traceparent?: string | null, attributes?: Record<string, string | number | boolean> }} [options]
+ * @returns {Promise<T>}
+ */
+export async function withOutgoingSpan(spanName, fn, { traceparent = undefined, attributes = {} } = {}) {
+  ensureContextAndPropagator()
+  const explicitNone = traceparent === null
+  const normalized = normalizeTraceparent(traceparent)
+  const parentContext = explicitNone
+    ? ROOT_CONTEXT
+    : normalized
+      ? propagator.extract(ROOT_CONTEXT, { traceparent: normalized }, defaultTextMapGetter)
+      : context.active()
+
+  return trace.getTracer(TRACER_NAME).startActiveSpan(
+    spanName,
+    { kind: SpanKind.CLIENT, attributes },
+    parentContext,
+    (span) => runSpan(span, () => fn(explicitNone ? null : (activeTraceparent() ?? normalized))),
+  )
+}
+
+/**
+ * @template T
+ * @param {import('@opentelemetry/api').Span} span
+ * @param {() => T} fn
+ * @returns {T}
+ */
+function runSpan(span, fn) {
+  try {
+    const result = fn()
+    if (result && typeof (/** @type {any} */ (result)).then === 'function') {
+      return /** @type {T} */ (
+        /** @type {Promise<unknown>} */ (result).then(
+          (value) => {
+            span.setStatus({ code: SpanStatusCode.OK })
+            span.end()
+            return value
+          },
+          (error) => {
+            const errorType = typeof error?.code === 'string' && error.code !== '' ? error.code : (error?.name ?? 'Error')
+            span.setAttribute('error.type', errorType)
+            span.setStatus({ code: SpanStatusCode.ERROR, message: String(errorType) })
+            span.end()
+            throw error
+          },
+        )
+      )
+    }
+    span.setStatus({ code: SpanStatusCode.OK })
+    span.end()
+
+    return result
+  } catch (error) {
+    const errorType = typeof error?.code === 'string' && error.code !== '' ? error.code : (error?.name ?? 'Error')
+    span.setAttribute('error.type', errorType)
+    span.setStatus({ code: SpanStatusCode.ERROR, message: String(errorType) })
+    span.end()
+    throw error
+  }
+}
+
+/**
+ * Initializes Hub OTel JS SDK tracing when configured via OTLP env or explicit options.
+ * Uses AsyncLocalStorage context + BatchSpanProcessor so hot-path execution never blocks.
+ *
+ * @param {{ env?: NodeJS.ProcessEnv, enabled?: boolean, endpoint?: string, serviceName?: string, exporter?: import('@opentelemetry/sdk-trace').SpanExporter }} [options]
+ * @returns {{ enabled: boolean, shutdown: () => Promise<void> }}
+ */
+export function initHubTracing({ env = process.env, enabled, endpoint, serviceName, exporter } = {}) {
+  ensureContextAndPropagator()
+
+  const rawEndpoint = endpoint
+    ?? env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+    ?? (env.OTEL_EXPORTER_OTLP_ENDPOINT ? `${env.OTEL_EXPORTER_OTLP_ENDPOINT.replace(/\/+$/, '')}/v1/traces` : undefined)
+  const shouldEnable = enabled ?? Boolean(rawEndpoint || env.OTEL_TRACES_EXPORTER === 'otlp' || exporter)
+
+  if (!shouldEnable) {
+    return { enabled: false, shutdown: async () => {} }
+  }
+
+  const traceExporter = exporter ?? new OTLPTraceExporter({
+    url: rawEndpoint ?? 'http://127.0.0.1:4318/v1/traces',
+    timeoutMillis: Number(env.OTEL_EXPORTER_OTLP_TIMEOUT) > 0 ? Number(env.OTEL_EXPORTER_OTLP_TIMEOUT) : 1000,
+  })
+  const provider = new TracerProvider({
+    resource: resourceFromAttributes({
+      'service.name': serviceName ?? env.OTEL_SERVICE_NAME ?? 'vaulter-collaboration-hub',
+    }),
+    spanProcessors: [new BatchSpanProcessor({ exporter: traceExporter })],
+  })
+  trace.setGlobalTracerProvider(provider)
+
+  return {
+    enabled: true,
+    shutdown: async () => {
+      await provider.shutdown().catch(() => {})
+    },
+  }
+}
 
 // The hub's client of the Laravel backend, protocol 2:
 //   - authenticate → POST {base}/collaboration/hub/authenticate  (onAuthenticate)
@@ -70,7 +282,7 @@ function signRawBody(rawBody, secret) {
   return { timestamp, signature }
 }
 
-function headersFor({ token, signed, seed }) {
+function headersFor({ token, signed, seed, traceparent }) {
   const headers = {
     'Content-Type': 'application/json',
     Accept: 'application/json',
@@ -83,6 +295,10 @@ function headersFor({ token, signed, seed }) {
 
   if (seed) {
     headers[SEED_HEADER] = '1'
+  }
+
+  if (typeof traceparent === 'string' && traceparent !== '') {
+    headers.traceparent = traceparent
   }
 
   if (signed) {
@@ -130,7 +346,7 @@ async function bodyOf(response, signal) {
  * body as well as the headers. `seed` marks the append of a seed. Throws when there is no answer
  * (network error, timeout).
  */
-async function post(endpoint, payload, token, { config = defaultConfig, fetchImpl = globalThis.fetch, timeoutMs } = {}, { seed = false } = {}) {
+async function post(endpoint, payload, token, { config = defaultConfig, fetchImpl = globalThis.fetch, timeoutMs, traceparent } = {}, { seed = false } = {}) {
   const rawBody = JSON.stringify({ ...payload, nonce: crypto.randomUUID() })
   const maxBytes = requestLimit(endpoint, config, { seed })
 
@@ -141,16 +357,23 @@ async function post(endpoint, payload, token, { config = defaultConfig, fetchImp
   const controller = new AbortController()
   const limit = timeoutMs ?? config.webhookTimeoutMs
   const timer = limit ? setTimeout(() => controller.abort(new Error(`collab/${endpoint} timed out after ${limit} ms`)), limit) : null
+  const parentTraceparent = traceparent === null ? null : (normalizeTraceparent(traceparent) ?? activeTraceparent())
 
   try {
-    const response = await fetchImpl(`${config.webhookBase}/collaboration/hub/${endpoint}`, {
-      method: 'POST',
-      headers: headersFor({ token, signed: signRawBody(rawBody, config.webhookSecret), seed }),
-      body: rawBody,
-      signal: controller.signal,
-    })
+    return await withOutgoingSpan(
+      `hub.backend.${endpoint}`,
+      async (outgoingTraceparent) => {
+        const response = await fetchImpl(`${config.webhookBase}/collaboration/hub/${endpoint}`, {
+          method: 'POST',
+          headers: headersFor({ token, signed: signRawBody(rawBody, config.webhookSecret), seed, traceparent: outgoingTraceparent }),
+          body: rawBody,
+          signal: controller.signal,
+        })
 
-    return { ok: response.ok, status: response.status, headers: response.headers, body: await bodyOf(response, controller.signal) }
+        return { ok: response.ok, status: response.status, headers: response.headers, body: await bodyOf(response, controller.signal) }
+      },
+      { traceparent: parentTraceparent, attributes: { 'http.method': 'POST', 'vaulter.hub.endpoint': endpoint } },
+    )
   } finally {
     if (timer) {
       clearTimeout(timer)
@@ -257,7 +480,11 @@ export async function append({ token, room, generation, updateId, sha256, payloa
     return { ok: true, status: response.status, ack }
   }
 
-  return refusal(response)
+  const result = refusal(response)
+  const replay = response.body?.meta?.context?.replay
+  return ownerId !== undefined && response.status === 409 && result.code === 'base_moved' && replay
+    ? { ...result, replay }
+    : result
 }
 
 async function ownerCall(operation, body, options) {

@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { Document, Hocuspocus } from '@hocuspocus/server'
 import { TiptapTransformer } from '@hocuspocus/transformer'
 import * as Y from 'yjs'
+import { compactLease } from '../src/compaction.js'
 import { createRoomSequencer, prepareOnCopy, verifyCurrentRange } from '../src/room-sequencer.js'
-import { sha256Hex } from '../src/persistence.js'
+import { createPersistence, sha256Hex } from '../src/persistence.js'
 import { createStrictRooms } from '../src/strict-rooms.js'
 import { extensionsFor } from '../src/schema.js'
 
@@ -26,6 +28,147 @@ function fixture() {
 function textOf(doc) {
   return doc.getXmlFragment(field).get(0).get(0)
 }
+
+test('strict review updates bind new marks and structural records to the authenticated subject', async (t) => {
+  const base = fixture()
+  const room = new Y.Doc()
+  const checkpoint = Buffer.from(Y.encodeStateAsUpdate(base)).toString('base64')
+  const log = { generation: 3, checkpoint, checkpoint_seq: 1, head_seq: 1, tail: [] }
+  const sequence = createRoomSequencer({
+    room, generation: 3, load: async () => log,
+    append: async (update) => {
+      log.tail.push({ seq: ++log.head_seq, payload: update.payload, sha256: update.sha256 })
+      return { seq: log.head_seq }
+    },
+  })
+  t.after(() => { sequence.close(); room.destroy(); base.destroy() })
+  await sequence.catchUp()
+  const submit = async (subject, change) => {
+    const client = new Y.Doc()
+    Y.applyUpdate(client, Y.encodeStateAsUpdate(room))
+    client.clientID = browserId
+    const vector = Y.encodeStateVector(client)
+    change(client)
+    const bytes = Y.encodeStateAsUpdate(client, vector)
+    client.destroy()
+    return sequence.submitUpdate({ bytes, boundClientId: browserId, subject,
+      payload: Buffer.from(bytes).toString('base64'), sha256: sha256Hex(bytes) })
+  }
+  const recordName = 'vaulter:reviewStructure:default'
+  const mark = { suggestionId: 'proposal', groupId: 'group', author: 'alice', kind: 'insert' }
+  const entry = { order: 1, record: {
+    suggestionId: 'structure', groupId: 'group', author: 'alice', blockId: 'terms', kind: 'attr_change',
+    from: 0, to: 0, parentId: null, conflicted: false, conflictReason: null, conflictWithId: null,
+    payload: { attr: 'textAlign', oldValue: null, newValue: 'center' },
+  } }
+  const marked = (doc, attrs = mark) => textOf(doc).format(0, 3, { reviewSuggestion: attrs })
+  const recorded = (doc, key = 'structure', value = entry) => doc.getMap(recordName).set(key, value)
+  for (const [subject, change] of [
+    ['bob', marked], ['bob', recorded], [null, marked],
+    ['alice', (doc) => marked(doc, { ...mark, kind: 'invalid' })],
+    ['alice', (doc) => recorded(doc, 'wrong-key')],
+    ['alice', (doc) => recorded(doc, 'structure', { ...entry, order: '1' })],
+  ]) {
+    await assert.rejects(submit(subject, change), { code: 'invalid_update' })
+    assert.equal(log.head_seq, 1)
+  }
+
+  await submit('alice', (doc) => { marked(doc); recorded(doc) })
+  await submit('bob', (doc) => textOf(doc).insert(0, '!', {}))
+  await assert.rejects(submit('bob', (doc) => marked(doc, { ...mark, author: 'bob' })), { code: 'invalid_update' })
+  await assert.rejects(submit('bob', (doc) => recorded(doc, 'structure', {
+    ...entry, record: { ...entry.record, author: 'bob' },
+  })), { code: 'invalid_update' })
+  assert.equal(log.head_seq, 3)
+  assert.deepEqual(room.getMap(recordName).get('structure'), entry)
+})
+
+test('structural review replacement carries overlapping marks and leaves the shared records intact', (t) => {
+  const expected = { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Review', marks: [
+    { type: 'reviewSuggestion', attrs: { suggestionId: 'one', kind: 'insert', author: 'alice', groupId: 'group' } },
+    { type: 'reviewSuggestion', attrs: { suggestionId: 'two', kind: 'delete', author: 'bob', groupId: 'another' } },
+  ] }] }] }
+  const replacement = structuredClone(expected)
+  replacement.content[0].content[0].text = 'Updated'
+  const base = TiptapTransformer.toYdoc(expected, field, extensionsFor('vaulter/rich-text', expected))
+  t.after(() => base.destroy())
+  const records = base.getMap('vaulter:reviewStructure:default')
+  const record = { order: 1, record: { suggestionId: 'structural', author: 'alice' } }
+  records.set('structural', record)
+  const { bytes } = prepareOnCopy(base, { operation: 'review.suggestion.accept', decision: 'accepted',
+    atomic_effects: [{ effect: 'replace_review_document', expected, replacement }],
+  }, 2, 'review')
+
+  Y.applyUpdate(base, bytes)
+  const projected = TiptapTransformer.fromYdoc(base, field)
+  assert.equal(projected.content[0].content[0].text, 'Updated')
+  assert.deepEqual(projected.content[0].content[0].marks.map(mark => mark.attrs.suggestionId), ['one', 'two'])
+  assert.deepEqual(records.get('structural'), record)
+})
+
+test('journal import replaces the document only at its registered generation and position', async (t) => {
+  const type = 'vaulter/rich-text'
+  const base = fixture()
+  base.getMap('vaulter:reviewStructure:default').set('old', { order: 1, record: { suggestionId: 'old' } })
+  const room = new Y.Doc()
+  const checkpoint = Buffer.from(Y.encodeStateAsUpdate(base)).toString('base64')
+  const log = { generation: 3, checkpoint, checkpoint_seq: 5, head_seq: 5, tail: [] }
+  const sequence = createRoomSequencer({ room, generation: 3, load: async () => log })
+  t.after(() => { sequence.close(); room.destroy(); base.destroy() })
+  const replacement = { type: 'doc', content: [{ type: 'paragraph', attrs: { blockId: 'imported' },
+    content: [{ type: 'text', text: 'Imported DOCX' }] }] }
+  const run = (intent, settle) => sequence.runCommand({ id: 'row', command_id: 'import', fingerprint: 'fingerprint',
+    intent: { operation: 'exchange.apply_import', base_generation: 3, base_position: 5,
+      atomic_effects: [{ effect: 'exchange.apply_import', replacement }], ...intent },
+  }, 2, type, settle)
+  const reject = async (request) => {
+    assert.equal(request.kind, 'reject')
+    assert.equal(request.reason, 'precondition_failed')
+    assert.deepEqual(request.updates, [])
+    return { state: 'rejected' }
+  }
+  await run({ base_generation: 2 }, reject)
+  await run({ base_position: 4 }, reject)
+  for (const bad of [{ type: 'paragraph' }, { type: 'doc', content: [{ type: 'text', text: 'wrong child' }] },
+    { type: 'doc', content: [{ type: 'paragraph', attrs: { undeclared: null } }] }]) {
+    await run({ atomic_effects: [{ effect: 'exchange.apply_import', replacement: bad }] }, reject)
+  }
+  const receipt = await run({}, async (request) => {
+    assert.equal(request.base_seq, 5)
+    assert.equal(request.kind, 'commit')
+    assert.match(textOf(room).toString(), /Pay in 15 days/)
+    assert.equal(request.updates.length, 1)
+    log.tail.push({ seq: ++log.head_seq, ...request.updates[0] })
+    return { state: 'committed', receipt_id: 'receipt', to_seq: 6 }
+  })
+  assert.equal(receipt.receipt_id, 'receipt')
+  assert.deepEqual(TiptapTransformer.fromYdoc(room, field), replacement)
+  assert.equal(room.getMap('vaulter:reviewStructure:default').size, 0)
+  await run({}, reject)
+  assert.equal(log.head_seq, 6)
+
+  const competing = structuredClone(replacement)
+  competing.content[0].content[0].text = 'Another import'
+  let attempts = 0
+  await run({ base_position: 6, atomic_effects: [{ effect: 'exchange.apply_import', replacement: competing }] }, (request) => {
+    if (++attempts === 2) {
+      assert.equal(request.base_seq, 7)
+      return reject(request)
+    }
+    assert.equal(request.kind, 'commit')
+    assert.equal(request.updates.length, 1)
+    const interleaving = new Y.Doc()
+    Y.applyUpdate(interleaving, Y.encodeStateAsUpdate(room))
+    const vector = Y.encodeStateVector(interleaving)
+    textOf(interleaving).insert(0, 'Concurrent edit. ')
+    const bytes = Buffer.from(Y.encodeStateAsUpdate(interleaving, vector))
+    interleaving.destroy()
+    log.tail.push({ seq: ++log.head_seq, payload: bytes.toString('base64'), sha256: sha256Hex(bytes) })
+    throw Object.assign(new Error('base_moved'), { code: 'base_moved' })
+  })
+  assert.equal(attempts, 2)
+  assert.match(textOf(room).toString(), /^Concurrent edit/)
+})
 
 test('keeps a browser update private until append and replays the committed bytes', async () => {
   const base = fixture()
@@ -314,21 +457,23 @@ test('a missing dependency cannot advance the room, and delete-only bytes do adv
   for (const doc of [room, base, client]) doc.destroy()
 })
 
-test('after its own append the room takes only the proven bytes on trust; another record is checked in full', async () => {
+test('a strict append uses one call, or two when the append response contains a newer prefix', async () => {
   const base = fixture()
   const client = new Y.Doc()
   const other = new Y.Doc()
   const room = new Y.Doc()
   const checkpoint = Buffer.from(Y.encodeStateAsUpdate(base)).toString('base64')
   const log = { generation: 3, checkpoint, checkpoint_seq: 40, head_seq: 40, tail: [] }
-  // What the backend commits instead of the submitted update (null: the submitted one).
-  let substitute = null
+  let calls = 0
+  let appendBase = 40
   const sequence = createRoomSequencer({
-    room, generation: 3, load: async () => log,
-    append: async ({ payload, sha256 }) => {
-      log.tail.push(substitute ?? { seq: log.head_seq + 1, payload, sha256 })
-      log.head_seq += 1
-      return { seq: log.head_seq }
+    room, generation: 3, load: async () => { calls++; return log },
+    append: async ({ baseSeq, sha256 }) => {
+      calls++
+      if (baseSeq !== appendBase) {
+        throw Object.assign(new Error('base_moved'), { code: 'base_moved', replay: log })
+      }
+      return { seq: ++appendBase, sha256 }
     },
   })
   await sequence.catchUp()
@@ -343,26 +488,39 @@ test('after its own append the room takes only the proven bytes on trust; anothe
   // The proven record itself: applied, and the room moves on.
   const before = Y.encodeStateVector(client)
   textOf(client).insert(0, 'A')
+  calls = 0
   await submit(Y.encodeStateAsUpdate(client, before))
+  assert.equal(calls, 1)
   assert.equal(sequence.appliedSeq, 41)
   assert.equal(textOf(room).toString(), textOf(client).toString())
 
-  // The log grows by one record that is not the proven one and lacks a dependency: it must not
-  // ride on the proof of the submitted update.
+  const remoteVector = Y.encodeStateVector(other)
   textOf(other).insert(0, 'X')
-  const skipped = Y.encodeStateVector(other)
-  textOf(other).insert(1, 'Y')
-  const incomplete = Y.encodeStateAsUpdate(other, skipped)
+  const remote = Y.encodeStateAsUpdate(other, remoteVector)
   const next = Y.encodeStateVector(client)
   textOf(client).insert(0, 'B')
-  substitute = record(incomplete)
-  await assert.rejects(submit(Y.encodeStateAsUpdate(client, next)), { code: 'missing_dependencies' })
-  assert.equal(sequence.appliedSeq, 41, 'nothing of the unproven record became visible')
-  assert.doesNotMatch(textOf(room).toString(), /Y/)
+  log.head_seq = ++appendBase
+  log.tail = [{ ...record(remote), seq: appendBase }]
+  calls = 0
+  await submit(Y.encodeStateAsUpdate(client, next))
+  assert.equal(calls, 2)
+  assert.equal(sequence.appliedSeq, 43)
+  assert.match(textOf(room).toString(), /X/)
+
+  textOf(other).insert(1, 'Y')
+  const skipped = Y.encodeStateVector(other)
+  textOf(other).insert(2, 'Z')
+  log.head_seq = ++appendBase
+  log.tail = [{ ...record(Y.encodeStateAsUpdate(other, skipped)), seq: appendBase }]
+  const lastVector = Y.encodeStateVector(client)
+  textOf(client).insert(0, 'C')
+  await assert.rejects(submit(Y.encodeStateAsUpdate(client, lastVector)), { code: 'missing_dependencies' })
+  assert.equal(sequence.appliedSeq, 43)
+  assert.doesNotMatch(textOf(room).toString(), /Z/)
   for (const doc of [room, base, client, other]) doc.destroy()
 })
 
-test('the proof shortcut keys on the proven bytes, not on the hash the caller claims', async () => {
+test('a claimed hash for different bytes cannot authorize a strict append', async () => {
   const base = fixture()
   const client = new Y.Doc()
   const other = new Y.Doc()
@@ -395,10 +553,126 @@ test('the proof shortcut keys on the proven bytes, not on the hash the caller cl
   const bytes = Y.encodeStateAsUpdate(client, before)
   await assert.rejects(sequence.submitUpdate({
     bytes, boundClientId: browserId, payload: Buffer.from(bytes).toString('base64'), sha256: substitute.sha256,
-  }), { code: 'missing_dependencies' })
+  }), { code: 'collaboration_update_mismatch' })
   assert.equal(sequence.appliedSeq, 40, 'nothing of the unproven record became visible')
   assert.doesNotMatch(textOf(room).toString(), /Y/)
+  assert.equal(log.head_seq, 40)
   for (const doc of [room, base, client, other]) doc.destroy()
+})
+
+test('polling can move the base during preparation and the submit validates again before its only append', async (t) => {
+  const base = fixture()
+  const room = new Y.Doc()
+  const client = new Y.Doc()
+  const other = new Y.Doc()
+  t.after(() => { for (const doc of [base, room, client, other]) doc.destroy() })
+  const checkpoint = Y.encodeStateAsUpdate(base)
+  for (const doc of [client, other]) Y.applyUpdate(doc, checkpoint)
+  const log = { generation: 3, checkpoint_seq: 1, checkpoint: Buffer.from(checkpoint).toString('base64'), head_seq: 1, tail: [] }
+  const calls = []
+  const sequence = createRoomSequencer({
+    room, generation: 3, maxBytes: 1 << 20, load: async () => log,
+    append: async ({ baseSeq, sha256 }) => {
+      calls.push(baseSeq)
+      return { seq: 3, sha256 }
+    },
+  })
+  await sequence.catchUp()
+  client.clientID = browserId
+  const vector = Y.encodeStateVector(base)
+  textOf(client).insert(0, 'A')
+  textOf(other).insert(0, 'B')
+  const bytes = Y.encodeStateAsUpdate(client, vector)
+  const committed = Y.encodeStateAsUpdate(other, vector)
+  const poll = new Promise((resolve) => setImmediate(resolve)).then(() => {
+    log.head_seq = 2
+    log.tail = [{ seq: 2, sha256: sha256Hex(committed), payload: Buffer.from(committed).toString('base64') }]
+    return sequence.catchUp()
+  })
+  const submit = sequence.submitUpdate({
+    bytes, boundClientId: browserId, sha256: sha256Hex(bytes), payload: Buffer.from(bytes).toString('base64'),
+  })
+  await Promise.all([poll, submit])
+  assert.deepEqual(calls, [2])
+  assert.equal(sequence.appliedSeq, 3)
+  assert.match(textOf(room).toString(), /^(AB|BA)/)
+})
+
+test('strict compaction publishes V2, which a subsequent lease and a room both replay', async (t) => {
+  const base = fixture()
+  const room = new Y.Doc()
+  t.after(() => { base.destroy(); room.destroy() })
+  const snapshot = {
+    document: '42', generation: 3, protocol: 'yjs', profile: 'strict', schema_version: 1,
+    state_format: 'yjs-update-v1', type: 'vaulter/rich-text', checkpoint_version: 5, lease_token: 'test',
+    checkpoint: Buffer.from(Y.encodeStateAsUpdate(base)).toString('base64'), checkpoint_seq: 10, head_seq: 10, tail: [],
+  }
+  const first = compactLease(snapshot)
+  assert.equal(first.stateFormat, 'yjs-update-v2')
+
+  const vector = Y.encodeStateVector(base)
+  textOf(base).insert(0, 'New ')
+  const edit = Y.encodeStateAsUpdate(base, vector)
+  const newer = { ...snapshot, state_format: first.stateFormat, checkpoint: first.state, head_seq: 11,
+    tail: [{ seq: 11, sha256: sha256Hex(edit), payload: Buffer.from(edit).toString('base64') }] }
+  const second = compactLease(newer)
+  assert.equal(second.stateFormat, first.stateFormat)
+  assert.deepEqual(second.content, TiptapTransformer.fromYdoc(base, field))
+
+  const sequence = createRoomSequencer({ room, generation: 3, load: async () => newer })
+  await sequence.catchUp()
+  assert.equal(sequence.appliedSeq, 11)
+  assert.equal(textOf(room).toString(), textOf(base).toString())
+})
+
+test('heap pressure evicts the least recently used clean idle room and rejects admission when none can unload', async (t) => {
+  const budget = 1024 * 1024
+  let heap = 0
+  const unloaded = []
+  const pending = deferred()
+  const store = createPersistence({
+    conf: { maxHeapMb: 1 },
+    heapUsed: () => heap,
+    backend: { load: async () => ({ generation: 3 }), append: () => pending.promise },
+  })
+  const instance = new Hocuspocus({
+    async afterUnloadDocument(payload) {
+      unloaded.push(payload.documentName)
+      heap -= budget
+      await store.afterUnloadDocument(payload)
+    },
+  })
+  const open = async (documentName) => {
+    const document = new Document(documentName)
+    t.after(() => { if (!document.isDestroyed) document.destroy() })
+    await store.onLoadDocument({ documentName, document, instance })
+    instance.documents.set(documentName, document)
+    return document
+  }
+  const active = await open('active')
+  active.addDirectConnection()
+  const dirty = await open('dirty')
+  const written = store.ledger.enqueue({
+    documentName: dirty.name, updateId: 'in-flight', generation: 3, origin: 'server', token: 'writer',
+    payload: 'AAA=', bytes: 2, sha256: 'hash',
+  })
+  const usedAgain = await open('used-again')
+  await open('least-recent')
+  await store.onDisconnect({ documentName: usedAgain.name })
+
+  heap = budget
+  const newRoom = await open('new')
+  assert.deepEqual(unloaded, ['least-recent'])
+  assert.equal(store.ledger.pendingCount(dirty.name), 1)
+  usedAgain.addDirectConnection()
+  newRoom.addDirectConnection()
+  heap = budget
+  await assert.rejects(open('refused'), { code: 4429 })
+  assert.deepEqual(unloaded, ['least-recent'])
+  assert.equal(instance.documents.size, 4)
+
+  pending.resolve({ ok: true, ack: { seq: 1 } })
+  await written.settled
 })
 
 test('relative evidence survives a shifted offset and detects an offline edit to the target', async () => {

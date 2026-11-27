@@ -164,3 +164,39 @@ it('rejects a full discovery batch of trashed documents and finds the next healt
     expect($replay)->toMatchArray(['state' => 'rejected', 'rejection_code' => 'resource_unavailable', 'receipt_id' => null])
         ->and($journal->targets())->toBe([$target]);
 });
+
+it('captures per-command traceparent independently and preserves idempotent fingerprint', function (): void {
+    Hub::configure();
+    $node = Hub::document();
+    $db = app(VaulterDatabase::class);
+    $db->write(fn () => Hub::aggregate($node)->forceFill(['write_mode' => 'journal'])->save());
+    $owner = (string) Str::uuid();
+    $lockedDoc = null;
+    $db->transaction(function () use ($node, $owner, &$lockedDoc): void {
+        $locked = app(CollaborativeState::class)->lock($node->getKey());
+        app(RoomOwnership::class)->selectProfile($locked, strict: true);
+        app(RoomOwnership::class)->acquire($locked, $owner);
+        $lockedDoc = $locked;
+    });
+    $scope = new CommandActor(Actor::user(AccessTestHelpers::user())->ref(), null, 'test', 'writer', (string) $node->drive_id, (string) $node->getKey());
+    $journal = app(CommandJournal::class);
+    $tracedParent = '00-0123456789abcdef0123456789abcdef-89abcdef01234567-01';
+    $proposal1 = (string) Str::uuid();
+    $digest1 = hash('sha256', 'cmd-traced');
+    $proposal2 = (string) Str::uuid();
+    $digest2 = hash('sha256', 'cmd-untraced');
+
+    $first = $journal->register($scope, 'cmd-traced', $proposal1, $digest1, 0, 1, 0, ['atomic_effects' => []], $tracedParent);
+    expect($first['traceparent'])->toBe($tracedParent)
+        ->and($journal->register($scope, 'cmd-traced', $proposal1, $digest1, 0, 1, 0, ['atomic_effects' => []]))->toBe($first);
+
+    $second = $journal->register($scope, 'cmd-untraced', $proposal2, $digest2, 0, 1, 0, ['atomic_effects' => []]);
+    expect($second['traceparent'])->toBeNull();
+
+    $nextFirst = $db->transaction(fn () => $journal->next(app(CollaborativeState::class)->lock($node->getKey())));
+    expect($nextFirst)->toMatchArray(['id' => $first['id'], 'traceparent' => $tracedParent]);
+
+    $journal->settle($first['id'], $owner, 1, 0, 0, $first['fingerprint'], [], ['ranges' => []]);
+    $nextSecond = $db->transaction(fn () => $journal->next(app(CollaborativeState::class)->lock($node->getKey())));
+    expect($nextSecond)->toMatchArray(['id' => $second['id'], 'traceparent' => null]);
+});

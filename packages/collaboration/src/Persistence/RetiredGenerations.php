@@ -61,7 +61,7 @@ final readonly class RetiredGenerations
     }
 
     /**
-     * Delete the updates, receipts and head of every generation retired before `$cutoff`.
+     * Delete the updates, receipts, client IDs and head of every generation retired before `$cutoff`.
      *
      * @return array{generations: int, updates: int, receipts: int}
      */
@@ -77,6 +77,8 @@ final readonly class RetiredGenerations
                 if ($current?->retiredAt === null || !$current->retiredAt->lessThan($cutoff)) {
                     return [];
                 }
+
+                $this->log->rows('collaboration_client_ids', $head->documentId, $head->generation)->delete();
 
                 return [
                     'updates' => $this->log->rows('collaboration_updates', $head->documentId, $head->generation)->delete(),

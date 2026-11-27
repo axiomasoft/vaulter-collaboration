@@ -11,6 +11,7 @@ use LogicException;
 use Packman\Attributes\Internal;
 use Packman\Attributes\Spi;
 use Packman\Attributes\SpiKind;
+use RuntimeException;
 use Vaulter\Collaboration\Drain\DrainState;
 use Vaulter\Collaboration\Exceptions\CollaborationDrainingException;
 use Vaulter\Collaboration\Exceptions\CollaborationEpochMismatchException;
@@ -119,7 +120,7 @@ final readonly class UpdateLog
             throw new RoomWriteConflict('client_id_conflict');
         }
         if ($baseSeq !== null && $baseSeq !== $headSeq) {
-            throw new RoomWriteConflict('base_moved');
+            throw new RoomWriteConflict('base_moved', $baseSeq < $headSeq ? $this->read($locked, $baseSeq) : null);
         }
         $this->assertDriveWritable($locked);
         if ($headSeq === 0 && $locked->collabStateSize === null && $update->seedStateVersion === null) {
@@ -134,20 +135,38 @@ final readonly class UpdateLog
         $seq = $headSeq + 1;
         $now = Carbon::now();
         $key = ['document_id' => Identity::key($locked->documentId), 'generation' => $update->generation];
-        $this->table('collaboration_updates')->insert($key + [
-            'seq' => $seq,
-            'update_id' => $update->updateId,
-            'payload' => base64_encode($update->payload),
-            'sha256' => $sha256,
-            'created_at' => $now,
-        ]);
+        $raw = $this->database->driver() === 'pgsql';
+        $size = strlen($update->payload);
+        $payload = $raw ? $this->binary($update->payload) : base64_encode($update->payload);
+        try {
+            $this->table('collaboration_updates')->insert($key + [
+                'seq' => $seq,
+                'update_id' => $update->updateId,
+                'payload' => $payload,
+                'payload_raw' => $raw,
+                'sha256' => $sha256,
+                'created_at' => $now,
+            ]);
+        } finally {
+            if (is_resource($payload)) {
+                fclose($payload);
+            }
+        }
         $this->table('collaboration_receipts')->insert($key + [
             'update_id' => $update->updateId,
             'seq' => $seq,
             'sha256' => $sha256,
             'committed_at' => $now,
         ]);
-        $this->heads($locked->documentId, $update->generation)->update(['head_seq' => $seq, 'updated_at' => $now]);
+        $connection = $this->database->connection();
+        $heads = $connection->getQueryGrammar()->wrapTable($this->tables->table('collaboration_heads'));
+        $connection->update(
+            "update {$heads} set head_seq = ?, tail_bytes = tail_bytes + ?, tail_wire_bytes = tail_wire_bytes + ?,
+                tail_oldest_at = case when tail_oldest_at <= ? then tail_oldest_at else ? end,
+                tail_latest_at = case when tail_latest_at >= ? then tail_latest_at else ? end, updated_at = ?
+                where document_id = ? and generation = ?",
+            [$seq, $size, 4 * intdiv($size + 2, 3), $now, $now, $now, $now, $now, $key['document_id'], $key['generation']],
+        );
         $this->state->markPending($locked, $locked->binding ?? throw new LogicException('Missing collaboration binding.'), $seq);
         $this->draining->assertAccepting();
 
@@ -211,11 +230,11 @@ final readonly class UpdateLog
             $query->lockForUpdate();
         }
         $tail = $query
-            ->get(['seq', 'update_id', 'payload', 'sha256'])
+            ->get(['seq', 'update_id', 'payload', 'payload_raw', 'sha256'])
             ->map(fn (object $row): array => [
                 'seq' => self::int($row->seq),
                 'update_id' => Identity::stringify($row->update_id),
-                'payload' => $this->stored($row->payload),
+                'payload' => $this->stored($row->payload, in_array($row->payload_raw, [true, 1, '1', 't'], true)),
             ] + ($head?->profile === 'strict' ? ['sha256' => Identity::stringify($row->sha256)] : []))
             ->all();
         $tail = array_values($tail);
@@ -300,13 +319,6 @@ final readonly class UpdateLog
         }
     }
 
-    private function heads(string $documentId, int $generation): Builder
-    {
-        return $this->table('collaboration_heads')
-            ->where('document_id', Identity::key($documentId))
-            ->where('generation', $generation);
-    }
-
     private function table(string $entity): Builder
     {
         return $this->database->connection()->table($this->tables->table($entity));
@@ -318,13 +330,32 @@ final readonly class UpdateLog
         return is_int($value) || (is_string($value) && is_numeric($value)) ? (int) $value : throw new LogicException('[Vaulter] A collaboration counter is not an integer.');
     }
 
-    /** A stored payload as base64 text; PostgreSQL hands a bytea column out as a stream. */
-    private function stored(mixed $value): string
+    /** @return resource */
+    private function binary(string $bytes): mixed
+    {
+        $stream = fopen('php://memory', 'w+b');
+        if ($stream === false) {
+            throw new RuntimeException('Could not open a binary update stream.');
+        }
+        if (fwrite($stream, $bytes) !== strlen($bytes) || !rewind($stream)) {
+            fclose($stream);
+            throw new RuntimeException('Could not bind the binary update.');
+        }
+
+        return $stream;
+    }
+
+    /** Both on-disk formats use the existing base64 wire format. */
+    private function stored(mixed $value, bool $raw): string
     {
         if (is_resource($value)) {
             $value = stream_get_contents($value);
         }
 
-        return is_string($value) ? $value : '';
+        if (!is_string($value)) {
+            throw new LogicException('Could not read the collaboration update payload.');
+        }
+
+        return $raw ? base64_encode($value) : $value;
     }
 }
