@@ -1,0 +1,64 @@
+{
+  "fixture_version": 1,
+  "id": "live_text_commit_then_hub_crash",
+  "kind": "internal_protocol_scenario",
+  "scope": {
+    "tenant_id": "school-7",
+    "project_id": "legal",
+    "resource_id": "contract-17"
+  },
+  "actors": [
+    { "id": "human-1", "permissions": ["read", "edit"], "client": "browser-one" },
+    { "id": "reviewer-2", "permissions": ["read"], "client": "browser-two" },
+    { "id": "user-9", "permissions": ["read", "edit"], "client": "background-agent" }
+  ],
+  "initial": {
+    "generation": 3,
+    "schema_version": 1,
+    "owner_fence": 7,
+    "head_seq": 40,
+    "applied_seq": 40,
+    "blocks": [
+      { "block_id": "payment-terms", "text": "Аванс в течение 15 дней" },
+      { "block_id": "bank", "text": "Банк А" }
+    ]
+  },
+  "agent_intent": {
+    "command_id": "A42",
+    "effective_actor": "user-9",
+    "generation": 3,
+    "read_marker": { "generation": 3, "position": 40 },
+    "preconditions": [
+      { "block_id": "payment-terms", "expected_text": "Аванс в течение 15 дней", "expected_marks": [] }
+    ],
+    "atomic_effects": [
+      { "effect": "replace_exact", "block_id": "payment-terms", "expected": "15", "replacement": "30" },
+      { "effect": "insert_paragraph_after", "block_id": "payment-terms", "text": "Основание: решение финансового директора" }
+    ]
+  },
+  "timeline": [
+    { "step": "register_intent", "assert": { "command_id": "A42", "stored_intents": 1, "head_seq": 40 } },
+    { "step": "accept_human_edit", "actor_id": "human-1", "block_id": "bank", "new_text": "Банк Б", "assert": { "head_seq": 41, "applied_seq": 41 } },
+    { "step": "prepare_on_copy", "command_id": "A42", "assert": { "expected_head_seq": 41, "unchanged_in_live_room": true } },
+    { "step": "commit_update_receipt_and_outbox", "command_id": "A42", "byte_reference": "U42", "assert": { "head_seq": 42, "applied_seq": 41, "stored_receipts": 1 } },
+    { "step": "crash_room_before_apply_and_drop_response", "assert": { "durable_position": 42 } },
+    { "step": "query_status_as_authorized_actor", "actor_id": "user-9", "assert": { "command_id": "A42", "state": "committed", "receipt_id": "receipt-A42", "marker": { "generation": 3, "position": 42 } } },
+    { "step": "open_next_room_owner", "owner_fence": 8, "assert": { "a43_may_evaluate_against_position_41": false } },
+    { "step": "replay_committed_prefix", "byte_reference": "U42", "assert": { "head_seq": 42, "applied_seq": 42, "a43_may_evaluate_against_position_42": true } },
+    { "step": "repeat_a42_and_deliver_outbox_twice", "assert": { "head_seq": 42, "receipt_id": "receipt-A42", "stored_receipts": 1, "inserted_paragraph_count": 1 } },
+    { "step": "read_at_commit_and_current", "assert": { "modes": ["at_commit", "current"], "marker": { "generation": 3, "position": 42 }, "ordered_text": ["Аванс в течение 30 дней", "Основание: решение финансового директора", "Банк Б"] } }
+  ],
+  "independent_variants": [
+    { "id": "concurrent_duplicate", "change": "two_workers_submit_simultaneously", "expect": { "receipt_count": 1, "inserted_paragraph_count": 1, "head_seq": 42 } },
+    { "id": "different_intent_same_key", "change": "change_replacement_to_45_after_original_commit", "expect": { "key_conflict": true, "head_seq": 42, "receipt_count": 1 } },
+    { "id": "partial_patch_failure", "change": "second_effect_throws_on_copy_before_commit", "expect": { "accepted_agent_updates": 0, "live_payment_text": "Аванс в течение 15 дней", "inserted_paragraph_count": 0 } },
+    { "id": "precondition_changed", "change": "human_changes_target_to_20_before_agent_validation", "expect": { "outcome": "conflict", "live_payment_text": "Аванс в течение 20 дней", "inserted_paragraph_count": 0 } },
+    { "id": "generation_restored", "change": "restore_to_generation_4_before_final_commit", "expect": { "old_generation_writes_to_new_room": 0, "accepted_agent_updates": 0 } },
+    { "id": "late_delivery_after_restore", "change": "restore_to_generation_4_after_a42_committed_before_outbox_delivery", "expect": { "old_generation_writes_to_new_room": 0, "authorized_historical_receipt_marker": { "generation": 3, "position": 42 } } },
+    { "id": "stale_owner", "change": "new_room_owner_takes_over_after_copy_prepared", "expect": { "updates_accepted_from_old_fence": 0 } },
+    { "id": "edit_revoked", "change": "revoke_edit_before_final_commit", "expect": { "accepted_agent_updates": 0, "inserted_paragraph_count": 0 } },
+    { "id": "read_revoked", "change": "revoke_read_after_commit_before_status", "expect": { "durable_receipt_count": 1, "visible_receipts_to_revoked_actor": 0, "visible_content_to_revoked_actor": false } },
+    { "id": "projection_behind", "change": "json_projection_at_41_after_a42_commit", "expect": { "minimum_read_marker": { "generation": 3, "position": 42 }, "may_return_position_41_as_verified": false } },
+    { "id": "offline_target_edit_arrives_later", "change": "human_types_20_offline_at_40_then_reconnects_after_A42", "expect": { "at_commit_payment_text": "Аванс в течение 30 дней", "current_read_uses_post_merge_position": true, "exact_current_payment_text_is_predeclared": false } }
+  ]
+}
