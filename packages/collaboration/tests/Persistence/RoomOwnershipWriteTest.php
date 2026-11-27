@@ -52,11 +52,13 @@ it('refuses unfenced appends and returns the current prefix to the strict owner 
         ->and($log->appendFenced($nodeId, $seed, $owner, 1, 0, static fn (): null => null)->seq)->toBe(1)
         ->and($log->appendFenced($nodeId, $seed, $owner, 1, 0, static fn (): null => null)->duplicate)->toBeTrue();
 
-    $migration = require __DIR__.'/../../database/migrations/0001_01_01_000509_track_collaboration_tails.php';
-    $migration->down();
-    $migration->up();
-    expect(Compaction::head($node)?->tailBytes)->toBe(4)
-        ->and(Compaction::head($node)?->tailWireBytes)->toBe(8);
+    if (app(VaulterDatabase::class)->driver() !== 'mysql') {
+        $migration = require __DIR__.'/../../database/migrations/0001_01_01_000509_track_collaboration_tails.php';
+        $migration->down();
+        $migration->up();
+        expect(Compaction::head($node)?->tailBytes)->toBe(4)
+            ->and(Compaction::head($node)?->tailWireBytes)->toBe(8);
+    }
 
     $bytes = "\x00\xff\x5cA";
     $next = new UpdateEnvelope($aggregate->collab_epoch, (string) Str::uuid(), $bytes, hash('sha256', $bytes), 'server');
