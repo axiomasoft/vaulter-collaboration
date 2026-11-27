@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use Illuminate\Routing\Route;
 use Illuminate\Support\Facades\Route as Router;
 use Illuminate\Support\Str;
+use Symfony\Component\HttpFoundation\Response;
 use Vaulter\Collaboration\CollaborationCallResolver;
 use Vaulter\Collaboration\Http\Middleware\ResolveCollaborationCall;
 use Vaulter\Collaboration\Http\Middleware\TraceCollaborationCall;
@@ -247,7 +248,7 @@ it('never exports raw exception messages from TraceCollaborationCall spans', fun
     $request->headers->set('traceparent', '00-0123456789abcdef0123456789abcdef-89abcdef01234567-01');
     $secretSql = 'SQLSTATE[23505] secret-binding-leak-xyz';
 
-    expect(fn () => $middleware->handle($request, static function () use ($secretSql): never {
+    expect(fn (): Response => $middleware->handle($request, static function () use ($secretSql): never {
         throw new RuntimeException($secretSql, 7);
     }))->toThrow(RuntimeException::class);
 
