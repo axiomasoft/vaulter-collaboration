@@ -66,9 +66,12 @@ services:
       VAULTER_COLLAB_INSTANCE_NAME: ${VAULTER_COLLAB_INSTANCE_NAME:-vaulter-hocuspocus}
 
       # — Shutdown — SIGTERM drains: writes stop, pending updates flush, then destroy() —
-      VAULTER_COLLAB_SHUTDOWN_FLUSH_MS: ${VAULTER_COLLAB_SHUTDOWN_FLUSH_MS:-30000}
+      # config.js and shutdown.js clamp/rebalance flush + destroy + persistence stop + listener close
+      # so total shutdown always fits <= 39000 ms (leaving >= 1000 ms headroom before Compose stop_grace_period: 40s).
+      VAULTER_COLLAB_SHUTDOWN_FLUSH_MS: ${VAULTER_COLLAB_SHUTDOWN_FLUSH_MS:-25000}
       VAULTER_COLLAB_SHUTDOWN_DESTROY_MS: ${VAULTER_COLLAB_SHUTDOWN_DESTROY_MS:-5000}
-    # More than flush + destroy: docker stop would otherwise SIGKILL the drain after 10 s.
+    # At least flush (25 s) + destroy (5 s) + persistence stop (8 s) + listener close (1 s) = 39 s <= 40 s:
+    # docker stop would otherwise SIGKILL the drain before persistence finishes stopping.
     stop_grace_period: 40s
     healthcheck:
       # Liveness: /livez of the management listener (no backend, database or Redis behind it).

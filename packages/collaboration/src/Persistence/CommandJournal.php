@@ -8,6 +8,7 @@ use Illuminate\Contracts\Container\Container;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Str;
 use LogicException;
+use OpenTelemetry\API\Trace\Span;
 use Packman\Attributes\Internal;
 use Packman\Attributes\Spi;
 use Packman\Attributes\SpiKind;
@@ -16,6 +17,7 @@ use Vaulter\Collaboration\Configuration\CollaborationOptions;
 use Vaulter\Collaboration\Contracts\HostUserResolver;
 use Vaulter\Collaboration\Drain\DrainState;
 use Vaulter\Collaboration\RoomOwnership;
+use Vaulter\Contracts\Observability\TraceRecorder;
 use Vaulter\Database\VaulterDatabase;
 use Vaulter\Documents\Access\CollaborationAccessPolicy;
 use Vaulter\Documents\Data\Collaboration\CollaborationMode;
@@ -26,6 +28,7 @@ use Vaulter\Drive\Enums\DriveStatus;
 use Vaulter\Drive\Exceptions\Access\PermissionDeniedException;
 use Vaulter\Drive\Exceptions\Nodes\NodeNotFoundException;
 use Vaulter\Events\EventRecorder;
+use Vaulter\Observability\OtlpOpenTelemetryTraceRecorder;
 use Vaulter\Support\Identity;
 use Vaulter\ValueObjects\Access\Actor;
 use Vaulter\ValueObjects\Access\ActorRef;
@@ -49,21 +52,23 @@ final readonly class CommandJournal
         private Container $container,
         private CollaborationOptions $options,
         private HubEvidenceReader $verifier,
+        private ?TraceRecorder $tracer = null,
     ) {}
 
     /**
      * @param  array<string, mixed> $intent
      * @return array<string, mixed>
      */
-    public function register(CommandActor $scope, string $key, string $proposal, string $digest, int $generation, int $schema, int $readPosition, array $intent): array
+    public function register(CommandActor $scope, string $key, string $proposal, string $digest, int $generation, int $schema, int $readPosition, array $intent, ?string $traceparent = null): array
     {
         if ($key === '' || strlen($key) > 255 || !Str::isUuid($proposal) || preg_match('/\A[0-9a-f]{64}\z/', $digest) !== 1
             || $generation < 0 || $schema < 1 || $readPosition < 0) {
             throw new RoomWriteConflict('invalid_intent');
         }
         $fingerprint = hash('sha256', json_encode(self::canonical([$proposal, $digest, $generation, $schema, $readPosition, $intent]), JSON_THROW_ON_ERROR));
+        $capturedTraceparent = $this->resolveTraceparent($traceparent);
 
-        return $this->db->transaction(function () use ($scope, $key, $proposal, $digest, $generation, $schema, $readPosition, $intent, $fingerprint): array {
+        return $this->db->transaction(function () use ($scope, $key, $proposal, $digest, $generation, $schema, $readPosition, $intent, $fingerprint, $capturedTraceparent): array {
             $doc = $this->state->lock($scope->resourceId);
             $writable = $this->authorize($scope);
             $existing = $this->scope($scope)->where('command_id', $key)->lockForUpdate()->first();
@@ -109,6 +114,7 @@ final readonly class CommandJournal
                     'principal_id' => $scope->principal->id,
                     'drive_id' => $scope->driveId,
                     'tenant' => $scope->tenant,
+                    'traceparent' => $capturedTraceparent,
                     'operation' => (object) $intent,
                 ], JSON_THROW_ON_ERROR),
                 'registered_at' => $this->tables->timestamp($now),
@@ -294,7 +300,13 @@ final readonly class CommandJournal
             ->where('generation', $doc->generation)->where('state', 'running')
             ->orderBy('registered_at')->orderBy('id')->first();
 
-        return $row === null ? null : $this->result($row) + ['intent' => self::json($row->intent)['operation']];
+        if ($row === null) {
+            return null;
+        }
+
+        $intent = self::json($row->intent);
+
+        return $this->result($row, $intent) + ['intent' => $intent['operation']];
     }
 
     /**
@@ -363,7 +375,16 @@ final readonly class CommandJournal
                     'evidence' => json_encode((object) $evidence, JSON_THROW_ON_ERROR),
                     'evidence_expires_at' => $this->tables->timestamp($now->copy()->addDay()),
                 ];
-                $this->events->record(new CommandCommitted($scope, $doc->documentId, $receipt, $generation, $position));
+                $recordCommitted = function () use ($scope, $doc, $receipt, $generation, $position): void {
+                    $this->events->record(new CommandCommitted($scope, $doc->documentId, $receipt, $generation, $position));
+                };
+                $tracer = $this->tracer ?? ($this->container->bound(TraceRecorder::class) ? $this->container->make(TraceRecorder::class) : null);
+                $storedTraceparent = self::storedTraceparent($row);
+                if ($tracer instanceof OtlpOpenTelemetryTraceRecorder && $tracer->currentTraceparent() === null && $storedTraceparent !== null) {
+                    $tracer->withTraceparent($storedTraceparent, $recordCommitted);
+                } else {
+                    $recordCommitted();
+                }
             }
             $this->table()->where('id', $id)->where('state', 'running')->update($terminal);
             $this->draining->assertAccepting();
@@ -443,8 +464,11 @@ final readonly class CommandJournal
         return $this->result($row);
     }
 
-    /** @return array{generation: int, to_seq: int|null, ...} */
-    private function result(stdClass $row): array
+    /**
+     * @param  array<array-key, mixed>|null                  $intent
+     * @return array{generation: int, to_seq: int|null, ...}
+     */
+    private function result(stdClass $row, ?array $intent = null): array
     {
         return [
             'id' => $row->id, 'command_id' => $row->command_id, 'fingerprint' => $this->fingerprint($row),
@@ -453,7 +477,56 @@ final readonly class CommandJournal
             'base_seq' => $row->base_seq === null ? null : LogTables::int($row->base_seq),
             'from_seq' => $row->from_seq === null ? null : LogTables::int($row->from_seq),
             'to_seq' => $row->to_seq === null ? null : LogTables::int($row->to_seq),
+            'traceparent' => self::storedTraceparent($row, $intent),
         ];
+    }
+
+    private function resolveTraceparent(?string $explicit): ?string
+    {
+        if ($explicit !== null) {
+            return self::validTraceparent($explicit);
+        }
+
+        $tracer = $this->tracer ?? ($this->container->bound(TraceRecorder::class) ? $this->container->make(TraceRecorder::class) : null);
+        if ($tracer instanceof OtlpOpenTelemetryTraceRecorder) {
+            $traceparent = $tracer->currentTraceparent();
+            if ($traceparent !== null) {
+                return $traceparent;
+            }
+        }
+
+        if (class_exists(Span::class)) {
+            $context = Span::getCurrent()->getContext();
+            if ($context->isValid()) {
+                return OtlpOpenTelemetryTraceRecorder::formatTraceparent(
+                    $context->getTraceId(),
+                    $context->getSpanId(),
+                    $context->isSampled(),
+                );
+            }
+        }
+
+        return null;
+    }
+
+    /** @param array<array-key, mixed>|null $intent */
+    private static function storedTraceparent(stdClass $row, ?array $intent = null): ?string
+    {
+        if ($intent === null) {
+            if ($row->intent === null) {
+                return null;
+            }
+            $intent = self::json($row->intent);
+        }
+
+        return self::validTraceparent($intent['traceparent'] ?? null);
+    }
+
+    private static function validTraceparent(mixed $raw): ?string
+    {
+        return is_string($raw) && OtlpOpenTelemetryTraceRecorder::parseTraceparent($raw) !== null
+            ? strtolower(trim($raw))
+            : null;
     }
 
     private function binary(string $hex): string

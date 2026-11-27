@@ -1,5 +1,5 @@
 import { RETRY_DEFAULTS, withRetry } from './retry.js'
-import { EPOCH_MISMATCH, PROTOCOL_MISMATCH } from './backend.js'
+import { EPOCH_MISMATCH, normalizeTraceparent, PROTOCOL_MISMATCH, withoutTraceContext } from './backend.js'
 
 // The hub's own pending ledger: every update the hub must append — a client's envelope or a
 // server/direct change — waits here, per document and in arrival order, until the backend
@@ -236,6 +236,7 @@ export function createLedger({
       bytes: record.bytes ?? Math.floor((record.payload.length * 3) / 4),
       origin: record.origin ?? 'client',
       token: record.token ?? null,
+      traceparent: record.traceparent === undefined ? null : normalizeTraceparent(record.traceparent),
       seedStateVersion: record.seedStateVersion,
       connections: new Set(),
       attempts: 0,
@@ -456,7 +457,7 @@ export function createLedger({
     }
 
     blockedDocuments.delete(documentName)
-    const flushing = run(documentName)
+    const flushing = withoutTraceContext(() => run(documentName))
       .catch((error) => {
         log.error?.(`Vaulter collab hub: the flush of ${documentName} failed: ${error?.message ?? error}`)
       })

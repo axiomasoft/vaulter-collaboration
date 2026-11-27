@@ -13,6 +13,7 @@ use Vaulter\Collaboration\Http\Controllers\Collaboration\HubRecheckController;
 use Vaulter\Collaboration\Http\Controllers\Collaboration\HubRenewController;
 use Vaulter\Collaboration\Http\Middleware\LimitHubAppend;
 use Vaulter\Collaboration\Http\Middleware\ResolveCollaborationCall;
+use Vaulter\Collaboration\Http\Middleware\TraceCollaborationCall;
 use Vaulter\Collaboration\Http\Middleware\VerifyHubSignature;
 use Vaulter\Configuration\RoutesOptions;
 
@@ -32,7 +33,7 @@ use Vaulter\Configuration\RoutesOptions;
 $routes = app(RoutesOptions::class);
 Route::prefix($routes->versionedPrefix())
     ->name('vaulter.v1.')
-    ->middleware([...$routes->hubMiddleware(), 'throttle:vaulter-public', ResolveCollaborationCall::class])
+    ->middleware([...$routes->hubMiddleware(), 'throttle:vaulter-public', ResolveCollaborationCall::class, TraceCollaborationCall::class])
     ->group(static function (): void {
         Route::post('collaboration/hub/authenticate', HubAuthenticateController::class)->name('collaboration.hub.authenticate');
         Route::post('collaboration/hub/load', HubLoadController::class)->name('collaboration.hub.load');
@@ -44,7 +45,7 @@ Route::prefix($routes->versionedPrefix())
 // may carry a whole state).
 Route::prefix($routes->versionedPrefix())
     ->name('vaulter.v1.')
-    ->middleware([...$routes->hubMiddleware(), 'throttle:vaulter-public', LimitHubAppend::class.':'.LimitHubAppend::APPEND, ResolveCollaborationCall::class])
+    ->middleware([...$routes->hubMiddleware(), 'throttle:vaulter-public', LimitHubAppend::class.':'.LimitHubAppend::APPEND, ResolveCollaborationCall::class, TraceCollaborationCall::class])
     ->group(static function (): void {
         Route::post('collaboration/hub/append', HubAppendController::class)->name('collaboration.hub.append');
     });
@@ -65,7 +66,7 @@ Route::prefix($routes->versionedPrefix())
             ->middleware([LimitHubAppend::class, VerifyHubSignature::class])
             ->name('collaboration.hub.commands.next');
         Route::post('collaboration/hub/commands/settle', HubCommandController::class)
-            ->middleware([LimitHubAppend::class.':'.LimitHubAppend::APPEND, VerifyHubSignature::class])
+            ->middleware([LimitHubAppend::class.':'.LimitHubAppend::APPEND, VerifyHubSignature::class, TraceCollaborationCall::class])
             ->name('collaboration.hub.commands.settle');
         Route::post('collaboration/hub/compaction/lease', HubCompactionLeaseController::class)
             ->middleware([LimitHubAppend::class, VerifyHubSignature::class])

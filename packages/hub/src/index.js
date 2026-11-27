@@ -136,14 +136,18 @@ async function onConnect({ requestHeaders }) {
  * object (`headers.origin`), while v4 hands a web `Headers` (`headers.get('origin')`). Reading the
  * wrong shape would yield undefined and silently disable the CSWSH allowlist, so support both.
  */
-function readOrigin(requestHeaders) {
+function readHeader(requestHeaders, name) {
   if (!requestHeaders) {
     return undefined
   }
   if (typeof requestHeaders.get === 'function') {
-    return requestHeaders.get('origin') ?? undefined
+    return requestHeaders.get(name) ?? undefined
   }
-  return requestHeaders.origin
+  return requestHeaders[name] ?? requestHeaders[name.toLowerCase()]
+}
+
+function readOrigin(requestHeaders) {
+  return readHeader(requestHeaders, 'origin')
 }
 
 /**
@@ -260,7 +264,7 @@ export function createHooks({ backend = backendModule, log = console, persistenc
    * (server-side), and the hub refuses its envelopes. A new room of a tenant at its room limit is
    * refused.
    */
-  async function onAuthenticate({ token, documentName, connection, connectionConfig, requestParameters }) {
+  async function onAuthenticate({ token, documentName, connection, connectionConfig, requestParameters, requestHeaders }) {
     if (draining()) {
       throw drainingRefusal()
     }
@@ -312,8 +316,11 @@ export function createHooks({ backend = backendModule, log = console, persistenc
     }
 
     const protocol = readClientProtocol(requestParameters)
+    const traceparent = backendModule.normalizeTraceparent(readHeader(requestHeaders, 'traceparent'))
     const strict = result.profile === 'strict'
-    if (strict && !store.strictCapable) throw Object.assign(new Error(HANDOFF.reason), HANDOFF)
+    if (strict && !store.strictCapable) {
+      throw Object.assign(new Error(HANDOFF.reason), HANDOFF)
+    }
     const readOnly = claims.scope !== 'write' || result.mode !== 'rw' || protocol !== CLIENT_PROTOCOL || (strict && clientSession === null)
 
     // v4 hands the per-connection settings as connectionConfig; older payloads as connection. Set
@@ -325,7 +332,7 @@ export function createHooks({ backend = backendModule, log = console, persistenc
     }
 
     // The expiry timer and the renewal are armed once the live connection is known (connected).
-    return { token, room: documentName, mode: readOnly && strict ? 'ro' : claims.scope === 'read' ? 'ro' : result.mode, readOnly, protocol, userId: claims.sub, principal: { type: claims.sub_type, id: claims.sub }, binding: { protocol: claims.protocol, stateFormat: claims.state_format, schemaVersion: claims.schema_version, generation: claims.generation }, exp, tenant, controlMark, ...(strict ? { profile: 'strict' } : {}), ...(clientSession ? { clientSession } : {}) }
+    return { token, room: documentName, mode: readOnly && strict ? 'ro' : claims.scope === 'read' ? 'ro' : result.mode, readOnly, protocol, userId: claims.sub, principal: { type: claims.sub_type, id: claims.sub }, binding: { protocol: claims.protocol, stateFormat: claims.state_format, schemaVersion: claims.schema_version, generation: claims.generation }, exp, tenant, controlMark, ...(strict ? { profile: 'strict' } : {}), ...(clientSession ? { clientSession } : {}), ...(traceparent ? { traceparent } : {}) }
   }
 
   /**

@@ -1078,6 +1078,7 @@ components:
         base_seq: {type: [integer, 'null'], minimum: 0}
         from_seq: {type: [integer, 'null'], minimum: 1}
         to_seq: {type: [integer, 'null'], minimum: 0}
+        traceparent: {type: [string, 'null']}
     Problem:
       type: object
       description: RFC 9457 problem details, served as application/problem+json.

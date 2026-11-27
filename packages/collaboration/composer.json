@@ -30,6 +30,7 @@
         "axiomasoft/vaulter-documents": "self.version",
         "axiomasoft/vaulter-drive": "self.version",
         "firebase/php-jwt": "^7.0",
+        "open-telemetry/sdk": "^1.16.1",
         "php": ">=8.4 <8.6"
     },
     "require-dev": {

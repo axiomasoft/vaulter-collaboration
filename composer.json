@@ -61,7 +61,8 @@
         "axiomasoft/vaulter-core": "^1.0",
         "axiomasoft/vaulter-documents": "^1.0",
         "axiomasoft/vaulter-drive": "^1.0",
-        "firebase/php-jwt": "^7.0"
+        "firebase/php-jwt": "^7.0",
+        "open-telemetry/sdk": "^1.16.1"
     },
     "require-dev": {
         "axiomasoft/packman-devtools": "^0.1",
@@ -95,7 +96,9 @@
     "config": {
         "sort-packages": true,
         "allow-plugins": {
-            "pestphp/pest-plugin": true
+            "pestphp/pest-plugin": true,
+            "php-http/discovery": false,
+            "tbachert/spi": false
         }
     },
     "scripts": {

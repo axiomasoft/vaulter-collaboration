@@ -87,7 +87,7 @@ test('strict profile rejects data Redis URL and stays strictCapable with control
     compactionBatch: 10,
     renewBeforeMs: 60000,
     controlToleranceSeconds: 300,
-    shutdownFlushMs: 30000,
+    shutdownFlushMs: 25000,
     shutdownDestroyMs: 5000,
     mode: 'buffered',
     strictProfile: true,

@@ -21,7 +21,7 @@ services:
       VAULTER_BACKEND_URL: "https://app.example.com"
       VAULTER_COLLAB_ALLOWED_ORIGINS: "https://app.example.com"
       VAULTER_COLLAB_WEBHOOK_SECRET: "<the Laravel hub.webhook_secret>"
-    stop_grace_period: 40s   # more than the shutdown flush + destroy limits
+    stop_grace_period: 40s   # exceeds flush (25s) + destroy (5s) + persistence stop (8s) + listener close (1s) = 39s
     restart: unless-stopped
 ```
 
@@ -195,8 +195,8 @@ Checked before anything is decoded; a refusal is counted in `collab_limit_reject
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `VAULTER_COLLAB_SHUTDOWN_FLUSH_MS` | `30000` | How long the pending ledger may flush after `SIGTERM`. |
-| `VAULTER_COLLAB_SHUTDOWN_DESTROY_MS` | `5000` | How long Hocuspocus' `destroy()` may take after that. The orchestrator's grace period must exceed their sum. |
+| `VAULTER_COLLAB_SHUTDOWN_FLUSH_MS` | `25000` | How long the pending ledger may flush after `SIGTERM`. |
+| `VAULTER_COLLAB_SHUTDOWN_DESTROY_MS` | `5000` | How long Hocuspocus' `destroy()` may take after that. Combined with persistence stop (`8000` ms) and management listener close (`1000` ms), total bounded shutdown stays within `40s` (`39s`). |
 
 ### Scaling / ops
 
@@ -223,12 +223,13 @@ here is authenticated except `POST /control`, so keep it off public networks.
 | `POST /control` | A control message of the backend, signed like every hub call; without a valid signature `401` and nothing changes, a body above the limit `413`. Used with `vaulter-collaboration.control.transport = http`. |
 
 Metrics (all prefixed `collab_`): `ready`, `draining`, `writes_stopped`, `active_rooms`, `active_connections`,
-`pending_updates`, `pending_bytes`, `pending_oldest_seconds`, `appended_total`, `append_retries_total`,
-`append_failures_total`, `append_dropped_total`, `append_latency_seconds`, `epoch_mismatch_total`,
-`compaction_seconds`, `compaction_failures_total`, `checkpoint_conflicts_total`, `control_messages_total`,
-`rechecks_total`, `recheck_failures_total`, `token_renewals_total`, `token_renewal_failures_total`,
-`revoked_connections_total`, `downgraded_connections_total`, `revoked_still_connected`, `limit_rejections_total`,
-`shutdown_unflushed`. Alert on `collab_pending_oldest_seconds` growing, `collab_append_failures_total` rising and
+`heap_bytes_per_room`, `sequencer_queue_depth`, `catchup_duration_seconds`, `cas_attempts_total`, `base_moved_retries_total`,
+`handoffs_4412_total`, `pending_updates`, `pending_bytes`, `pending_oldest_seconds`, `appended_total`,
+`append_retries_total`, `append_failures_total`, `append_dropped_total`, `append_latency_seconds`,
+`epoch_mismatch_total`, `compaction_seconds`, `compaction_failures_total`, `checkpoint_conflicts_total`,
+`control_messages_total`, `rechecks_total`, `recheck_failures_total`, `token_renewals_total`,
+`token_renewal_failures_total`, `revoked_connections_total`, `downgraded_connections_total`,
+`revoked_still_connected`, `limit_rejections_total`, `shutdown_unflushed`. Alert on `collab_pending_oldest_seconds` growing, `collab_append_failures_total` rising and
 `collab_revoked_still_connected` above zero.
 
 ## Graceful shutdown (`SIGTERM`)
@@ -241,11 +242,11 @@ settles while a document survived a failed store). In order, each step bounded:
    the client keeps them for the hub it reconnects to). Established connections keep reading.
 3. **The pending ledger flushes** until it is empty or `VAULTER_COLLAB_SHUTDOWN_FLUSH_MS` passed; the compaction worker stops.
 4. **Every connection is closed `4503`** `draining`; clients reconnect to another hub.
-5. Hocuspocus' `destroy()` runs for up to `VAULTER_COLLAB_SHUTDOWN_DESTROY_MS`.
+5. Hocuspocus' `destroy()` runs for up to `VAULTER_COLLAB_SHUTDOWN_DESTROY_MS`, then `persistence.stop()` (`8 s`) and management listener close (`1 s`) settle.
 6. If the ledger still holds updates the hub logs `{unflushed, documents, rooms}`, sets `collab_shutdown_unflushed` and exits
    `1`; otherwise it exits `0`.
 
-Give your orchestrator a grace period above the flush and destroy limits together (`stop_grace_period: 40s`,
+Give your orchestrator a grace period above the total bounded shutdown (`25s` flush + `5s` destroy + `8s` persistence + `1s` close = `39s <= 40s`, e.g. `stop_grace_period: 40s`,
 `terminationGracePeriodSeconds`). A second signal changes nothing.
 
 ## Security in production

@@ -362,13 +362,26 @@ function recordBytes(record) {
 }
 
 /** One serial queue for browser updates, trusted server writes, command settlement and replay. */
-export function createRoomSequencer({ room, generation, type = 'vaulter/rich-text', load, append, onBypass = () => {}, maxBytes = Infinity }) {
+export function createRoomSequencer({
+  room,
+  generation,
+  type = 'vaulter/rich-text',
+  load,
+  append,
+  onBypass = () => {},
+  onCatchUp = () => {},
+  onCasAttempt = () => {},
+  onBaseMovedRetry = () => {},
+  maxBytes = Infinity,
+}) {
   let appliedSeq = -1
   let stopped = false
   let applying = false
   let chain = Promise.resolve()
   let writes = Promise.resolve()
-  let pending = 0
+  let pendingWrites = 0
+  let pendingExternalChain = 0
+  const resolveType = typeof type === 'function' ? type : () => type
   function guard(transaction) {
     if (transaction.origin === LOAD_ORIGIN || transaction.origin === COMMITTED_ORIGIN || stopped) return
     // Applying a remote Y.Text update may synchronously open a formatting-cleanup transaction.
@@ -385,29 +398,40 @@ export function createRoomSequencer({ room, generation, type = 'vaulter/rich-tex
     if (stopped) throw refusal('stale_owner')
   }
 
-  function enqueue(task) {
-    pending++
+  function enqueueOnChain(task, count = false) {
+    if (count) pendingExternalChain++
     const run = chain.then(() => {
       assertOpen()
       return task()
-    }).finally(() => { pending-- })
+    }).finally(() => {
+      if (count) pendingExternalChain--
+    })
     chain = run.catch(() => {})
     return run
+  }
+
+  function enqueue(task) {
+    return enqueueOnChain(task, false)
   }
 
   // Preserve arrival order while a writer works on a private copy. Polling can still replay
   // committed updates, so each writer compares its base again before publishing.
   function write(task) {
-    pending++
-    const run = writes.then(task).finally(() => { pending-- })
+    pendingWrites++
+    const run = writes.then(task).finally(() => { pendingWrites-- })
     writes = run.catch(() => {})
     return run
   }
 
-  async function catchUp(minimum = -1) {
-    const log = await load(appliedSeq < 0 ? undefined : appliedSeq)
-    assertOpen()
-    return applyLog(log, minimum)
+  async function catchUp(minimum = -1, startedAtNs = null) {
+    const started = typeof startedAtNs === 'bigint' ? startedAtNs : process.hrtime.bigint()
+    try {
+      const log = await load(appliedSeq < 0 ? undefined : appliedSeq)
+      assertOpen()
+      return applyLog(log, minimum)
+    } finally {
+      onCatchUp(Number(process.hrtime.bigint() - started) / 1_000_000_000)
+    }
   }
 
   function applyLog(log, minimum) {
@@ -485,7 +509,7 @@ export function createRoomSequencer({ room, generation, type = 'vaulter/rich-tex
           try {
             Y.applyUpdate(copy, bytes, LOAD_ORIGIN)
             complete(copy)
-            if (!validReviewUpdate(room, copy, subject, type)) throw refusal('invalid_update')
+            if (!validReviewUpdate(room, copy, subject, resolveType())) throw refusal('invalid_update')
             return { base: appliedSeq, overlaps, copy }
           } catch (error) {
             copy.destroy()
@@ -503,8 +527,11 @@ export function createRoomSequencer({ room, generation, type = 'vaulter/rich-tex
         }
 
         const ack = await enqueue(async () => {
-          if (base !== appliedSeq) return null
+          if (base !== appliedSeq) {
+            return null
+          }
           if (tooLarge) throw refusal('document_too_large')
+          onCasAttempt()
           try {
             // Overlapping clocks are accepted only when PHP has the exact receipt.
             const receipt = await append({ ...envelope, boundClientId, bytes, baseSeq: base, receiptOnly: overlaps })
@@ -522,6 +549,7 @@ export function createRoomSequencer({ room, generation, type = 'vaulter/rich-tex
             if (rebased || error?.code !== 'base_moved' || !error.replay) throw error
             assertOpen()
             applyLog(error.replay, base + 1)
+            onBaseMovedRetry()
             rebased = true
             return null
           }
@@ -549,9 +577,12 @@ export function createRoomSequencer({ room, generation, type = 'vaulter/rich-tex
         complete(copy)
         const after = Y.encodeStateAsUpdateV2(copy)
         return await enqueue(async () => {
-          if (base !== appliedSeq) throw refusal('base_moved')
+          if (base !== appliedSeq) {
+            throw refusal('base_moved')
+          }
           if (Buffer.from(before).equals(after)) return []
           if (after.length > maxBytes) throw refusal('document_too_large')
+          onCasAttempt()
           const bytes = Buffer.from(Y.encodeStateAsUpdate(copy, vector))
           const updateId = crypto.randomUUID()
           const ack = await persist({ updateId, baseSeq: base, sha256: sha256Hex(bytes), payload: bytes.toString('base64') })
@@ -586,9 +617,12 @@ export function createRoomSequencer({ room, generation, type = 'vaulter/rich-tex
           prepared = { reason: 'precondition_failed' }
         }
         const bytes = prepared.bytes
+        let backendCasCalled = false
         try {
           return await enqueue(async () => {
             if (base !== appliedSeq) throw refusal('base_moved')
+            onCasAttempt()
+            backendCasCalled = true
             const outcome = await settle({
               id: command.id, fingerprint: command.fingerprint, base_seq: base,
               kind: prepared.reason ? 'reject' : 'commit', reason: prepared.reason, evidence: prepared.evidence,
@@ -599,6 +633,7 @@ export function createRoomSequencer({ room, generation, type = 'vaulter/rich-tex
           })
         } catch (error) {
           if (error?.code !== 'base_moved') throw error
+          if (backendCasCalled && attempt < 2) onBaseMovedRetry()
         }
       }
       throw refusal('base_moved')
@@ -607,9 +642,10 @@ export function createRoomSequencer({ room, generation, type = 'vaulter/rich-tex
 
   return {
     submitUpdate, serverUpdate, runCommand,
-    catchUp: () => enqueue(catchUp),
+    catchUp: (minimum = -1, startedAtNs = null) => enqueueOnChain(() => catchUp(minimum, startedAtNs), true),
     get appliedSeq() { return appliedSeq },
-    get busy() { return pending !== 0 },
+    get queueDepth() { return pendingWrites + pendingExternalChain },
+    get busy() { return pendingWrites + pendingExternalChain !== 0 },
     close() {
       stopped = true
       room.off('beforeTransaction', guard)

@@ -29,7 +29,7 @@ The Vaulter Collaboration Hub (`packages/hub`, image `ghcr.io/axiomasoft/vaulter
 | `VAULTER_BACKEND_URL` | — | Base URL of the Laravel application. |
 | `VAULTER_API_PREFIX` | `api/vaulter` | API prefix for `collaboration/hub/*` routes. |
 | `VAULTER_COLLAB_ALLOWED_ORIGINS` | — | Comma-separated Origin allowlist (required in production). |
-| `VAULTER_COLLAB_SHUTDOWN_FLUSH_MS` | `30000` | Max time to flush pending ledger updates on `SIGTERM`. |
+| `VAULTER_COLLAB_SHUTDOWN_FLUSH_MS` | `25000` | Max time to flush pending ledger updates on `SIGTERM`. |
 | `VAULTER_COLLAB_SHUTDOWN_DESTROY_MS` | `5000` | Max time for graceful `destroy()` after flush. |
 
 ## 4. Compaction Worker & Offline Recovery
@@ -49,4 +49,4 @@ Exit code `0` means all pending rooms were compacted; exit code `1` prints remai
 - **Strict Profile (`VAULTER_COLLAB_STRICT_PROFILE=true`):** Disable `@hocuspocus/extension-redis` for document data and avoid `DirectConnection.transact`. Keep `Y.UndoManager` strictly off the server `Y.Doc`.
 - **Health Probes:** Use `GET http://127.0.0.1:1235/livez` for liveness and `/readyz` for readiness.
 - **OpenTelemetry:** Propagate `traceparent` per logical mutation rather than binding all room activity to the long-lived HTTP 101 Upgrade span; emit custom attributes under the `vaulter.*` namespace.
-- **Graceful Shutdown:** Send `SIGTERM` with `terminationGracePeriodSeconds` greater than `VAULTER_COLLAB_SHUTDOWN_FLUSH_MS + VAULTER_COLLAB_SHUTDOWN_DESTROY_MS`.
+- **Graceful Shutdown:** Send `SIGTERM` with `terminationGracePeriodSeconds` / `stop_grace_period` at least `40s`, covering `VAULTER_COLLAB_SHUTDOWN_FLUSH_MS` (`25s`) + `VAULTER_COLLAB_SHUTDOWN_DESTROY_MS` (`5s`) + `persistence.stop()` (`8s`) + management close (`1s`) = `39s`.
